@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "planetary-sandbox"
+version = "0.1.0"
+description = "Core spectral / spherical-harmonics engine for Planetary Sandbox"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Alexandre Silva" }
+]
+
+# Temporarily empty because the slightest perturbation will send us back into dependency hell
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "ipykernel",
+]
+
+# This creates CLI commands in the project venv
+[project.scripts]
+psx-gen = "planetary_sandbox.cli.generate_planet:main"
+psx-bve = "planetary_sandbox.cli.bve:main"
+psx-recompile = "planetary_sandbox.cli.clear_cache:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["planetary_sandbox*"]
+
+# Make sure CUDA kernels under planetary_sandbox/numerics/cuda/ are included
+[tool.setuptools.package-data]
+"planetary_sandbox.numerics.cuda" = ["*.cu"]

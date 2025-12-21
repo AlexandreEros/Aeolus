@@ -1,0 +1,143 @@
+import cupy as cp
+from .cuda.cuda_utils import raw_module_from_cuda
+
+class PointSetSphericalHarmonics:
+    """
+    Optimized REAL spherical harmonics using matrix multiplication for arbitrary point sets.
+    Works on any sampling pattern; pass quadrature weights for non-uniform grids.
+    
+    Uses real spherical harmonics convention:
+        Y_l^0 = P_l^0(cos φ)
+        Y_l^m = sqrt(2) * P_l^m(cos φ) * cos(m θ)  for m > 0
+    """
+    def __init__(self, latitudes, longitudes, l_max, weights=None):
+        if not cp.is_available():
+            raise ImportError("CuPy is required.")
+
+        self.l_max = l_max
+        self.n_points = len(latitudes)
+
+        # Prepare Data on GPU
+        self.latitudes = cp.asarray(latitudes, dtype=cp.float64)
+        self.longitudes = cp.asarray(longitudes, dtype=cp.float64)
+
+        assert self.longitudes.shape == self.latitudes.shape, \
+            "Latitude and Longitude arrays must have the same shape."
+        self.grid_shape = self.latitudes.shape
+        assert len(self.grid_shape) == 1, "Input lat/lon must be 1D arrays."
+
+        # Compatibility attributes
+        self.phi_grid_gpu = cp.pi/2.0 - self.latitudes
+        self.lambda_grid_gpu = self.longitudes
+
+        if weights is None:
+            # Default to uniform area approximation (equal-area sampling only).
+            self.weights = cp.full(self.n_points, 4.0 * cp.pi / self.n_points, dtype=cp.float64)
+        else:
+            self.weights = cp.asarray(weights, dtype=cp.float64)
+
+        # Compile Kernel
+        self.module = raw_module_from_cuda("sh_matrix_real")
+        self.kernel = self.module.get_function('generate_real_sph_harm_basis')
+
+        # Generate Basis Matrix Y
+        # Shape: (n_points, n_basis)
+        # NOTE: Using complex128 for compatibility, but imaginary parts are zero
+        self.n_basis = (l_max + 1) * (l_max + 2) // 2
+        self.Y_matrix = cp.zeros((self.n_points, self.n_basis), dtype=cp.complex128)
+
+        block_size = 256
+        grid_size = (self.n_points + block_size - 1) // block_size
+
+        self.kernel((grid_size,), (block_size,), 
+                    (self.latitudes, self.longitudes, self.Y_matrix, self.n_points, l_max))
+
+        # Verify Y is real (imaginary parts should be ~0)
+        max_imag = cp.abs(self.Y_matrix.imag).max()
+        if max_imag > 1e-10:
+            import warnings
+            warnings.warn(f"Y_matrix has unexpectedly large imaginary components: {max_imag}")
+
+        # Extract real parts only for computation
+        self.Y_matrix_real = self.Y_matrix.real
+
+        # Indices mapper for (l, m) -> linear index
+        self.l_indices = []
+        self.m_indices = []
+        for l in range(l_max + 1):
+            for m in range(0, l + 1):
+                self.l_indices.append(l)
+                self.m_indices.append(m)
+        self.l_indices = cp.array(self.l_indices, dtype=cp.int32)
+        self.m_indices = cp.array(self.m_indices, dtype=cp.int32)
+
+
+    def transform(self, values: cp.ndarray) -> cp.ndarray:
+        """
+        Forward Transform: f -> coeffs (REAL spherical harmonics)
+        
+        For real SH basis, the transform is simply:
+            a_l^m = Σ_i w_i · Y_l^m(θ_i, φ_i) · f(θ_i, φ_i)
+        
+        Vectorized: a = Y^T @ (f * w)
+        """
+        if not isinstance(values, cp.ndarray):
+            values = cp.asarray(values)
+
+        if values.ndim > 1:
+            values = values.ravel()
+
+        weighted_vals = values * self.weights
+
+        # Matrix multiplication using REAL basis
+        # Y_matrix is (n_points, n_basis)
+        # weighted_vals is (n_points,)
+        # Result is (n_basis,)
+        coeffs_flat = cp.dot(self.Y_matrix_real.T, weighted_vals)
+
+        # Unpack to 2D grid (l, m)
+        coeffs_grid = cp.zeros((self.l_max + 1, self.l_max + 1), dtype=cp.float64)
+        coeffs_grid[self.l_indices, self.m_indices] = coeffs_flat
+
+        return coeffs_grid
+
+    def inv_transform(self, coeffs_grid: cp.ndarray) -> cp.ndarray:
+        """
+        Inverse Transform: coeffs -> f (REAL spherical harmonics)
+        
+        For real SH basis with m >= 0 only:
+            f = Σ_l [ a_l^0 Y_l^0 + Σ_{m=1}^l a_l^m Y_l^m ]
+        
+        All values are real, no complex arithmetic needed.
+        
+        Parameters
+        ----------
+        coeffs_grid : cp.ndarray, shape (l_max+1, l_max+1)
+            Spectral coefficients (real basis, m>=0 layout)
+        
+        Returns
+        -------
+        cp.ndarray
+            Reconstructed field values on the original grid (1D array of shape (n_points,)).
+        """
+        # Extract coefficients in linear order
+        coeffs_flat = coeffs_grid[self.l_indices, self.m_indices]
+        
+        # Simple matrix-vector multiply: f = Y @ a
+        # Y_matrix is (n_points, n_basis)
+        # coeffs_flat is (n_basis,)
+        # Result is (n_points,)
+        result = cp.dot(self.Y_matrix_real, coeffs_flat)
+        
+        if self.grid_shape is not None:
+            return result.reshape(self.grid_shape)
+            
+        return result
+
+    def inverse_transform(self, coeffs):
+        """Alias for inv_transform"""
+        return self.inv_transform(coeffs)
+
+
+# Backwards-compatible alias (deprecated).
+GeodesicSphericalHarmonics = PointSetSphericalHarmonics
