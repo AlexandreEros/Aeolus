@@ -44,7 +44,7 @@ class BarotropicVorticity:
         # Precompute planetary vorticity f = 2Ω sin(φ)
         # φ is latitude, but we have colatitude θ
         # sin(φ) = sin(π/2 - θ) = cos(θ)
-        self.f = 2 * self.Omega * cp.sin(cp.array(self.grid.lat_grid))  # Coriolis parameter
+        self.f = 2 * self.Omega * cp.sin(cp.array(self.grid.latitudes))  # Coriolis parameter
 
         # Precompute Laplacian eigenvalues
         l_vals = cp.arange(self.sh.l_max + 1, dtype=cp.float64)
@@ -133,8 +133,9 @@ class BarotropicVorticity:
         eta_grid = zeta_grid + self.f
         eta_c = self.sh.transform(eta_grid)
 
-        # Compute advection: -J(ψ, η)
-        jacobian_grid = self.so.jacobian_spectral(psi_c, eta_c, self.grid)
+        # # Compute advection: -J(ψ, η)
+        jacobian_grid = self.so.jacobian_pseudospectral(psi_c, eta_c)
+        # jacobian_grid = self.so.jacobian_pseudospectral(psi_c, eta_c, sin_theta=self.grid.sincolat)
         advection_c = self.sh.transform(-jacobian_grid)
 
         # Compute diffusion: ν∇²ζ
@@ -195,8 +196,8 @@ class BarotropicVorticity:
         eta_grid = zeta_grid + self.f
         eta_c = self.sh.transform(eta_grid)
 
-        jacobian_grid = self.so.jacobian_spectral(psi_c, eta_c, self.grid)
-        advection_c = self.sh.transform(-jacobian_grid)
+        J = self.so.jacobian_pseudospectral(psi_c, eta_c)
+        advection_c = self.sh.transform(-J)
         diffusion_c = self.nu * self.laplacian_eig[:, None] * zeta_curr
 
         dzeta_dt = advection_c + diffusion_c + forcing_coeffs
@@ -208,35 +209,4 @@ class BarotropicVorticity:
         zeta_next = zeta_prev + 2 * dt * dzeta_dt
 
         return zeta_next
-    
-
-    def streamfunction_to_velocity(self, psi_coeffs: cp.ndarray):
-        """
-        Return u, v on the grid, using fully spectral derivatives.
-
-        For streamfunction ψ on a sphere in (θ, λ) coordinates where θ is colatitude:
-            u_eastward = -1/(R sinθ) * ∂ψ/∂θ
-            v_northward = 1/(R sinθ) * ∂ψ/∂λ
-        """
-        # ∂ψ/∂λ (d_lambda_coeffs already includes /R, so result is ∂ψ/∂λ in physical units)
-        dpsi_dlon_coeffs = self.so.d_lambda_coeffs(psi_coeffs)
-        dpsi_dlon = self.sh.inv_transform(dpsi_dlon_coeffs)
-
-        # g = sinθ ∂ψ/∂θ
-        g_coeffs = self.so.sin_theta_d_theta_coeffs(psi_coeffs)
-        g_grid = self.sh.inv_transform(g_coeffs)  # = sinθ ∂ψ/∂θ
-
-        # Use 1D colatitudes to avoid broadcasting an extra longitude axis
-        theta = cp.asarray(self.grid.colatitudes)
-        sin_theta = cp.sin(theta)
-        sin_theta_safe = cp.where(cp.abs(sin_theta) < 1e-6, cp.nan, sin_theta)
-
-        # For streamfunction: u = -∂ψ/∂θ / (R sinθ) = -g/(R sinθ)
-        # v = ∂ψ/∂λ / (R sinθ)
-        u = g_grid / (self.R * sin_theta_safe[:, None])          # eastward (includes 1/sinθ factor)
-        v = dpsi_dlon / sin_theta_safe[:, None]            # northward (includes 1/sinθ factor)
-
-        u = cp.nan_to_num(u, nan=0.0)
-        v = cp.nan_to_num(v, nan=0.0)
-        return u, v
     

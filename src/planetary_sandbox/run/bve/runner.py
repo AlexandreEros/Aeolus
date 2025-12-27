@@ -9,24 +9,43 @@ from planetary_sandbox.planet import Planet
 from .barotropic_vorticity import BarotropicVorticity, BarotropicState
 from ...viz.vorticity_viewer import VorticityViewer
 
-def run_bve(*, planet, zeta0_lm: cp.ndarray, dt: float, t_end_days: float, out_dir: pathlib.Path, scenario: str = "two_vortices") -> int:
+def run_bve(planet: Planet, 
+            zeta0_lm: cp.ndarray,
+            dt_snapshots: float,
+            t_end_days: float, 
+            out_dir: pathlib.Path,
+            viscosity: float,
+            scenario: str = "two_vortices") -> int:
     state = BarotropicState(coeffs=zeta0_lm)
-    model = BarotropicVorticity(planet, scenario=scenario)
+    model = BarotropicVorticity(planet, scenario=scenario, viscosity=viscosity)
+
+    # CFL-based timestep from initial max speed and minimum edge length.
+    C = 0.5 # CFL safety factor
+    min_edge_length = getattr(planet.grid, "min_edge_length", None)
+    psi0_lm = planet.so.inv_laplacian(zeta0_lm)
+    u0, v0 = planet.so.velocity_from_streamfunction(psi0_lm)
+    max_speed = float(cp.max(cp.sqrt(u0**2 + v0**2)).item())
+    if min_edge_length and max_speed > 0:
+        dt_cfl = C * min_edge_length / max_speed
+    else:
+        dt_cfl = 600 # idk
 
     t = 0.0
     t_end = t_end_days * 86400.0
-    step = 0
     ovarall_step = 0
 
     all_zeta_lm = []
     vorticity_grid_snapshot_list = []
 
-    snap_every = max(1, int((6*3600) / dt))  # every 6 hours by default
+    snapshot_tol = 1e-6 * dt_snapshots
+    time_to_snapshot = 0.0
+    snapshot_times = []
 
-    while t <= t_end:
-        if step % snap_every == 0:
+    while t <= t_end + snapshot_tol:
+        if time_to_snapshot <= snapshot_tol:
             all_zeta_lm.append(cp.copy(state.coeffs))
             print(f"Time: {t/3600.0:8.2f} hrs | Step: {ovarall_step} ")
+            snapshot_times.append(t / 3600.0)
 
             # Dump ζ on grid for plotting
             zeta_grid = planet.sh.inv_transform(state.coeffs)
@@ -34,10 +53,17 @@ def run_bve(*, planet, zeta0_lm: cp.ndarray, dt: float, t_end_days: float, out_d
             
             # # Save as numpy array
             # cp.save(out_dir / f"zeta_{t/3600.0:04f}.npy", cp.asarray(zeta_grid))
+            time_to_snapshot = dt_snapshots
         
-        state = rk4_step(model, state, t, dt)
-        t += dt
-        step += 1
+        remaining = t_end - t
+        if remaining <= snapshot_tol:
+            break
+        dt_step = min(dt_cfl, time_to_snapshot, remaining)
+        if dt_step <= 0:
+            break
+        state = rk4_step(model, state, t, dt_step)
+        t += dt_step
+        time_to_snapshot = max(0.0, time_to_snapshot - dt_step)
         ovarall_step += 1
     
     all_zeta_lm = cp.array(all_zeta_lm)
@@ -48,12 +74,15 @@ def run_bve(*, planet, zeta0_lm: cp.ndarray, dt: float, t_end_days: float, out_d
 
     # Create viewer and plot summary
 
-    snapshot_times = [dt * snap_every * i / 3600 for i in range(all_vorticity_grid.shape[0])]
+    if snapshot_times:
+        snapshot_times_arr = np.array(snapshot_times, dtype=np.float64)
+    else:
+        snapshot_times_arr = np.empty((0,), dtype=np.float64)
 
     viewer = VorticityViewer(planet,
                              scenario=scenario,
                              vorticity_snapshots=cp.asnumpy(all_vorticity_grid),
-                             times=np.array(snapshot_times))
+                             times=snapshot_times_arr)
 
     # Generate individual snapshot plots for debugging
     viewer.plot_all_snapshots(scenario=scenario, out_dir=out_dir)
@@ -72,53 +101,3 @@ def rk4_step(model: BarotropicVorticity, y: BarotropicState, t: float, dt: float
     k3 = model.tendency(BarotropicState(y.coeffs + 0.5*dt*k2), forcing_coeffs)
     k4 = model.tendency(BarotropicState(y.coeffs + dt*k3), forcing_coeffs)
     return BarotropicState(y.coeffs + (dt/6.0)*(k1 + 2*k2 + 2*k3 + k4))
-
-def rhs(planet: Planet,
-        zeta_c: cp.ndarray, 
-        forcing_coeffs: cp.ndarray,
-        nu: float) -> cp.ndarray[Tuple[int, int], cp.complex128]:
-    """
-    Compute dζ/dt in spectral space
-
-    Parameters
-    ----------
-    planet : Planet
-        Planet object containing SH and SO
-    zeta_c : cp.ndarray
-        Current vorticity coefficients in spectral space for a planet
-    forcing_coeffs : cp.ndarray, optional
-        Forcing in spectral space
-    nu : float
-        Viscosity coefficient
-
-    Returns
-    -------
-    zeta_new_coeffs : cp.ndarray
-        dζ/dt in spectral space
-    """
-
-    sh = planet.sh
-    so = planet.so
-    grid = planet.grid
-    f = 2.0 * planet.params.angular_velocity * sh.sin_phi  # (n_lat,)
-    plNf = f[:, None] * cp.ones((grid.num_lon,))[None, :]  # (n_lat, n_lon)
-
-    # Get stream function
-    psi_c = so.inv_laplacian(zeta_c)
-
-    # Get absolute vorticity η = ζ + f
-    zeta_grid = sh.inv_transform(zeta_c)
-    eta_grid = zeta_grid + plNf
-    eta_c = sh.transform(eta_grid)
-
-    # Compute advection: -J(ψ, η)
-    jacobian_grid = so.jacobian_spectral(psi_c, eta_c, grid)
-    advection_c = sh.transform(-jacobian_grid)
-
-    # Compute diffusion: ν∇²ζ
-    diffusion_c = nu * so.lap_eigs[:, None] * zeta_c
-
-    # Total tendency
-    dzeta_dt = advection_c + diffusion_c + forcing_coeffs
-
-    return dzeta_dt

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import cupy as cp
 
+from ...planet.planet import Planet
+
 def _gaussian_on_sphere(lat, lon, lat0, lon0, sigma):
     # great-circle distance (cheap-ish)
     dlon = lon - lon0
@@ -10,49 +12,49 @@ def _gaussian_on_sphere(lat, lon, lat0, lon0, sigma):
     d = cp.arccos(cosd)
     return cp.exp(-(d*d)/(2*sigma*sigma))
 
-def _two_vortices(planet):
-    lat = cp.asarray(planet.grid.lat_grid)
-    lon = cp.asarray(planet.grid.lon_grid)
+def _two_vortices(planet: Planet):
+    lat = planet.grid.latitudes
+    lon = planet.grid.longitudes
     s = 10.0 * cp.pi/180.0
     z =  +5e-5 * _gaussian_on_sphere(lat, lon,  33*cp.pi/180,  cp.pi/2, s)
     z += -5e-5 * _gaussian_on_sphere(lat, lon, -33*cp.pi/180, -cp.pi/2, s)
     return z
 
 def _inverted_vortices(planet):
-    lat = cp.asarray(planet.grid.lat_grid)
-    lon = cp.asarray(planet.grid.lon_grid)
+    lat = planet.grid.latitudes
+    lon = planet.grid.longitudes
     s = 10.0 * cp.pi/180.0
     z =  -5e-5 * _gaussian_on_sphere(lat, lon,  33*cp.pi/180,  cp.pi/2, s)
     z += +5e-5 * _gaussian_on_sphere(lat, lon, -33*cp.pi/180, -cp.pi/2, s)
     return z
 
 def _polar_vortices(planet):
-    lat = cp.asarray(planet.grid.lat_grid)
-    lon = cp.asarray(planet.grid.lon_grid)
+    lat = planet.grid.latitudes
+    lon = planet.grid.longitudes
     s = 10.0 * cp.pi/180.0
     z =  +5e-5 * _gaussian_on_sphere(lat, lon,  cp.pi/2-1e-6,  0, s)
     z += -5e-5 * _gaussian_on_sphere(lat, lon, -cp.pi/2+1e-6, cp.pi, s)
     return z
 
 def _inverted_polar_vortices(planet):
-    lat = cp.asarray(planet.grid.lat_grid)
-    lon = cp.asarray(planet.grid.lon_grid)
+    lat = planet.grid.latitudes
+    lon = planet.grid.longitudes
     s = 10.0 * cp.pi/180.0
     z =  -5e-5 * _gaussian_on_sphere(lat, lon,  cp.pi/2-1e-6,  0, s)
     z += +5e-5 * _gaussian_on_sphere(lat, lon, -cp.pi/2+1e-6, cp.pi, s)
     return z
 
 def _equatorial_vortices(planet):
-    lat = cp.asarray(planet.grid.lat_grid)
-    lon = cp.asarray(planet.grid.lon_grid)
+    lat = planet.grid.latitudes
+    lon = planet.grid.longitudes
     s = 10.0 * cp.pi/180.0
     z =  +5e-5 * _gaussian_on_sphere(lat, lon, 0,  cp.pi/2, s)
     z += -5e-5 * _gaussian_on_sphere(lat, lon, 0, -cp.pi/2, s)
     return z
 
 def _inverted_equatorial_vortices(planet):
-    lat = cp.asarray(planet.grid.lat_grid)
-    lon = cp.asarray(planet.grid.lon_grid)
+    lat = planet.grid.latitudes
+    lon = planet.grid.longitudes
     s = 10.0 * cp.pi/180.0
     z =  -5e-5 * _gaussian_on_sphere(lat, lon, 0,  cp.pi/2, s)
     z += +5e-5 * _gaussian_on_sphere(lat, lon, 0, -cp.pi/2, s)
