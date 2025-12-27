@@ -1,4 +1,0 @@
-[console_scripts]
-psx-bve = planetary_sandbox.cli.bve:main
-psx-gen = planetary_sandbox.cli.generate_planet:main
-psx-recompile = planetary_sandbox.cli.clear_cache:main

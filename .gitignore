@@ -23,3 +23,6 @@ tests/.sh_cache/
 out/
 tmp_downloads/
 tests/*.png
+*.egg-info/
+
+*.bak
