@@ -2,7 +2,7 @@ import numpy as np
 import cupy as cp
 
 from typing import Optional, Tuple
-from ..numerics import SpectralOperators, LatLonSphericalHarmonics, PointSetSphericalHarmonics, GridGeometryBase, GeodesicGridGeometry
+from ..numerics import SpectralOperators, GeodesicSphericalHarmonics, GridGeometryBase, GeodesicGridGeometry
 from .planetary_parameters import PlanetaryParameters
 from .elevation_data import ElevationData
 from .terrain_spectral import generate_spectral_terrain_gpu, SpectralTerrainParams
@@ -21,9 +21,9 @@ class Planet:
 
     def __init__(self,
                  params: PlanetaryParameters,
-                 grid: GridGeometryBase,
+                 grid: GeodesicGridGeometry,
                  elevation: ElevationData,
-                 sh: LatLonSphericalHarmonics,
+                 sh: GeodesicSphericalHarmonics,
                  so: SpectralOperators):
 
         self.params = params
@@ -169,8 +169,8 @@ class Planet:
         # Create grid
         grid = GeodesicGridGeometry(grid_resolution, params.radius)
         
-        sh = PointSetSphericalHarmonics(grid.latitudes, grid.longitudes, l_max)
-        so = SpectralOperators(sh, params.radius)
+        sh = GeodesicSphericalHarmonics(grid, l_max)
+        so = SpectralOperators(sh, params.radius, grid)
 
         height_coeffs = generate_spectral_terrain_gpu(
             sph=sh,
@@ -185,15 +185,15 @@ class Planet:
             l_cut_noise=8,
             gamma_activity=4.0,
         )
-        strain_coeffs = cp.zeros_like(height_coeffs)
-        for step in range(30):
-            height_coeffs, strain_coeffs = tectonic_update_step(
-                sph=sh,
-                so=so,
-                h_lm=height_coeffs,
-                S_lm=strain_coeffs,
-                params=tect_params
-            )
+        # strain_coeffs = cp.zeros_like(height_coeffs)
+        # for step in range(20):
+        #     height_coeffs, strain_coeffs = tectonic_update_step(
+        #         sph=sh,
+        #         so=so,
+        #         h_lm=height_coeffs,
+        #         S_lm=strain_coeffs,
+        #         params=tect_params
+        #     )
 
         # Final terrain back to CPU grid:
         height = sh.inv_transform(height_coeffs)
@@ -292,15 +292,16 @@ class Planet:
 
         coeffs = self.elevation.sh_coeffs
 
+        coeffs = coeffs.copy()
         if l_max_filt is not None:
             # Keep only degrees 0..l_max_filt
             l_max_filt = min(l_max_filt, coeffs.shape[0] - 1)
-            coeffs = coeffs[:l_max_filt + 1]
+            coeffs[l_max_filt + 1:, :] = 0.0
 
         if m_max_filt is not None:
             # Keep only orders 0...m_max_filt
             m_max_filt = min(m_max_filt, coeffs.shape[1] - 1)
-            coeffs = coeffs[:, :m_max_filt + 1]
+            coeffs[:, m_max_filt + 1:] = 0.0
 
         reconstructed = self.sh.inv_transform(coeffs)
 

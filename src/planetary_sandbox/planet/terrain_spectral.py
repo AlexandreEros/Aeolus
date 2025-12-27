@@ -8,7 +8,8 @@ from dataclasses import dataclass
 # Import as TYPE_CHECKING to avoid circular imports at runtime if needed
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from planetary_sandbox.numerics.spherical_harmonics import LatLonSphericalHarmonics
+    # from planetary_sandbox.numerics.spherical_harmonics import LatLonSphericalHarmonics
+    from planetary_sandbox.numerics.optimized_geodesic_sh import GeodesicSphericalHarmonics
 
 
 @dataclass
@@ -24,7 +25,7 @@ class SpectralTerrainParams:
 
 
 def generate_spectral_terrain_gpu(
-    sph: LatLonSphericalHarmonics,
+    sph: GeodesicSphericalHarmonics,
     params: SpectralTerrainParams,
 ) -> cp.ndarray:
     """
@@ -37,7 +38,7 @@ def generate_spectral_terrain_gpu(
 
     Parameters
     ----------
-    sph : SphericalHarmonics
+    sph : GeodesicSphericalHarmonics
         Spherical harmonics engine instance (already initialized with l_max).
     params : SpectralTerrainParams
         Controls spectral slope, amplitude, RNG seed, etc.
@@ -86,12 +87,14 @@ def generate_spectral_terrain_gpu(
 
     # --- Normalize and scale on GPU ---
     mean = cp.mean(height_gpu)
-    std = cp.std(height_gpu)
     height_gpu = height_gpu - mean
-    if std > 0:
-        height_gpu = height_gpu / std
+    std = cp.std(height_gpu)
+    if std > 0 and params.rms_elevation is not None:
+        coeffs = coeffs * (params.rms_elevation / std)
 
-    # height_gpu = height_gpu * params.rms_elevation
+    # Ensure zero-mean if low degrees are allowed.
+    if params.l_min <= 0:
+        coeffs[0, 0] = 0.0
 
     return coeffs
 

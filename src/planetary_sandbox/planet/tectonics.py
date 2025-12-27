@@ -8,7 +8,7 @@ import cupy as cp
 # for type hints only
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
-    from ..numerics.spherical_harmonics import LatLonSphericalHarmonics
+    from ..numerics import GeodesicSphericalHarmonics
     from ..numerics.spectral_operators import SpectralOperators
 
 
@@ -27,7 +27,7 @@ class TectonicParams:
 
 
 def tectonic_update_step(
-    sph: LatLonSphericalHarmonics,
+    sph: GeodesicSphericalHarmonics,
     so: SpectralOperators,
     h_lm: cp.ndarray,
     S_lm: cp.ndarray,
@@ -43,9 +43,8 @@ def tectonic_update_step(
 
     Parameters
     ----------
-    sph : SphericalHarmonicsGPU
-        The  SH engine (must support reconstruct_from_coeffs_cuda and
-        decompose_field_cuda using CuPy arrays).
+    sph : GeodesicSphericalHarmonics
+        The SH engine (must support inv_transform/transform using CuPy arrays).
     so : SpectralOperators
         Spectral operators on the sphere (for Laplacian, gradients, etc.).
     h_lm : cp.ndarray, shape (L+1, L+1)
@@ -69,8 +68,9 @@ def tectonic_update_step(
 
     # Spectral diffusion (erosion + strain smoothing)
     L = so.lap_eigs  # spherical Laplacian eigenvalues
-    decay_h = cp.exp(-params.kappa_height * L * so.R**2 * dt)
-    decay_S = cp.exp(-params.kappa_strain * L * so.R**2 * dt)
+    # L is negative (-l(l+1)/R^2), so this decays higher l when kappa > 0.
+    decay_h = cp.exp(params.kappa_height * L * so.R**2 * dt)
+    decay_S = cp.exp(params.kappa_strain * L * so.R**2 * dt)
 
     decay_h_mat = decay_h[:, None]
     decay_S_mat = decay_S[:, None]
@@ -100,7 +100,7 @@ def tectonic_update_step(
 
     # Build an 'activity' field from strain
     # Here we use a simple normalized |S|; we could alternatively use ∇²h or whatever.
-    S_abs = cp.abs(S_lm)
+    S_abs = cp.abs(S)
     S_min = S_abs.min()
     S_max = S_abs.max()
     denom = S_max - S_min + 1e-12
@@ -108,9 +108,10 @@ def tectonic_update_step(
 
     # Sharpen belts: values near 1 become much stronger
     # A = S_norm ** params.gamma_activity  # still in [0,1]
-    L_abs = cp.abs(so.lap_eigs[:, None] * h_lm)
+    L_h = so.laplacian_field(h_lm)
+    L_abs = cp.abs(L_h)
     L_norm = (L_abs - L_abs.min()) / (L_abs.max() - L_abs.min() + 1e-12)
-    A = sph.inv_transform(((S_norm + L_norm) / 2) ** params.gamma_activity)
+    A = ((S_norm + L_norm) / 2) ** params.gamma_activity
 
 
     # Gate high-frequency noise by activity and update h
