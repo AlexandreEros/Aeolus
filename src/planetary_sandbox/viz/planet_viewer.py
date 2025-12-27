@@ -6,7 +6,6 @@ from matplotlib.colors import hsv_to_rgb
 
 from ..planet import Planet
 from ..numerics import (
-    LatLonSphericalHarmonics,
     SpectralOperators,
     GridGeometryBase,
     LatLonGridGeometry,
@@ -45,6 +44,11 @@ class PlanetViewer:
             if isinstance(values, cp.ndarray):
                 values = cp.asnumpy(values)
             mapped = geodesic_to_latlon_grid(values, self.grid, view_grid, method="linear")
+            if np.isnan(mapped).any():
+                mapped_nearest = geodesic_to_latlon_grid(
+                    values, self.grid, view_grid, method="nearest"
+                )
+                mapped = np.where(np.isnan(mapped), mapped_nearest, mapped)
             return view_grid, mapped
 
         fig = plt.figure(figsize=(16, 10))
@@ -55,7 +59,7 @@ class PlanetViewer:
         # 1. Surface elevation map
         ax1 = plt.subplot(3, 3, 1)
         surface_grid, surface_vals = _map_to_view(self.planet.elevation.surface_height)
-        self.plot_scalar(q=surface_vals, # / 1000,
+        self.plot_scalar(q=surface_vals / 1000,
                          grid=surface_grid,
                          title=f"Surface Elevation (km)",
                          cmap='terrain',
@@ -103,6 +107,9 @@ class PlanetViewer:
         # 5. Statistics text
         ax5 = plt.subplot(3, 3, 5)
         ax5.axis('off')
+        grid_points = getattr(self.grid, "n_points", "N/A")
+        if hasattr(self.grid, "num_lat") and hasattr(self.grid, "num_lon"):
+            grid_points = f"{self.grid.num_lat} x {self.grid.num_lon}"
         stats_text = f"""
         Planet Statistics:
         ------------------
@@ -118,7 +125,7 @@ class PlanetViewer:
         Elevation Range: [{self.planet.elevation.surface_height.min()/1000:.1f},
                           {self.planet.elevation.surface_height.max()/1000:.1f}] km
 
-        Grid points: {getattr(self.grid, 'n_vertices', 'N/A')}
+        Grid points: {grid_points}
         Grid faces: {getattr(self.grid, 'n_faces', 'N/A')}
         SH Degrees: {self.planet.elevation.max_degree}
         """
@@ -134,8 +141,11 @@ class PlanetViewer:
         radial_deviation = (self.planet.elevation.radial_distance -
                            self.planet.params.radius)
         sh_coeffs_rad_dev = self.planet.sh.transform(radial_deviation)
+        sh_coeffs_rad_dev_filt = sh_coeffs_rad_dev.copy()
+        sh_coeffs_rad_dev_filt[l_max_filt + 1:, :] = 0.0
+        sh_coeffs_rad_dev_filt[:, m_max_filt + 1:] = 0.0
         low_deg_radial_deviation = self.planet.sh.inv_transform(
-            sh_coeffs_rad_dev[:l_max_filt+1, :m_max_filt+1])
+            sh_coeffs_rad_dev_filt)
 
         low_radial_grid, low_radial_vals = _map_to_view(low_deg_radial_deviation / 1000)
         self.plot_scalar(low_radial_vals,

@@ -6,7 +6,8 @@ def plot_velocity_streamlines(U: Tuple[np.ndarray, np.ndarray],
                               planet: Planet,
                               ax = None,
                               density: float = 1.5,
-                              title: str = "Global Flow Streamlines"):
+                              title: str = "Global Flow Streamlines",
+                              grid = None):
     """
     Displays a matplotlib streamplot of the velocity field U on the planet.
 
@@ -16,6 +17,8 @@ def plot_velocity_streamlines(U: Tuple[np.ndarray, np.ndarray],
         Zonal (eastward) and Meridional (northward) velocity components [m/s].
     planet : Planet
         Planet object containing grid information.
+    grid : optional
+        Grid to use for plotting. Defaults to planet.grid.
     ax : plt.Axes, optional
         Matplotlib axes to plot on. If None, creates a new figure.
     density : float
@@ -41,11 +44,19 @@ def plot_velocity_streamlines(U: Tuple[np.ndarray, np.ndarray],
         v_grid = cp.asnumpy(v_grid)
 
     # Get grid coordinates (radians)
-    lons = planet.grid.longitudes  # Typically 0 to 2pi
-    lats = planet.grid.latitudes   # Typically pi/2 to -pi/2 (decreasing)
+    if grid is None:
+        grid = planet.grid
+
+    lons = grid.longitudes  # Typically 0 to 2pi
+    lats = grid.latitudes   # Typically pi/2 to -pi/2 (decreasing)
 
     # Streamplot requires strictly increasing x and y
     # Check if latitudes are decreasing (common in generated grids)
+    if cp is not None and isinstance(lons, cp.ndarray):
+        lons = cp.asnumpy(lons)
+    if cp is not None and isinstance(lats, cp.ndarray):
+        lats = cp.asnumpy(lats)
+
     if lats[0] > lats[-1]:
         # Flip everything along latitude axis (axis 0)
         lats = np.flip(lats)
