@@ -8,7 +8,7 @@ def cartesian_to_spherical(cartesian_vertex_array: np.ndarray):
         spherical_array: Array of shape (..., 3) containing:
             - r: Radius
             - longitude: Azimuthal angle in [-pi, pi]
-            - latitude: Polar elevation angle in [-pi/2, pi/2]
+            - latitude: Polar elevation angle in [-pi/2, pi/2] (geocentric latitude)
     """
     # Use slicing instead of transpose to preserve leading dimensions for shape (..., 3)
     x = cartesian_vertex_array[..., 0]

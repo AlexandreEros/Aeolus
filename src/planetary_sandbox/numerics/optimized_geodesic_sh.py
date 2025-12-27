@@ -10,69 +10,117 @@ from pathlib import Path
 import pickle
 from scipy.optimize import lsq_linear
 
+from planetary_sandbox.numerics.geodesic_grid import GeodesicGridGeometry
+from planetary_sandbox.numerics.fast_geodesic_sh import PointSetSphericalHarmonics
 
-class OptimizedGeodesicSH:
+
+class GeodesicSphericalHarmonics:
     """
-    Geodesic grid SH with automatically optimized quadrature weights.
-    
-    The Voronoi cell areas don't provide orthogonality for SH integration.
-    This class computes optimal weights via least-squares, then uses them
-    for all transforms.
+    Geodesic grid SH with optional optimized quadrature weights.
+
+    By default, weights are optimized (least-squares) and cached for reuse.
     """
-    
-    def __init__(self, grid, l_max, cache_dir=None):
+
+    def __init__(self, grid: GeodesicGridGeometry, l_max=None, cache_dir=None,
+                 weights="voronoi", latitudes=None, longitudes=None):
         """
         Parameters
         ----------
-        grid : GeodesicGridGeometry
-            The geodesic grid
+        grid : GeodesicGridGeometry, optional
+            Geodesic grid geometry. Required for optimized weights.
         l_max : int
             Maximum SH degree
         cache_dir : Path, optional
             Directory to cache computed weights. If None, recomputes every time.
+        weights : {"optimize", "voronoi", "uniform"} or array-like, optional
+            Weight mode when a grid is provided. For point sets without a grid,
+            provide an explicit weights array or leave as None for uniform.
+        latitudes, longitudes : array-like, optional
+            Point-set sampling (used when no grid is provided).
         """
-        from planetary_sandbox.numerics.fast_geodesic_sh import PointSetSphericalHarmonics
-        
+
         self.grid = grid
+        if l_max is None:
+            raise ValueError("l_max is required.")
         self.l_max = l_max
         self.cache_dir = Path(cache_dir) if cache_dir else None
         self._basis_id = "complex_m_ge_0_v2"
-        
-        # Try to load cached weights
-        weights = self._load_cached_weights()
-        
-        if weights is None:
-            # Step 1: Build initial SH with Voronoi weights
-            print(f"Computing optimal weights for resolution={grid.resolution}, l_max={l_max}...")
-            
-            sh_initial = PointSetSphericalHarmonics(
-                grid.latitudes, 
-                grid.longitudes,
+
+        if grid is None:
+            if latitudes is None or longitudes is None:
+                raise ValueError("Provide either grid or latitudes/longitudes.")
+            if isinstance(weights, str) and weights in ("optimize", "voronoi"):
+                raise ValueError("weights='optimize' or 'voronoi' requires a grid.")
+            if weights is None or (isinstance(weights, str) and weights == "uniform"):
+                weights_arr = None
+            else:
+                weights_arr = weights
+            self.sh = PointSetSphericalHarmonics(
+                latitudes,
+                longitudes,
                 l_max,
-                weights=grid.cell_areas
+                weights=weights_arr
             )
-            
-            # Step 2: Compute optimal weights
-            Y = cp.asnumpy(sh_initial.Y_matrix)
-            initial_weights = cp.asnumpy(grid.cell_areas)
-            
-            weights = self._compute_optimal_weights(Y, initial_weights, l_max)
-            
-            # Cache for next time
-            self._save_cached_weights(weights)
-            print("Weights computed and cached")
+            self.weights = self.sh.weights
+            return
+
+        if latitudes is not None or longitudes is not None:
+            raise ValueError("Provide either grid or latitudes/longitudes, not both.")
+
+        weights_arr = None
+        if isinstance(weights, str):
+            weights_mode = weights.lower()
+            if weights_mode == "optimize":
+                # Try to load cached weights
+                weights_arr = self._load_cached_weights()
+
+                if weights_arr is None:
+                    # Step 1: Build initial SH with Voronoi weights
+                    print(f"Computing optimal weights for resolution={grid.resolution}, l_max={l_max}...")
+
+                    sh_initial = PointSetSphericalHarmonics(
+                        grid.latitudes,
+                        grid.longitudes,
+                        l_max,
+                        weights=grid.cell_areas
+                    )
+
+                    # Step 2: Compute optimal weights
+                    Y = cp.asnumpy(sh_initial.Y_matrix)
+                    initial_weights = cp.asnumpy(grid.cell_areas)
+
+                    weights_arr = self._compute_optimal_weights(Y, initial_weights, l_max)
+
+                    # Cache for next time
+                    self._save_cached_weights(weights_arr)
+                    print("Weights computed and cached")
+                else:
+                    print(f"Loaded cached weights for resolution={grid.resolution}, l_max={l_max}")
+            elif weights_mode == "voronoi":
+                w = grid.cell_areas
+                # If cell_areas are physical areas (m^2), convert to solid angle:
+                w = w / (self.grid.radius**2)
+                # Always normalize so sum(w) == 4π (removes any residual scaling drift):
+                w = w * (4*cp.pi) / cp.sum(w)
+                weights_arr = w
+            elif weights_mode == "uniform":
+                weights_arr = None
+            else:
+                raise ValueError(f"Unknown weights mode: {weights}")
+        elif weights is None:
+            weights_arr = None
         else:
-            print(f"Loaded cached weights for resolution={grid.resolution}, l_max={l_max}")
-        
-        # Step 3: Build final SH object with optimized weights
+            weights_arr = weights
+
+        # Build final SH object with chosen weights
         self.sh = PointSetSphericalHarmonics(
             grid.latitudes,
-            grid.longitudes, 
+            grid.longitudes,
             l_max,
-            weights=cp.array(weights)
+            weights=cp.array(weights_arr) if weights_arr is not None else None
         )
-        
-        self.weights = cp.array(weights)
+
+        self.weights = self.sh.weights
     
     
     def _get_cache_filename(self):
@@ -164,7 +212,7 @@ class OptimizedGeodesicSH:
     
     
     def transform(self, values):
-        """Forward transform using optimized weights."""
+        """Forward transform using configured weights."""
         return self.sh.transform(values)
     
     
@@ -177,14 +225,16 @@ class OptimizedGeodesicSH:
         """Alias for inv_transform."""
         return self.inv_transform(coeffs)
 
+    def __getattr__(self, name):
+        return getattr(self.sh, name)
 
-def test_optimized_vs_voronoi():
+
+def test_optimized_vs_voronoi(resolution=4, radius=1.0, l_max=15):
     """Compare Voronoi weights vs optimized weights."""
     from planetary_sandbox.numerics import GeodesicGridGeometry
     from planetary_sandbox.numerics.fast_geodesic_sh import PointSetSphericalHarmonics
     
-    grid = GeodesicGridGeometry(resolution=4, radius=1.0)
-    l_max = 5
+    grid = GeodesicGridGeometry(resolution=resolution, radius=radius)
     
     # Test with Voronoi weights
     print("Testing with Voronoi cell areas:")
@@ -206,7 +256,7 @@ def test_optimized_vs_voronoi():
     
     # Test with optimized weights  
     print("\nTesting with optimized weights:")
-    sh_opt = OptimizedGeodesicSH(grid, l_max, cache_dir=Path("tests/.sh_cache"))
+    sh_opt = GeodesicSphericalHarmonics(grid, l_max, cache_dir=Path("tests/.sh_cache"))
     
     Y_opt = sh_opt.sh.Y_matrix
     W_opt = cp.diag(sh_opt.weights)
@@ -227,3 +277,6 @@ def test_optimized_vs_voronoi():
 
 if __name__ == "__main__":
     test_optimized_vs_voronoi()
+
+# Backwards-compatible alias
+OptimizedGeodesicSH = GeodesicSphericalHarmonics

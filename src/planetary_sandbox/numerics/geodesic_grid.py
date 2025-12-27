@@ -1,6 +1,7 @@
 import numpy as np
 import cupy as cp
 from scipy import sparse
+from scipy.spatial.transform import Rotation
 
 from .cartesian_to_spherical import cartesian_to_spherical
 from .grid_base import GridGeometry
@@ -32,6 +33,11 @@ class GeodesicGridGeometry(GridGeometry):
             self.resolution = resolution
             self.radius = radius
 
+            self.ico_vertices_array = np.array(self.ico_vertices)
+            anti_singularity_rotation = Rotation.from_rotvec(np.array([1e-2, 0, 0]))
+            self.ico_vertices_array = anti_singularity_rotation.apply(self.ico_vertices_array)
+            self.ico_vertices = self.ico_vertices_array.tolist()
+
             self.mesh = self.geodesic_subdivide()
             self.points = self.radius * self.mesh[0]
             self.faces = self.mesh[1]
@@ -39,12 +45,18 @@ class GeodesicGridGeometry(GridGeometry):
             self.n_points = len(self.points)
             self.n_faces = len(self.faces)
 
+            self.min_edge_length = None
             self.adjacency_matrix = self.build_adjacency_matrix()
+
 
             self.spherical_coordinates = cp.array(cartesian_to_spherical(self.points))
             self.radial_distances = cp.ascontiguousarray(self.spherical_coordinates[:,0])
             self.longitudes = cp.ascontiguousarray(self.spherical_coordinates[:,1])
             self.latitudes = cp.ascontiguousarray(self.spherical_coordinates[:,2])
+
+            self.sinlat = cp.sin(self.latitudes)
+            self.coslat = cp.cos(self.latitudes)
+            self.sincolat = cp.sin(cp.pi/2 - self.latitudes)
 
             self.volume = (4.0/3.0) * np.pi * (self.radius**3) / self.n_points
             self.reference_radius = self.radius
@@ -144,6 +156,7 @@ class GeodesicGridGeometry(GridGeometry):
         row_indices = []
         col_indices = []
         data = []
+        min_edge_length = None
 
         for face in self.faces:
             # Each face is a tuple of three vertex indices
@@ -151,11 +164,17 @@ class GeodesicGridGeometry(GridGeometry):
 
             for (a, b) in [(v1, v2), (v2, v3), (v3, v1)]:
                 dist = np.linalg.norm(self.points[a] - self.points[b])
+                if dist > 0 and (min_edge_length is None or dist < min_edge_length):
+                    min_edge_length = dist
                 weight = 1.0 / dist if dist > 0 else 0
 
                 row_indices.extend([a, b])
                 col_indices.extend([b, a])
                 data.extend([weight, weight])
+
+        if min_edge_length is None:
+            min_edge_length = 0.0
+        self.min_edge_length = float(min_edge_length)
 
         return sparse.coo_matrix((data, (row_indices, col_indices)), shape=(self.n_points, self.n_points))
 

@@ -2,7 +2,6 @@ import cupy as cp
 from cupyx.scipy import sparse
 
 
-
 class DifferentialOperatorsSpherical:
     def __init__(
         self,
@@ -116,23 +115,30 @@ class DifferentialOperatorsSpherical:
             # Assign coefficients to the sparse matrices
             for idx, j in enumerate(neighbors):
                 rows_lambda.append(i)
-                cols_lambda.append(j)
-                data_lambda.append(C_lambda[idx])
+                cols_lambda.append(j.item())
+                data_lambda.append(C_lambda[idx].item())
 
                 rows_phi.append(i)
-                cols_phi.append(j)
-                data_phi.append(C_phi[idx])
+                cols_phi.append(j.item())
+                data_phi.append(C_phi[idx].item())
 
             # Central point
             rows_lambda.append(i)
             cols_lambda.append(i)
-            data_lambda.append(-cp.sum(C_lambda))  # C_i_lambda multiplies f_i
+            data_lambda.append(-cp.sum(C_lambda).item())  # C_i_lambda multiplies f_i
 
             rows_phi.append(i)
             cols_phi.append(i)
-            data_phi.append(-cp.sum(C_phi))  # C_i_phi multiplies f_i
+            data_phi.append(-cp.sum(C_phi).item())  # C_i_phi multiplies f_i
 
         # Create sparse matrices in COO format, then convert to CSR
+        data_lambda = cp.asarray(data_lambda, dtype=cp.float64).ravel()
+        rows_lambda = cp.asarray(rows_lambda, dtype=cp.int64).ravel()
+        cols_lambda = cp.asarray(cols_lambda, dtype=cp.int64).ravel()
+        data_phi = cp.asarray(data_phi, dtype=cp.float64).ravel()
+        rows_phi = cp.asarray(rows_phi, dtype=cp.int64).ravel()
+        cols_phi = cp.asarray(cols_phi, dtype=cp.int64).ravel()
+
         M_lambda = sparse.coo_matrix((data_lambda, (rows_lambda, cols_lambda)), shape=(N, N)).tocsr()
         M_phi = sparse.coo_matrix((data_phi, (rows_phi, cols_phi)), shape=(N, N)).tocsr()
 
