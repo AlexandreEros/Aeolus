@@ -9,6 +9,39 @@ from ..planet import Planet
 from ..numerics import LatLonGridGeometry, geodesic_to_latlon_grid
 
 class VorticityViewer:
+    @staticmethod
+    def _build_summary_text(duration_str, steps_str, circ0, circ1, ke0, ke1,
+                            max_z0, max_z1, rms_z0, rms_z1, max_speed0, max_speed1):
+        decay_pct = (1 - ke1 / ke0) * 100 if ke0 != 0 else 0.0
+        return (
+            "\n"
+            "Simulation Overview\n"
+            "-------------------\n"
+            f"Duration: {duration_str}\n"
+            f"Snapshots: {steps_str}\n"
+            "\n"
+            "Total Circulation (Gamma):\n"
+            f"Initial: {circ0:+.2e} m^2/s\n"
+            f"Final:   {circ1:+.2e} m^2/s\n"
+            "\n"
+            "Total Kinetic Energy (K):\n"
+            f"Initial: {ke0:.2e} J/kg\n"
+            f"Final:   {ke1:.2e} J/kg\n"
+            f"Decay:   {decay_pct:.1f}%\n"
+            "\n"
+            "Vorticity (zeta):\n"
+            f"Initial Max: {max_z0:.2e} s^-1\n"
+            f"Final Max:   {max_z1:.2e} s^-1\n"
+            "\n"
+            "RMS Vorticity (Enstrophy):\n"
+            f"Initial: {rms_z0:.2e}\n"
+            f"Final:   {rms_z1:.2e}\n"
+            "\n"
+            "Max Flow Speed:\n"
+            f"Initial: {max_speed0:.2f} m/s\n"
+            f"Final:   {max_speed1:.2f} m/s\n"
+        )
+
     def __init__(self, 
                  planet: Planet,
                  scenario: str,
@@ -52,7 +85,7 @@ class VorticityViewer:
         self.zeta_final = vorticity_snapshots[-1]
         self.times = times
 
-        # If the snapshots carry a duplicate 2π longitude column, drop it to keep
+        # If the snapshots carry a duplicate 2pi longitude column, drop it to keep
         # the data consistent with the periodic grid used by the spectral transforms.
         expected_nlon = getattr(self.planet.sh, "num_lon", None)
         if self.zeta_init.ndim == 2 and expected_nlon is not None and self.zeta_init.shape[1] == expected_nlon + 1:
@@ -138,6 +171,8 @@ class VorticityViewer:
             figsize=(24, 6 * nsnap),
             gridspec_kw={"width_ratios": [1, 1, 1, 0.9]},
         )
+        if nsnap == 1:
+            axes = axes[None, :]
 
         sample_snap = self.snapshots[0]
         if isinstance(sample_snap, cp.ndarray):
@@ -204,9 +239,9 @@ class VorticityViewer:
                                  aspect='equal',
                                  origin='lower')
             axes[idx, 0].set_title(f"Vorticity @ t={time_hrs:.1f}h")
-            axes[idx, 0].set_xlabel("Longitude (°)")
-            axes[idx, 0].set_ylabel("Latitude (°)")
-            plt.colorbar(im0, ax=axes[idx, 0], orientation='horizontal', pad=0.1, fraction=0.05, label='s⁻¹')
+            axes[idx, 0].set_xlabel("Longitude (deg)")
+            axes[idx, 0].set_ylabel("Latitude (deg)")
+            plt.colorbar(im0, ax=axes[idx, 0], orientation='horizontal', pad=0.1, fraction=0.05, label='s^-1')
 
             # Streamfunction
             im1 = axes[idx, 1].imshow(np.flip(psi_plot, axis=0),
@@ -215,9 +250,9 @@ class VorticityViewer:
                                  aspect='equal',
                                  origin='lower')
             axes[idx, 1].set_title(f"Streamfunction @ t={time_hrs:.1f}h")
-            axes[idx, 1].set_xlabel("Longitude (°)")
-            axes[idx, 1].set_ylabel("Latitude (°)")
-            plt.colorbar(im1, ax=axes[idx, 1], orientation='horizontal', pad=0.1, fraction=0.05, label='m²/s')
+            axes[idx, 1].set_xlabel("Longitude (deg)")
+            axes[idx, 1].set_ylabel("Latitude (deg)")
+            plt.colorbar(im1, ax=axes[idx, 1], orientation='horizontal', pad=0.1, fraction=0.05, label='m^2/s')
 
             # Velocity streamlines
             axes[idx, 2] = plot_velocity_streamlines((u_plot, v_plot), self.planet, ax=axes[idx, 2],
@@ -281,9 +316,9 @@ class VorticityViewer:
                          aspect='equal',
                          origin='lower')
         ax1.set_title("Initial Vorticity")
-        ax1.set_xlabel("Longitude (°)")
-        ax1.set_ylabel("Latitude (°)")
-        plt.colorbar(im1, ax=ax1, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='s⁻¹')
+        ax1.set_xlabel("Longitude (deg)")
+        ax1.set_ylabel("Latitude (deg)")
+        plt.colorbar(im1, ax=ax1, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='s^-1')
 
         # --- 2. Final Vorticity (Top Right) ---
         ax2 = fig.add_subplot(gs[0, 2])
@@ -293,9 +328,9 @@ class VorticityViewer:
                          aspect='equal',
                          origin='lower')
         ax2.set_title("Final Vorticity")
-        ax2.set_xlabel("Longitude (°)")
-        ax2.set_ylabel("Latitude (°)")
-        plt.colorbar(im2, ax=ax2, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='s⁻¹')
+        ax2.set_xlabel("Longitude (deg)")
+        ax2.set_ylabel("Latitude (deg)")
+        plt.colorbar(im2, ax=ax2, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='s^-1')
 
         # --- 3. Initial Flow (Middle Left) ---
         ax3 = fig.add_subplot(gs[1, 0])
@@ -313,9 +348,9 @@ class VorticityViewer:
                          aspect='equal',
                          origin='lower')
         ax5.set_title("Initial Streamfunction")
-        ax5.set_xlabel("Longitude (°)")
-        ax5.set_ylabel("Latitude (°)")
-        plt.colorbar(im5, ax=ax5, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='m²/s')
+        ax5.set_xlabel("Longitude (deg)")
+        ax5.set_ylabel("Latitude (deg)")
+        plt.colorbar(im5, ax=ax5, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='m^2/s')
 
         # --- 6. Final Streamfunction (Bottom Right) ---
         ax6 = fig.add_subplot(gs[2, 2])
@@ -325,9 +360,9 @@ class VorticityViewer:
                          aspect='equal',
                          origin='lower')
         ax6.set_title("Final Streamfunction")
-        ax6.set_xlabel("Longitude (°)")
-        ax6.set_ylabel("Latitude (°)")
-        plt.colorbar(im6, ax=ax6, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='m²/s')
+        ax6.set_xlabel("Longitude (deg)")
+        ax6.set_ylabel("Latitude (deg)")
+        plt.colorbar(im6, ax=ax6, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='m^2/s')
 
         # --- 7. Stats (Top Middle) ---
         ax_text = fig.add_subplot(gs[0, 1])
@@ -359,33 +394,20 @@ class VorticityViewer:
         duration_str = f"{self.times[-1]:.1f} hours" if self.times is not None and len(self.times) > 0 else "N/A"
         steps_str = f"{len(self.times)}" if self.times is not None else "N/A"
 
-        stats_str = f"""
-        Simulation Overview
-        ━━━━━━━━━━━━━━━━━━━
-        Duration: {duration_str}
-        Snapshots: {steps_str}
-
-        Total Circulation (Γ):
-        Initial: {circ0:+.2e} m²/s
-        Final:   {circ1:+.2e} m²/s
-
-        Total Kinetic Energy (K):
-        Initial: {ke0:.2e} J/kg
-        Final:   {ke1:.2e} J/kg
-        Decay:   {(1 - ke1/ke0)*100:.1f}%
-
-        Vorticity (ζ):
-        Initial Max: {max_z0:.2e} s⁻¹
-        Final Max:   {max_z1:.2e} s⁻¹
-
-        RMS Vorticity (Enstrophy):
-        Initial: {rms_z0:.2e}
-        Final:   {rms_z1:.2e}
-
-        Max Flow Speed:
-        Initial: {max_speed0:.2f} m/s
-        Final:   {max_speed1:.2f} m/s
-        """
+        stats_str = self._build_summary_text(
+            duration_str=duration_str,
+            steps_str=steps_str,
+            circ0=circ0,
+            circ1=circ1,
+            ke0=ke0,
+            ke1=ke1,
+            max_z0=max_z0,
+            max_z1=max_z1,
+            rms_z0=rms_z0,
+            rms_z1=rms_z1,
+            max_speed0=max_speed0,
+            max_speed1=max_speed1,
+        )
         ax_text.text(0.5, 0.5, stats_str, ha='center', va='center',
                      fontfamily='monospace', fontsize=11)
 
@@ -401,7 +423,7 @@ class VorticityViewer:
                 enstrophy = np.sqrt(np.mean(snapshots**2, axis=1))
             enstrophy_norm = enstrophy / enstrophy[0]
 
-            ax_plot.plot(self.times, enstrophy_norm, 'k-', linewidth=1.5, label='RMS ζ (norm)')
+            ax_plot.plot(self.times, enstrophy_norm, 'k-', linewidth=1.5, label='RMS zeta (norm)')
             ax_plot.set_xlabel('Time (hours)')
             ax_plot.set_ylabel('Normalized Magnitude')
             ax_plot.set_title('Conservation Check')

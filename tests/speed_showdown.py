@@ -4,7 +4,7 @@ import cupy as cp
 
 from planetary_sandbox.numerics import (
     LatLonSphericalHarmonics, 
-    PointSetSphericalHarmonics
+    PointSetSphericalHarmonics,
 )
 
 print("--- Speed Showdown ---\n")
@@ -61,20 +61,25 @@ print(f"Old Method Time: {t_old*1000:.2f} ms")
 # ==========================================
 # 3. Benchmark New Method (Matrix)
 # ==========================================
-print("\nBenchmarking New Method (FastSphericalHarmonics - Matrix)...")
+print("\nBenchmarking New Method (PointSetSphericalHarmonics - Matrix)...")
 
 # Initialization (One-time cost)
 t0_init = time.time()
-fast_sh = PointSetSphericalHarmonics(lat_grid.ravel(), lon_grid.ravel(), l_max, weights=weights.ravel())
+pointset_sh = PointSetSphericalHarmonics(
+    lat_grid.ravel(),
+    lon_grid.ravel(),
+    l_max=l_max,
+    weights=weights.ravel(),
+)
 cp.cuda.Stream.null.synchronize()
 print(f"Initialization Time: {(time.time()-t0_init)*1000:.2f} ms")
 
 # Warmup
-_ = fast_sh.transform(data_cp)
+_ = pointset_sh.transform(data_cp)
 cp.cuda.Stream.null.synchronize()
 
 t0 = time.time()
-coeffs_new = fast_sh.transform(data_cp)
+coeffs_new = pointset_sh.transform(data_cp)
 cp.cuda.Stream.null.synchronize()
 t_new = time.time() - t0
 print(f"New Method Time: {t_new*1000:.2f} ms")

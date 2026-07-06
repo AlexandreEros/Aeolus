@@ -10,13 +10,15 @@ from pathlib import Path
 import pickle
 from scipy.optimize import lsq_linear
 
-from planetary_sandbox.numerics.geodesic_grid import GeodesicGridGeometry
-from planetary_sandbox.numerics.fast_geodesic_sh import PointSetSphericalHarmonics
+from .geodesic_grid import GeodesicGridGeometry
+from .fast_geodesic_sh import PointSetSphericalHarmonics
+
+__all__ = ["GeodesicSphericalHarmonics", "OptimizedGeodesicSH"]
 
 
 class GeodesicSphericalHarmonics:
     """
-    Geodesic grid SH with optional optimized quadrature weights.
+    Weight-aware geodesic-grid SH wrapper around PointSetSphericalHarmonics.
 
     By default, weights are optimized (least-squares) and cached for reuse.
     """

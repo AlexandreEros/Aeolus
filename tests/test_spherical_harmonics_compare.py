@@ -5,7 +5,7 @@ from pathlib import Path
 
 from planetary_sandbox.numerics import LatLonGridGeometry, GeodesicGridGeometry
 from planetary_sandbox.numerics.spherical_harmonics import LatLonSphericalHarmonics
-from planetary_sandbox.numerics.optimized_geodesic_sh import OptimizedGeodesicSH
+from planetary_sandbox.numerics import GeodesicSphericalHarmonics
 
 
 def _has_cuda_cupy() -> bool:
@@ -43,17 +43,11 @@ class TestSphericalHarmonicsAgreement(unittest.TestCase):
         geo_lat = geodesic_grid.latitudes
         geo_lon = geodesic_grid.longitudes
         values_geo = test_scalar(geo_lat, geo_lon)
-        
-        # ===== KEY CHANGE: Use optimized weights =====
-        # Import the optimizer
-        import sys
-        sys.path.insert(0, str(Path(__file__).parent.parent))
-        
-        # Create SH object with auto-optimized weights
+
+        # Use the weight-aware geodesic wrapper with cached quadrature weights.
         cache_dir = Path(__file__).parent / ".sh_cache"
-        geo_sh = OptimizedGeodesicSH(geodesic_grid, l_max, cache_dir=cache_dir)
+        geo_sh = GeodesicSphericalHarmonics(geodesic_grid, l_max, cache_dir=cache_dir)
         coeffs_geo = geo_sh.transform(values_geo)
-        # ============================================
 
 
         coeffs_latlon_np = cp.asnumpy(coeffs_latlon)

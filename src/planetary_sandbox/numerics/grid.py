@@ -64,8 +64,20 @@ class LatLonGridGeometry(GridGeometry):
       return np.pi/2 - self.lat_grid
 
     @property
+    def point_latitudes(self) -> np.ndarray:
+        return self.lat_grid.ravel()
+
+    @property
+    def point_longitudes(self) -> np.ndarray:
+        return self.lon_grid.ravel()
+
+    @property
     def n_points(self) -> int:
         return int(self.num_lat * self.num_lon)
+
+    @property
+    def grid_shape(self) -> tuple[int, int]:
+        return self.lat_grid.shape
 
     def points_latlon(self) -> np.ndarray:
         return np.column_stack([self.lon_grid.ravel(), self.lat_grid.ravel()])

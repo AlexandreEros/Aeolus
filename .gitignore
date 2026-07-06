@@ -22,6 +22,8 @@ tests/.sh_cache/
 # Outputs/artifacts
 out/
 tmp_downloads/
+psx-bve-*/
+tmp_codex_out/
 tests/*.png
 *.egg-info/
 

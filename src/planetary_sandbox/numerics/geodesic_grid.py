@@ -91,6 +91,14 @@ class GeodesicGridGeometry(GridGeometry):
     def n_points(self, value: int) -> None:
         self._n_points = int(value)
 
+    @property
+    def point_latitudes(self) -> np.ndarray:
+        return self.latitudes
+
+    @property
+    def point_longitudes(self) -> np.ndarray:
+        return self.longitudes
+
 
     def geodesic_subdivide(self) -> tuple[np.ndarray, np.ndarray]:
         """

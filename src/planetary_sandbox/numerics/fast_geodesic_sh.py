@@ -1,5 +1,8 @@
 import cupy as cp
+
 from .cuda.cuda_utils import raw_module_from_cuda
+
+__all__ = ["PointSetSphericalHarmonics"]
 
 
 class PointSetSphericalHarmonics:
@@ -106,7 +109,3 @@ class PointSetSphericalHarmonics:
     def inverse_transform(self, coeffs):
         """Alias for inv_transform."""
         return self.inv_transform(coeffs)
-
-
-# Backwards-compatible alias (deprecated).
-GeodesicSphericalHarmonics = PointSetSphericalHarmonics

@@ -1,13 +1,31 @@
 from __future__ import annotations
 
-import pathlib
 import json
+import pathlib
+import tempfile
 import numpy as np
 
 from planetary_sandbox.planet import Planet, PlanetaryParameters
 from planetary_sandbox.run.bve.runner import run_bve
 from planetary_sandbox.run.bve.initial_conditions import make_ic, INITIAL_CONDITIONS
 from planetary_sandbox.viz.vorticity_viewer import VorticityViewer
+
+
+def _resolve_writable_out_dir(requested_out: str) -> tuple[pathlib.Path, bool]:
+    out_dir = pathlib.Path(requested_out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    probe_path = out_dir / ".write_probe"
+    try:
+        probe_path.write_text("ok", encoding="utf-8")
+        probe_path.unlink()
+        return out_dir, False
+    except OSError:
+        fallback_root = pathlib.Path(tempfile.mkdtemp(prefix="psx-bve-", dir="."))
+        fallback_out_dir = fallback_root / out_dir.name
+        fallback_out_dir.mkdir(parents=True, exist_ok=True)
+        return fallback_out_dir, True
+
 
 def main():
     import argparse
@@ -31,8 +49,9 @@ def main():
 
     args = parser.parse_args()
 
-    out_dir = pathlib.Path(args.out)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir, used_fallback = _resolve_writable_out_dir(args.out)
+    if used_fallback:
+        print(f"Requested output path '{args.out}' is not writable. Using '{out_dir}' instead.")
 
     planet = Planet.generate(
         params=PlanetaryParameters.from_earth_like(
@@ -47,7 +66,9 @@ def main():
     zeta0_lm = planet.sh.transform(zeta0_grid)
 
     # Save run config
-    (out_dir / "config.json").write_text(json.dumps(vars(args), indent=2))
+    run_config = vars(args).copy()
+    run_config["out"] = str(out_dir)
+    (out_dir / "config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
 
     run_bve(planet=planet,
             zeta0_lm=zeta0_lm,

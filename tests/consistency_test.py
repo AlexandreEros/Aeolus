@@ -3,7 +3,7 @@ import numpy as np
 
 from planetary_sandbox.numerics import (
     LatLonSphericalHarmonics,
-    PointSetSphericalHarmonics
+    PointSetSphericalHarmonics,
 )
 
 n_lat = 45 # Odd number
@@ -20,11 +20,16 @@ lon_1d = np.linspace(0, 2*np.pi, n_lon)
 lon_grid, lat_grid = np.meshgrid(lon_1d, lat_1d)
 sh_old = LatLonSphericalHarmonics(l_max=l_max, lon_grid=lon_grid, colat_grid=cp.pi/2-lat_grid)
 
-# Create geodesic grid
+# Create a point-set engine on the same structured sample points.
 dlat = np.pi / (n_lat - 1)
 dlon = 2 * np.pi / n_lon
 weights = np.cos(lat_grid) * dlat * dlon 
-fast_sh = PointSetSphericalHarmonics(lat_grid.ravel(), lon_grid.ravel(), l_max, weights=weights.ravel())
+pointset_sh = PointSetSphericalHarmonics(
+    lat_grid.ravel(),
+    lon_grid.ravel(),
+    l_max=l_max,
+    weights=weights.ravel()
+)
 cp.cuda.Stream.null.synchronize()
 
 # 1. Define a known 'Ground Truth' in spectral space
@@ -44,10 +49,9 @@ print("2. Performing Forward Transform with both engines...")
 # Old Method (Iterative + Simpson's Rule)
 c_recovered_old = sh_old.transform(field_synthetic_latlon)
 
-# New Method (Matrix + Riemann Sum)
-# Note: Input must be flattened if the instance was initialized with flattened arrays
-field_synthetic_geodesic = fast_sh.inv_transform(c_truth) # Synthesize field on geodesic grid
-c_recovered_new = fast_sh.transform(field_synthetic_geodesic)
+# New Method (Matrix + explicit quadrature weights)
+field_synthetic_pointset = pointset_sh.inv_transform(c_truth)
+c_recovered_new = pointset_sh.transform(field_synthetic_pointset)
 
 # 3. Compare Results
 diff_between_methods = cp.max(cp.abs(c_recovered_old - c_recovered_new))
@@ -73,7 +77,7 @@ else:
     PlanetViewer.plot_coefficient_complex_visualization(c_recovered_old, axes[0], fig)
     axes[0].set_title("LatLon SH Coeffs")
     PlanetViewer.plot_coefficient_complex_visualization(c_recovered_new, axes[1], fig)
-    axes[1].set_title("Geodesic SH Coeffs")
+    axes[1].set_title("Point-Set SH Coeffs")
     fig.suptitle("SH Coefficient Comparison", fontsize=12)
     fig.tight_layout()
     fig.savefig("tests/sh_coeffs_consistency_test.png", dpi=150)

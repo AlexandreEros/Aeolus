@@ -44,7 +44,12 @@ class BarotropicVorticity:
         # Precompute planetary vorticity f = 2Ω sin(φ)
         # φ is latitude, but we have colatitude θ
         # sin(φ) = sin(π/2 - θ) = cos(θ)
-        self.f = 2 * self.Omega * cp.sin(cp.array(self.grid.latitudes))  # Coriolis parameter
+        lat = cp.asarray(self.grid.point_latitudes)
+        f = 2 * self.Omega * cp.sin(lat)
+        shape = getattr(self.grid, "grid_shape", None)
+        if shape is not None and f.size == int(shape[0] * shape[1]):
+            f = f.reshape(shape)
+        self.f = f  # Coriolis parameter
 
         # Precompute Laplacian eigenvalues
         l_vals = cp.arange(self.sh.l_max + 1, dtype=cp.float64)
@@ -150,37 +155,6 @@ class BarotropicVorticity:
 
         return dzeta_dt
 
-
-    def step_rk4(self, zeta_coeffs, dt, forcing_coeffs=None):
-        """
-        Fourth-order Runge-Kutta time step.
-
-        Parameters
-        ----------
-        zeta_coeffs : cp.ndarray
-            Current vorticity coefficients
-        dt : float
-            Time step [s]
-        forcing_coeffs : cp.ndarray, optional
-            Forcing in spectral space
-
-        Returns
-        -------
-        zeta_new_coeffs : cp.ndarray
-            Updated vorticity coefficients
-        """
-        if forcing_coeffs is None:
-            forcing_coeffs = cp.zeros_like(zeta_coeffs)
-
-        # RK4 stages
-        k1 = self.tendency(zeta_coeffs, forcing_coeffs)
-        k2 = self.tendency(zeta_coeffs + 0.5 * dt * k1, forcing_coeffs)
-        k3 = self.tendency(zeta_coeffs + 0.5 * dt * k2, forcing_coeffs)
-        k4 = self.tendency(zeta_coeffs + dt * k3, forcing_coeffs)
-
-        zeta_new = zeta_coeffs + (dt / 6.0) * (k1 + 2*k2 + 2*k3 + k4)
-
-        return zeta_new
 
     def step_leapfrog(self, zeta_prev, zeta_curr, dt, forcing_coeffs=None):
         """
