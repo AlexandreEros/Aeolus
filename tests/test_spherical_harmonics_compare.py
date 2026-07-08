@@ -17,7 +17,7 @@ def _has_cuda_cupy() -> bool:
     return True
 
 
-def test_scalar(lat, lon):
+def make_test_scalar(lat, lon):
     return (cp.sin(lat)
             + 0.5 * cp.cos(2.0 * lon) * cp.cos(lat)
             + 0.2 * cp.sin(3.0 * lon) * cp.sin(lat) * cp.cos(lat)
@@ -33,7 +33,7 @@ class TestSphericalHarmonicsAgreement(unittest.TestCase):
 
         lat = cp.array(latlon_grid.lat_grid)
         lon = cp.array(latlon_grid.lon_grid)
-        values_latlon = test_scalar(lat, lon)
+        values_latlon = make_test_scalar(lat, lon)
 
         latlon_sh = LatLonSphericalHarmonics(l_max)
         # set_grid expects (longitudes, colatitudes), not latitudes
@@ -42,7 +42,7 @@ class TestSphericalHarmonicsAgreement(unittest.TestCase):
 
         geo_lat = geodesic_grid.latitudes
         geo_lon = geodesic_grid.longitudes
-        values_geo = test_scalar(geo_lat, geo_lon)
+        values_geo = make_test_scalar(geo_lat, geo_lon)
 
         # Use the weight-aware geodesic wrapper with cached quadrature weights.
         cache_dir = Path(__file__).parent / ".sh_cache"
