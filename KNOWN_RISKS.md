@@ -18,7 +18,17 @@ Severity scale: **S1** invalidates results · **S2** materially degrades results
 > The S2/S3/S4 risks below are **not** addressed on this branch. Note that correcting R-1
 > makes the enstrophy cascade physical, so it now exposes **R-3/R-5** as the binding
 > constraint on inviscid conservation (measured: energy drift is round-trip-loss-limited and
-> falls ~14× from res 4→5; enstrophy drift is truncation-limited and set by `l_max`).
+> falls ~14× from res 4→5).
+>
+> **Correction (post-fix re-measurement).** Earlier drift numbers quoted *relative*
+> enstrophy ½∮ζ²dA, which is **not** an invariant of the rotating BVE — the materially
+> conserved quantity is *absolute* enstrophy ½∮(ζ+f)²dA. Re-measured on the same rotating
+> case (res 4 / l_max 20, ν = 0, ≈6 days): relative enstrophy changed +6.7 %, but **95 % of
+> that is physical exchange with planetary vorticity**; the genuine numerical error,
+> measured on absolute enstrophy, is ΔZ_abs ≈ +30 vs an eddy enstrophy of 9.65e3
+> (**≈0.3 %**). Energy drift (−1.6 %) is unaffected by this correction and remains the
+> dominant conservation defect (R-5). Diagnostics must therefore always track
+> Z_abs = ½∮(ζ+f)²dA on rotating runs; Z_rel alone misattributes physics as error.
 
 ---
 
