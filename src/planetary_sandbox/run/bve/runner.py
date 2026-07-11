@@ -7,6 +7,7 @@ from typing import Tuple
 
 from planetary_sandbox.planet import Planet
 from .barotropic_vorticity import BarotropicVorticity, BarotropicState
+from .diagnostics import DiagnosticsRecorder, plot_diagnostics
 from ...viz.vorticity_viewer import VorticityViewer
 
 def run_bve(planet: Planet, 
@@ -33,6 +34,16 @@ def run_bve(planet: Planet,
     t = 0.0
     t_end = t_end_days * 86400.0
     ovarall_step = 0
+
+    # Scalar diagnostics recorded every accepted step, straight from the
+    # spectral state (not the plotting fields). Cheap; append-only.
+    recorder = DiagnosticsRecorder(
+        sh=planet.sh, so=planet.so, grid=planet.grid,
+        radius=planet.params.radius,
+        omega=planet.params.angular_velocity,
+        out_dir=out_dir,
+    )
+    recorder.record(t, state.coeffs, dt=0.0, step=0)
 
     all_zeta_lm = []
     vorticity_grid_snapshot_list = []
@@ -65,7 +76,15 @@ def run_bve(planet: Planet,
         t += dt_step
         time_to_snapshot = max(0.0, time_to_snapshot - dt_step)
         ovarall_step += 1
-    
+        recorder.record(t, state.coeffs, dt=dt_step, step=ovarall_step)
+
+    recorder.close()
+    try:
+        plot_diagnostics(out_dir)
+    except Exception as err:
+        # Plotting must never take down a finished run; the CSV/npz survive.
+        print(f"Diagnostics plotting failed (data preserved): {err}")
+
     all_zeta_lm = cp.array(all_zeta_lm)
     np.save(out_dir / "vorticity_coeffs.npy", cp.asnumpy(all_zeta_lm))
     

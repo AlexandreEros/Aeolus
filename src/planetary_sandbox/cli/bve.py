@@ -8,6 +8,7 @@ import numpy as np
 from planetary_sandbox.planet import Planet, PlanetaryParameters
 from planetary_sandbox.run.bve.runner import run_bve
 from planetary_sandbox.run.bve.initial_conditions import make_ic, INITIAL_CONDITIONS
+from planetary_sandbox.run.bve.io import write_run_manifest
 from planetary_sandbox.viz.vorticity_viewer import VorticityViewer
 
 
@@ -67,10 +68,11 @@ def main():
     zeta0_grid = make_ic(args.scenario, planet)                  # (nlat, nlon) cupy or numpy ok
     zeta0_lm = planet.sh.transform(zeta0_grid)
 
-    # Save run config
+    # Save run config + provenance manifest (git commit, versions, GPU, argv)
     run_config = vars(args).copy()
     run_config["out"] = str(out_dir)
     (out_dir / "config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
+    write_run_manifest(out_dir, run_config)
 
     run_bve(planet=planet,
             zeta0_lm=zeta0_lm,
