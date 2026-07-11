@@ -341,24 +341,33 @@ class SpectralOperators:
     
 
 
-    def jacobian_pseudospectral(self, a_lm: cp.ndarray, b_lm: cp.ndarray, 
+    def jacobian_pseudospectral(self, a_lm: cp.ndarray, b_lm: cp.ndarray,
                                 dealias: bool = True) -> cp.ndarray:
         """
-        Pseudospectral Jacobian on *whatever grid the SH object evaluates on*
-        (latlon or geodesic nodes). No regridding.
+        Pseudospectral spherical Jacobian on *whatever grid the SH object
+        evaluates on* (latlon or geodesic nodes). No regridding.
+
+            J(a, b) = (1/(R^2 cosφ)) (a_λ b_φ - a_φ b_λ) = u_a · ∇b,
+            with u_a = k × ∇a.
+
+        The available derivative fields are
+            a_lam   = (1/R) a_λ
+            a_sinth = (1/R) sinθ a_θ = -(1/R) cosφ a_φ   (θ = π/2 - φ colatitude)
+        so, eliminating the physical φ-derivatives,
+            J(a, b) = (a_sinth b_lam - a_lam b_sinth) / cos²φ.
         """
 
         # Spectral -> grid derivatives
         a_lam   = self.sh.inv_transform(self.d_lambda_coeffs(a_lm)).real               # (1/R) A_λ
         b_lam   = self.sh.inv_transform(self.d_lambda_coeffs(b_lm)).real               # (1/R) B_λ
 
-        a_sinth = self.sh.inv_transform(self.sin_theta_d_theta_coeffs(a_lm)).real / self.R  # (1/R) 
-        b_sinth = self.sh.inv_transform(self.sin_theta_d_theta_coeffs(b_lm)).real / self.R  # (1/R) 
+        a_sinth = self.sh.inv_transform(self.sin_theta_d_theta_coeffs(a_lm)).real / self.R  # (1/R) sinθ A_θ
+        b_sinth = self.sh.inv_transform(self.sin_theta_d_theta_coeffs(b_lm)).real / self.R  # (1/R) sinθ B_θ
 
         coslat = self.grid.coslat
         coslat = cp.maximum(coslat, 1e-8)  # Divide by zero prevention
 
-        J_grid = (a_lam * b_sinth - a_sinth * b_lam) / coslat
+        J_grid = (a_sinth * b_lam - a_lam * b_sinth) / coslat**2
 
 
         if not dealias:

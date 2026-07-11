@@ -6,6 +6,7 @@ weights for geodesic grids, caching them for reuse.
 """
 import cupy as cp
 import numpy as np
+import warnings
 from pathlib import Path
 import pickle
 from scipy.optimize import lsq_linear
@@ -14,6 +15,28 @@ from .geodesic_grid import GeodesicGridGeometry
 from .fast_geodesic_sh import PointSetSphericalHarmonics
 
 __all__ = ["GeodesicSphericalHarmonics", "OptimizedGeodesicSH"]
+
+# Minimum grid points per spherical-harmonic basis function for the discrete
+# (non-exact) quadrature to keep analysis/synthesis round trips well conditioned.
+# Empirically (audit 2026-07): ~2.4 pts/basis gives O(10%) leakage, ~9.5 gives
+# O(1%). See KNOWN_RISKS.md R-2 and VALIDATION_PLAN.md A-1.
+MIN_POINTS_PER_BASIS = 6.0
+
+
+def _warn_if_underresolved(n_points: int, l_max: int) -> None:
+    n_basis = (l_max + 1) * (l_max + 2) // 2
+    ratio = n_points / n_basis
+    if ratio < MIN_POINTS_PER_BASIS:
+        l_safe = int((np.sqrt(1.0 + 8.0 * n_points / MIN_POINTS_PER_BASIS) - 3.0) / 2.0)
+        warnings.warn(
+            f"Geodesic SH is under-resolved: {n_points} points for l_max={l_max} "
+            f"({n_basis} basis functions, {ratio:.1f} pts/basis < "
+            f"{MIN_POINTS_PER_BASIS:.0f}). Analysis/synthesis round trips will leak "
+            f"energy across modes and the solver will lose invariants spuriously. "
+            f"Use l_max <= {l_safe} at this resolution, or a finer grid. "
+            f"See KNOWN_RISKS.md R-2.",
+            stacklevel=3,
+        )
 
 
 class GeodesicSphericalHarmonics:
@@ -51,6 +74,7 @@ class GeodesicSphericalHarmonics:
         if grid is None:
             if latitudes is None or longitudes is None:
                 raise ValueError("Provide either grid or latitudes/longitudes.")
+            _warn_if_underresolved(len(latitudes), l_max)
             if isinstance(weights, str) and weights in ("optimize", "voronoi"):
                 raise ValueError("weights='optimize' or 'voronoi' requires a grid.")
             if weights is None or (isinstance(weights, str) and weights == "uniform"):
@@ -68,6 +92,8 @@ class GeodesicSphericalHarmonics:
 
         if latitudes is not None or longitudes is not None:
             raise ValueError("Provide either grid or latitudes/longitudes, not both.")
+
+        _warn_if_underresolved(grid.n_points, l_max)
 
         weights_arr = None
         if isinstance(weights, str):

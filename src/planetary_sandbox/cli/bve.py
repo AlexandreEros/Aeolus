@@ -34,7 +34,9 @@ def main():
         usage="psx-bve [options]"
     )
 
-    parser.add_argument("--lmax", type=int, default=45)
+    # Default (l_max=21, resolution=4) keeps ~10 grid points per SH basis
+    # function, within the transform's usable envelope (see KNOWN_RISKS.md R-2).
+    parser.add_argument("--lmax", type=int, default=21)
     parser.add_argument("--resolution", type=int, default=4)
     parser.add_argument("--nlat", type=int, default=128)
     parser.add_argument("--nlon", type=int, default=256)
