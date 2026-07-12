@@ -9,6 +9,7 @@ from .fast_geodesic_sh import PointSetSphericalHarmonics
 from .optimized_geodesic_sh import GeodesicSphericalHarmonics, OptimizedGeodesicSH
 from .spherical_backend import (
     GeodesicBackend,
+    LatLonBackend,
     PointSetBackend,
     ProductSpace,
     SphericalGridBackend,
@@ -31,6 +32,7 @@ __all__ = [
     "OptimizedGeodesicSH",
     "SphericalGridBackend",
     "GeodesicBackend",
+    "LatLonBackend",
     "PointSetBackend",
     "ProductSpace",
     "make_backend",

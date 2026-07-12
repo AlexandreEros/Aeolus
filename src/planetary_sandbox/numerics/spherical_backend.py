@@ -36,6 +36,7 @@ import cupy as cp
 
 from .geodesic_grid import GeodesicGridGeometry
 from .grid_base import GridGeometry
+from .latlon_grid import GaussLatLonGridGeometry, GaussLatLonSphericalHarmonics
 from .optimized_geodesic_sh import GeodesicSphericalHarmonics
 
 
@@ -151,6 +152,48 @@ class GeodesicBackend(SphericalGridBackend):
         )
 
 
+class LatLonBackend(SphericalGridBackend):
+    """Structured Gauss-Legendre lat-lon backend.
+
+    'fine' builds one denser Gauss-Legendre product grid sized by the 3/2
+    rule (nlat >= ceil((3*l_max+1)/2), nlon >= 3*l_max+1), on which the
+    pointwise product of two degree-l_max fields is analyzed EXACTLY against
+    degree-l_max harmonics — true dealiasing quadrature, not merely the
+    overresolved approximation the geodesic co-grid provides.
+    """
+
+    def __init__(self, geometry: GaussLatLonGridGeometry, sh: Any):
+        if not isinstance(geometry, GaussLatLonGridGeometry):
+            raise ValueError(
+                f"LatLonBackend requires a GaussLatLonGridGeometry, got "
+                f"{type(geometry).__name__}")
+        super().__init__(geometry, sh)
+
+    def supported_product_quadratures(self) -> tuple[str, ...]:
+        return ("coarse", "fine")
+
+    def _build_product_space(self, mode: str) -> ProductSpace:
+        g = self.geometry
+        if mode == "coarse":
+            return ProductSpace(
+                sh=self.sh,
+                coslat=self._coarse_coslat(),
+                geometry=None,
+                label=f"latlon-gauss-{g.nlat}x{g.nlon}-state",
+            )
+        # mode == "fine": 3/2-rule product grid — exact for quadratic products.
+        nlat_f = max((3 * self.l_max) // 2 + 1, g.nlat)
+        nlon_f = max(3 * self.l_max + 1, g.nlon)
+        fine_geometry = GaussLatLonGridGeometry(nlat_f, nlon_f, g.radius)
+        fine_sh = GaussLatLonSphericalHarmonics(fine_geometry, self.l_max)
+        return ProductSpace(
+            sh=fine_sh,
+            coslat=cp.maximum(cp.asarray(fine_geometry.coslat), _COSLAT_FLOOR),
+            geometry=fine_geometry,
+            label=(f"latlon-gauss-{nlat_f}x{nlon_f}-3/2rule"),
+        )
+
+
 class PointSetBackend(SphericalGridBackend):
     """Fallback backend for arbitrary point sets / non-geodesic geometries.
 
@@ -176,4 +219,6 @@ def make_backend(geometry: GridGeometry, sh: Any) -> SphericalGridBackend:
     """Infer the appropriate backend for a geometry/transform pairing."""
     if isinstance(geometry, GeodesicGridGeometry):
         return GeodesicBackend(geometry, sh)
+    if isinstance(geometry, GaussLatLonGridGeometry):
+        return LatLonBackend(geometry, sh)
     return PointSetBackend(geometry, sh)
