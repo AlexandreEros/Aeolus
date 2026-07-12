@@ -150,12 +150,15 @@ def convergence_metrics(aligned: dict) -> dict:
     zref_norm = np.array([np.linalg.norm(ref[k]) for k in range(n_samples)])
 
     # Observed order p from the final-time difference ratio.
-    # Under Richardson: ||dt run - truth|| ~ C dt^p
-    # so ||dt_run - dt/4_run|| ~ C (dt^p - (dt/4)^p) ~ C dt^p (1 - 4^-p)
-    # and ratio dt/dt-half ~ 2^p (approximately, for p >= 2).
+    # Under Richardson with error(dt) = C dt^p:
+    #   d1 = ||dt run   - dt/4 run|| ~ C dt^p (1 - 4^-p)
+    #   dh = ||dt/2 run - dt/4 run|| ~ C (dt/2)^p (1 - 2^-p)
+    # so R = d1/dh = 2^p (1 - 4^-p)/(1 - 2^-p) = 2^p (1 + 2^-p) = 2^p + 1,
+    # giving p = log2(R - 1). (Using log2(R) overestimates p by
+    # log2(1 + 2^-p) ~ 0.09 at p = 4.)
     r1, r2 = diff_1[-1], diff_h[-1]
-    if r2 > 0 and r1 > 0 and r1 > r2:
-        p_obs = float(np.log2(r1 / r2))
+    if r2 > 0 and r1 > r2 and (r1 / r2) > 1.0:
+        p_obs = float(np.log2(r1 / r2 - 1.0))
     else:
         p_obs = float("nan")
 
@@ -217,8 +220,8 @@ def summarize(planet: Planet, dt_base: float, results: dict, aligned: dict,
                  f"({conv['diff_1'][-1]/conv['zref_norm'][-1]:.3e} rel to ||zeta_ref||)")
     lines.append(f"  ||zeta(dt/2) - zeta(dt/4)||_2 = {conv['diff_h'][-1]:.4e} "
                  f"({conv['diff_h'][-1]/conv['zref_norm'][-1]:.3e} rel)")
-    lines.append(f"  ratio (dt / dt-half) = {conv['diff_1'][-1]/conv['diff_h'][-1]:.3f}")
-    lines.append(f"  observed order p = log2(ratio) = {conv['p_obs']:.3f}")
+    lines.append(f"  ratio R (dt / dt-half) = {conv['diff_1'][-1]/conv['diff_h'][-1]:.3f}")
+    lines.append(f"  observed order p = log2(R - 1) = {conv['p_obs']:.3f}")
     lines.append("")
 
     # Verdict — two independent tests:
