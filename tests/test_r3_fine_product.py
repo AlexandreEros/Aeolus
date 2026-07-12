@@ -130,6 +130,29 @@ def test_invalid_product_quadrature_rejected(planet):
                           product_quadrature="exact")
 
 
+def test_no_silent_fallback_on_unsupported_grid(planet):
+    """'fine' on a non-geodesic grid must raise, never fall back to 'coarse'."""
+    from planetary_sandbox.numerics import LatLonGridGeometry
+    latlon = LatLonGridGeometry.create((9, 17))
+    with pytest.raises(ValueError):
+        SpectralOperators(planet.sh, planet.params.radius, latlon,
+                          product_quadrature="fine")
+
+
+def test_cli_exposes_and_defaults_product_quadrature():
+    """--product-quadrature is a CLI option, defaults to 'fine', and lands in
+    the args dict that config.json and manifest.json serialize."""
+    from planetary_sandbox.cli.bve import build_parser
+    parser = build_parser()
+    args = parser.parse_args([])
+    assert vars(args)["product_quadrature"] == "fine"
+    # choices constrained: an invalid value must be rejected by the parser
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--product-quadrature", "exact"])
+    # help text mentions it (exposed, not hidden)
+    assert "--product-quadrature" in parser.format_help()
+
+
 # ---------------------------------------------------------------------------
 # Preregistered predictions
 # ---------------------------------------------------------------------------

@@ -162,11 +162,17 @@ because the tilt sweep there ran variant A alone). P3 fails because it credited 
 +1.75e−2 → −9.26e−4) but comes from the round-trip removal — and the fine quadrature
 slightly *worsens* the (non-solution) tilt-60 flow. The fix is beneficial at every
 orientation (6.4× / 1.1× / 19×) and never harmful, so it stands; both components are
-warranted. **Remaining limitation:** tilt-30 barely improves — a genuinely cascading
-non-solution flow whose drift is set by the l=21 truncation removing real flux, which no
-product-quadrature upgrade can address (that is a resolution/hyperviscosity question, not
-R-3). Memory note: `"fine"` builds a res-(r+1) grid at init (res 5 co-grid ≈ 160 MB at
-l_max 21; res 6 co-grid for a res-5 state ≈ 1.3 GB — set `"coarse"` there).
+warranted. **Remaining limitation:** tilt-30 barely improves. The reason is structural:
+the tendency is truncated at l = 14 (2/3 rule) while the prognostic state retains modes
+through l = 21, so the evolved system is **not an invariant-conserving Galerkin
+truncation** of either the l ≤ 14 or the l ≤ 21 system — nonlinear transfer into the
+cutoff band l ∈ (14, 21] has no conservation guarantee, and flows that drive such
+transfer (tilt-30 RH4, two_vortices filamentation) drift regardless of product-quadrature
+quality. Closing that requires a consistent truncation/state treatment (e.g. evolve the
+state at the cut, or add scale-selective dissipation across it) — a separate design
+decision, out of R-3 scope. Memory note: `"fine"` builds a res-(r+1) grid at init (res 5
+co-grid ≈ 160 MB at l_max 21; res 6 co-grid for a res-5 state ≈ 1.3 GB — set `"coarse"`
+there).
 
 ### R-4. Time step is fixed from the initial state; "adaptive time-stepping" claim is wrong
 

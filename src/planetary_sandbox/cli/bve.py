@@ -29,7 +29,7 @@ def _resolve_writable_base_dir(requested_out: str) -> tuple[pathlib.Path, bool]:
         return fallback_out_dir, True
 
 
-def main():
+def build_parser():
     import argparse
     parser = argparse.ArgumentParser("psx-bve",
         description="Run barotropic vorticity equation on a planet.",
@@ -49,6 +49,16 @@ def main():
     parser.add_argument("--scenario", type=str, default="two_vortices",
                    choices=list(INITIAL_CONDITIONS.keys()))
     parser.add_argument("--viscosity", type=float, default=0.0)
+    parser.add_argument("--product-quadrature", type=str, default="fine",
+                        choices=["fine", "coarse"],
+                        help="Where nonlinear (pseudospectral) products are "
+                             "evaluated and analyzed. 'fine' (default): on a "
+                             "reusable resolution-(r+1) product grid "
+                             "('overresolved product quadrature', "
+                             "KNOWN_RISKS.md R-3). 'coarse': the historical "
+                             "state-grid path, kept for A/B comparisons. "
+                             "There is no silent fallback: an unsupported "
+                             "combination raises at startup.")
     parser.add_argument("--out", type=str, default="runs",
                         help="Base directory for run outputs. Each run creates a "
                              "unique subdirectory under this (or under "
@@ -59,8 +69,11 @@ def main():
                         help="Reuse an existing run directory if the auto-generated "
                              "run ID collides (same command in the same second). "
                              "Off by default to keep runs immutable.")
+    return parser
 
-    args = parser.parse_args()
+
+def main():
+    args = build_parser().parse_args()
 
     base_dir, used_fallback = _resolve_writable_base_dir(args.out)
     if used_fallback:
@@ -88,6 +101,7 @@ def main():
             radius_earth_units=args.radius_earth_units),
         grid_resolution=args.resolution,
         l_max=args.lmax,
+        product_quadrature=args.product_quadrature,
     )
 
     # Initial condition on grid, then transform -> spectral ζ_lm

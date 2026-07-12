@@ -229,11 +229,15 @@ def test_rotating_short_integration_conserves_energy(rotating):
     Isolation note (added when the R-3 fine product landed): this test targets
     R-5 (the eta construction), so it pins the nonlinear-product path to the
     historical "coarse" quadrature. Otherwise the R-3 fine product would also
-    enter, and on the quasi-steady two_vortices IC the fine product honestly
-    resolves nascent filamentation cascade into the truncation (integ5 rises
-    to 6.7e-3) -- a real, IC-specific effect that has nothing to do with the
-    eta round trip this test guards. Holding product_quadrature='coarse'
-    keeps exactly one variable (eta construction) in play.
+    enter: on the two_vortices IC, nonlinear transfer interacts with the l=14
+    tendency cutoff while the state retains modes through l=21, so the scheme
+    is not an invariant-conserving Galerkin truncation (neither of the l<=14
+    nor of the l<=21 system) and carries no conservation guarantee for this
+    energy exchange; the fine quadrature represents that transfer more
+    accurately, which raises integ5 to 6.7e-3. This is an IC-specific
+    truncation-mismatch effect with no relation to the eta round trip this
+    test guards. Holding product_quadrature='coarse' keeps exactly one
+    variable (eta construction) in play.
     """
     planet = rotating
     model = BarotropicVorticity(planet, viscosity=0.0)
