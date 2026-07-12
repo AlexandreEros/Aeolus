@@ -64,7 +64,10 @@ class VorticityViewer:
         self.planet = planet
         self.grid = planet.grid
         self._view_grid = None
-        if hasattr(self.grid, "faces"):
+        if not isinstance(self.grid, LatLonGridGeometry):
+            # Non-equiangular grids (geodesic, Gauss-Legendre lat-lon) render
+            # via interpolation onto a uniform view grid — imshow/streamplot
+            # need equally spaced axes. Fields stay flat (n_points,).
             self._view_grid = LatLonGridGeometry.create((91, 181))
 
         assert isinstance(vorticity_snapshots, np.ndarray), "Snapshots must be a numpy array."
