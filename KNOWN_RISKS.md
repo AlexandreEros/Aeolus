@@ -123,9 +123,21 @@ No invariant is monitored during runs.
 
 **Fix applied** (`89985aa`): η = ζ + f_lm built in spectral space; f_lm is the exact
 (1,0) coefficient `2Ω·sqrt(4π/3)`; the state is never synthesized/re-analyzed in the
-tendency. Mechanism quantified (`tests/audit_r5_mechanism.py`): the transform recovers
-f's a₁₀ to machine precision but **leaks ~0.85 % of f across other degrees — ~12 % of
-‖ζ‖ injected into η per call** (f ≈ 48×‖ζ‖), 12.4× the ζ round-trip error.
+tendency. Mechanism quantified (`tests/audit_r5_mechanism.py`, res 4 / l_max 21,
+two-vortices IC, Ω = 2π/86400):
+
+    a₁₀            = 2.977e-04       (analytic, matches transform to 9e-16)
+    ‖leakage‖₂     = 2.525e-06       ← what R-5 removes
+    ‖ζ‖₂           = 2.182e-05
+    ‖leakage‖₂/a₁₀ = 8.5e-3          (the "0.85 %" number: leakage relative to f itself)
+    ‖leakage‖₂/‖ζ‖₂= 11.6 %          (measured, directly reported by audit)
+    a₁₀/‖ζ‖₂       = 13.6            (correct scale factor from f-relative to ζ-relative)
+    ‖ζ-round-trip‖₂/‖ζ‖₂ = 0.93 %    (the second, smaller round-trip R-5 also removes)
+
+so f-leakage swamps the ζ round-trip by 12×. The peak-vs-peak ratio a₁₀/max|ζ_{lm}| ≈ 48
+is a separate quantity — useful for intuition about how much f dwarfs ζ, but it does *not*
+multiply with the 0.85 % leakage; the L2 factor 13.6 does. The 12 % figure is measured
+directly, not derived from the peak ratio.
 **[measured, 10-day rotating baseline res4/l21]** absolute-enstrophy drift
 −7.9e−3 → **−3.6e−4** (22×); l=1 energy loss −18.8 % → −5.7 %; 0.5-day energy drift
 +1.1e−2 → +3.5e−5 (~300×); total 10-day energy drift −6.4 % → **−3.8 %**; wall time

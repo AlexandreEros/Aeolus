@@ -182,14 +182,25 @@ def test_rossby_mode_direction_amplitude_phase(rotating, l, m):
 
 
 def test_rotating_short_integration_conserves_energy(rotating):
-    """5 RK4 steps (~0.5 day) at the CFL dt on the rotating two-vortices case.
+    """Integrated |E(t_i) - E(0)| / E(0) over the first 5 RK4 steps.
 
-    Design note: the horizon must sit inside the old code's initial spurious
-    energy kick. Measured at res4/l21: after 5 steps the old eta round trip
-    gives |dE|/E = 1.13e-2 while this branch gives 3.5e-5 — a 300x separation.
-    (At 20 steps the old code's drift oscillates through zero and the two
-    become indistinguishable, so a longer horizon does NOT discriminate.)
-    Threshold 1e-3 sits >10x from both measured values. FAILS ON PARENT.
+    Design note (replaces a single-endpoint check on a review recommendation):
+    a single step count is a poor R-5 discriminator because the old code's
+    energy trajectory oscillates through zero — initial +1.13e-2 spike at
+    step 5, back through zero near step 9, then negative growth. Picking any
+    step near a crossing gives spurious agreement (2x separation at step 20).
+    Integrated absolute drift is sign-invariant and captures the transient
+    regardless of where it happens to land.
+
+    Measured at res4/l21 (day_hours=24, two_vortices, nu=0):
+        sum_{i=1..5} |E_i - E_0| / E_0
+             parent (round-tripped eta):  3.40e-2
+             branch (spectral eta):       1.73e-3
+        separation: 19.7x
+
+    Threshold 5e-3 sits 2.9x above the measured branch value (margin against
+    hardware jitter) and 6.8x below the measured parent value (regression
+    discrimination). FAILS ON PARENT.
     """
     planet = rotating
     model = BarotropicVorticity(planet, viscosity=0.0)
@@ -203,9 +214,13 @@ def test_rotating_short_integration_conserves_energy(rotating):
 
     E0 = spectral_diagnostics(zeta_lm, R, omega)["energy"]
     state = BarotropicState(cp.copy(zeta_lm))
+    integrated = 0.0
     for _ in range(5):
         state = rk4_step(model, state, 0.0, dt)
-    E1 = spectral_diagnostics(state.coeffs, R, omega)["energy"]
+        E = spectral_diagnostics(state.coeffs, R, omega)["energy"]
+        integrated += abs(E - E0) / E0
 
-    drift = abs(E1 - E0) / E0
-    assert drift < 1e-3, f"rotating 5-step energy drift {drift:.2e}"
+    assert integrated < 5e-3, (
+        f"integrated |dE/E| over 5 rotating steps = {integrated:.2e} "
+        "(threshold 5e-3, parent 3.40e-2, branch 1.73e-3)"
+    )
