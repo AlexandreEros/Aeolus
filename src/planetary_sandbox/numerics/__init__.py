@@ -4,6 +4,7 @@ from .geodesic_grid import GeodesicGridGeometry
 GridGeometry = GeodesicGridGeometry
 from .integration import simpson_2d
 from .spherical_harmonics import LatLonSphericalHarmonics
+from .latlon_grid import GaussLatLonGridGeometry, GaussLatLonSphericalHarmonics
 from .fast_geodesic_sh import PointSetSphericalHarmonics
 from .optimized_geodesic_sh import GeodesicSphericalHarmonics, OptimizedGeodesicSH
 from .spherical_backend import (
@@ -23,6 +24,8 @@ __all__ = [
     "GridGeometry",
     "simpson_2d",
     "LatLonSphericalHarmonics",
+    "GaussLatLonGridGeometry",
+    "GaussLatLonSphericalHarmonics",
     "PointSetSphericalHarmonics",
     "GeodesicSphericalHarmonics",
     "OptimizedGeodesicSH",
