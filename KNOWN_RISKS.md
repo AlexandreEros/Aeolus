@@ -104,6 +104,36 @@ is no exact-integration grid, so aliased energy folds into retained modes before
 truncation; the m-truncation line is redundant (m ≤ l already). Aliasing error is
 unquantified. (VALIDATION_PLAN A-8 defines the diagnostic.)
 
+**Characterized** (branch `char/r3-product-aliasing`, `tests/audit_r3_product.py`;
+RH4, l_max 21, ν = 0, 5 days, fixed dt/N across variants). Factorized variants:
+A = production (truncate-inside + extra round trip), B = truncate-once spectrally,
+C = no truncation, D = product synthesized/analyzed on the res-(r+1) point set at the
+same l_max. **[measured] 5-day energy drift at res 4: A −2.64e−3, B −2.84e−3,
+C −2.29e−3, D −4.46e−4.** So: the truncation (B↔C) and the extra round trip (A↔B)
+each move the drift by ≲20 %, while fixing the *product-analysis quadrature* (D)
+cuts it 6×; res-5-native B (−3.78e−4) ≈ res-4 D — the floor is set by points-per-
+product-bandwidth, full stop. The dominant defect operation is **the forward analysis
+of the pointwise Jacobian product on the coarse point set**: a product of two l ≤ 21
+fields carries content to l ≈ 43, whose analysis against the retained l ≤ 14 modes
+requires quadrature exactness far beyond what 2562 Voronoi-weighted points provide;
+the aliasing lands in-band *before* truncation, which is why truncating harder cannot
+help. Consistent evidence: instantaneous discrete dE/dt at t0 (−4.4e−4/day, variant A)
+time-integrates to the observed 5-day drift; conservation error is strongly
+grid-orientation-dependent (tilt 0°/30°/60°: −2.6e−3 / −1.1e−2 / **+1.7e−2**, sign
+flip), as expected for quadrature error and not for isotropic-in-l truncation error.
+At res 5 the quadrature term shrinks ~6× and the extra round trip (A↔B) becomes the
+next visible contributor (−7.2e−4 vs −3.8e−4).
+
+**Smallest falsifiable repair** (not yet implemented): promote variant D to production —
+evaluate the nonlinear product on a resolution-(r+1) co-grid at the same l_max
+(synthesize the four derivative fields on fine points, multiply, analyze with fine
+weights, truncate spectrally, return spectral — which also removes the extra round
+trip). State, linear operators, truncation level, and time stepping unchanged.
+Pre-registered predictions: res4/l21 RH4 5-day E drift −2.64e−3 → −4.5e−4 (±20 %);
+t0 production rate → ≈ −6e−5/day; tilt-60° drift magnitude shrinks by ≥3×.
+Measured cost: ~3.5× tendency cost at res 4 (22.6 s vs 6.4 s per 5-day run) — far
+cheaper than running the whole model at res 5.
+
 ### R-4. Time step is fixed from the initial state; "adaptive time-stepping" claim is wrong
 
 `run_bve` computes `dt = 0.5·min_edge/max|u₀|` once (commit 8666138 claims adaptivity).
