@@ -37,3 +37,26 @@ include = ["planetary_sandbox*"]
 # Make sure CUDA kernels under planetary_sandbox/numerics/cuda/ are included
 [tool.setuptools.package-data]
 "planetary_sandbox.numerics.cuda" = ["*.cu"]
+
+[tool.pytest.ini_options]
+# Restrict discovery to tests/ so a pathless `pytest` from the project root
+# does not walk sibling output directories. A stale psx-bve-* fallback run dir
+# (and a similarly locked .pytest_cache) proved unreadable during collection
+# and aborted a bare run with PermissionError -- those dirs carry an ACL for a
+# different security identity, not the account running pytest. Since
+# norecursedirs *replaces* pytest's default list, the defaults are kept here
+# and "runs"/"psx-bve-*" appended.
+testpaths = ["tests"]
+norecursedirs = [
+    "*.egg",
+    ".*",
+    "_darcs",
+    "build",
+    "CVS",
+    "dist",
+    "node_modules",
+    "venv",
+    "{arch}",
+    "runs",
+    "psx-bve-*",
+]
