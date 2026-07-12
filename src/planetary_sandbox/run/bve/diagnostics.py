@@ -143,7 +143,10 @@ class DiagnosticsRecorder:
         self.omega = float(omega)
         self.spectra_every = int(spectra_every)
         self.roundtrip_every = int(roundtrip_every)
-        self.min_edge = getattr(grid, "min_edge_length", None)
+        # Geometry-owned CFL length scale (geodesic == min_edge_length);
+        # attribute name kept for CSV/plot continuity.
+        self.min_edge = getattr(grid, "cfl_length_scale", None) \
+            or getattr(grid, "min_edge_length", None)
 
         self.dir = pathlib.Path(out_dir) / "diagnostics"
         self.dir.mkdir(parents=True, exist_ok=True)

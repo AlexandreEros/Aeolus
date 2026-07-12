@@ -190,6 +190,11 @@ class GeodesicGridGeometry(GridGeometry):
         return np.column_stack([self.longitudes, self.latitudes])
 
     @property
+    def cfl_length_scale(self) -> float | None:
+        """The historical CFL scale for geodesic grids: minimum edge length."""
+        return self.min_edge_length
+
+    @property
     def cell_areas(self) -> np.ndarray:
         """
         Compute quadrature weights for spherical harmonic integration.

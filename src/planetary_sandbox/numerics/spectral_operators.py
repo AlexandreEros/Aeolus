@@ -307,12 +307,10 @@ class SpectralOperators:
         """
         Return (u, v) on the SH evaluation grid (u=eastward, v=northward).
         """
-        xyz = cp.asarray(self.grid.points, cp.float64)
-        x,y,z = cp.ascontiguousarray(xyz[:,0]), cp.ascontiguousarray(xyz[:,1]), cp.ascontiguousarray(xyz[:,2])
-        r = cp.sqrt(x*x + y*y + z*z)
-
-        # cosφ = sqrt(x^2+y^2)/r, sinθ = cosφ
-        coslat = cp.sqrt(x*x + y*y) / r
+        # cosφ from the geometry interface only (no grid-family assumptions;
+        # cos(lat) >= 0, identical to the old sqrt(x^2+y^2)/r for unit points).
+        lat = cp.asarray(self.grid.point_latitudes, cp.float64)
+        coslat = cp.cos(lat)
         coslat_safe = cp.where(cp.abs(coslat) < 1e-6, cp.nan, coslat)
 
         # spectral derivatives -> grid

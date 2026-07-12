@@ -50,6 +50,15 @@ class GridGeometry(ABC):
         return None
 
     @property
+    def cfl_length_scale(self) -> float | None:
+        """Characteristic advective length scale for CFL timestep selection.
+
+        None means "this geometry defines no length scale" — callers must use
+        their own explicit fallback rather than a silently wrong number.
+        """
+        return None
+
+    @property
     def is_structured(self) -> bool:
         return self.grid_shape is not None
 

@@ -21,14 +21,17 @@ def run_bve(planet: Planet,
     state = BarotropicState(coeffs=zeta0_lm)
     model = BarotropicVorticity(planet, scenario=scenario, viscosity=viscosity)
 
-    # CFL-based timestep from initial max speed and minimum edge length.
+    # CFL-based timestep from initial max speed and the geometry-owned
+    # length scale (geodesic: min edge length; lat-lon: min meridional
+    # spacing — see the geometry's cfl_length_scale docstring).
     C = 0.5 # CFL safety factor
-    min_edge_length = getattr(planet.grid, "min_edge_length", None)
+    length_scale = getattr(planet.grid, "cfl_length_scale", None) \
+        or getattr(planet.grid, "min_edge_length", None)
     psi0_lm = planet.so.inv_laplacian(zeta0_lm)
     u0, v0 = planet.so.velocity_from_streamfunction(psi0_lm)
     max_speed = float(cp.max(cp.sqrt(u0**2 + v0**2)).item())
-    if min_edge_length and max_speed > 0:
-        dt_cfl = C * min_edge_length / max_speed
+    if length_scale and max_speed > 0:
+        dt_cfl = C * length_scale / max_speed
     else:
         dt_cfl = 600 # idk
 
