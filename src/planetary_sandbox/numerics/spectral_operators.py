@@ -62,21 +62,32 @@ class SpectralOperators:
     """
 
     def __init__(self, sh: GeodesicSphericalHarmonics, radius: float, grid: GeodesicGridGeometry,
-                 product_quadrature: str = "coarse"):
+                 product_quadrature: str = "coarse", backend=None):
         """
         Parameters
         ----------
-        product_quadrature : {"coarse", "fine"}
+        product_quadrature : str
             Where pseudospectral (pointwise) products are evaluated and
-            analyzed. "coarse" (default): on the state grid itself — the
+            analyzed; the mode set is defined by the backend
+            (`backend.supported_product_quadratures()`). "coarse" (default,
+            supported by every backend): on the state sampling itself — the
             historical behavior; its quadrature cannot integrate the
             degree-~2·l_max product content, and the resulting aliasing lands
-            in the retained band (KNOWN_RISKS.md R-3). "fine": on a reusable
-            resolution-(r+1) geodesic *product grid* built once here —
-            "overresolved product quadrature". This is NOT exact dealiasing;
-            it is a quadrature upgrade whose measured effect is a ~6× smaller
-            invariant-production defect at res 4 / l_max 21.
+            in the retained band (KNOWN_RISKS.md R-3). "fine" (where
+            supported): a backend-chosen overresolved product sampling —
+            the geodesic backend uses a resolution-(r+1) co-grid built once
+            at initialization ("overresolved product quadrature"). This is
+            NOT exact dealiasing; it is a quadrature upgrade whose measured
+            effect is a ~6× smaller invariant-production defect at
+            res 4 / l_max 21. Unsupported modes raise ValueError (no silent
+            fallback).
+        backend : SphericalGridBackend, optional
+            The geometry/transform pairing that owns product-space policy.
+            Inferred from `grid` when omitted (GeodesicBackend for geodesic
+            geometries, coarse-only PointSetBackend otherwise).
         """
+        from .spherical_backend import make_backend
+
         self.sh = sh
         self.R = float(radius)
         self.l_max = sh.l_max
@@ -84,24 +95,16 @@ class SpectralOperators:
         self._diff_ops = None
         self._diff_ops_grid_id = None
 
-        if product_quadrature not in ("coarse", "fine"):
-            raise ValueError(f"product_quadrature must be 'coarse' or 'fine', got {product_quadrature!r}")
+        self.backend = backend if backend is not None else make_backend(grid, sh)
         self.product_quadrature = product_quadrature
-        self.product_grid = None
-        self.product_sh = None
-        self._product_coslat = None
-        if product_quadrature == "fine":
-            if not isinstance(grid, GeodesicGridGeometry):
-                raise ValueError("product_quadrature='fine' requires a GeodesicGridGeometry state grid")
-            # One reusable resolution-(r+1) product grid + SH evaluator, built
-            # at operator initialization (never inside the tendency). The
-            # basis functions are the same Y_l^m up to the same l_max; they
-            # are *evaluated directly* at the fine points (no interpolation
-            # from the coarse state grid is involved anywhere).
-            self.product_grid = GeodesicGridGeometry(grid.resolution + 1, self.R)
-            self.product_sh = GeodesicSphericalHarmonics(
-                self.product_grid, self.l_max, weights="voronoi")
-            self._product_coslat = cp.maximum(self.product_grid.coslat, 1e-8)
+        # Built once here (never inside the tendency); raises on unsupported
+        # modes.
+        self._product_space = self.backend.product_space(product_quadrature)
+        # Back-compat attributes (used by tests and diagnostics tooling):
+        # populated only when a distinct product sampling exists.
+        self.product_grid = self._product_space.geometry
+        self.product_sh = (self._product_space.sh
+                           if self._product_space.geometry is not None else None)
 
         # --- Eigenvalues for diagonal spectral operators ---
         l = cp.arange(0, self.l_max + 1, dtype=cp.float64)              # (l,)
@@ -390,13 +393,13 @@ class SpectralOperators:
         so, eliminating the physical φ-derivatives,
             J(a, b) = (a_sinth b_lam - a_lam b_sinth) / cos²φ.
 
-        Product evaluation grid (see __init__ `product_quadrature`):
-        with "fine", the derivative coefficient fields are evaluated directly
-        on the resolution-(r+1) product grid, multiplied pointwise there, and
-        the product is analyzed with the fine-grid quadrature into the same
-        (l_max+1, l_max+1) coefficient layout ("overresolved product
-        quadrature" — a quadrature upgrade, not exact dealiasing). With
-        "coarse", everything happens on the state grid (historical behavior).
+        Product evaluation sampling (see __init__ `product_quadrature`):
+        the backend's ProductSpace decides where the derivative coefficient
+        fields are evaluated, multiplied pointwise, and analyzed back into
+        the same (l_max+1, l_max+1) coefficient layout. With the geodesic
+        backend, "fine" is a resolution-(r+1) co-grid ("overresolved product
+        quadrature" — a quadrature upgrade, not exact dealiasing); "coarse"
+        is the state sampling itself (historical behavior).
 
         Parameters
         ----------
@@ -412,12 +415,9 @@ class SpectralOperators:
             external `sh.transform`, that path reproduces the pre-fix
             production tendency exactly (kept for A/B comparisons).
         """
-        if self.product_quadrature == "fine":
-            sh_p = self.product_sh
-            coslat = self._product_coslat
-        else:
-            sh_p = self.sh
-            coslat = cp.maximum(self.grid.coslat, 1e-8)
+        ps = self._product_space
+        sh_p = ps.sh
+        coslat = ps.coslat
 
         # Spectral -> product-grid derivative fields (direct basis evaluation
         # at the product points; no interpolation from the state grid).

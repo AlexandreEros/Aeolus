@@ -174,12 +174,16 @@ class Planet:
         if tectonic_params is None:
             tectonic_params = TectonicParams()
 
-        # Create grid
-        grid = GeodesicGridGeometry(grid_resolution, params.radius)
+        # Grid geometry, SH transform, and their pairing (the backend, which
+        # owns product-quadrature policy) are three separate objects.
+        from ..numerics.spherical_backend import GeodesicBackend
 
+        grid = GeodesicGridGeometry(grid_resolution, params.radius)
         sh = GeodesicSphericalHarmonics(grid, l_max)
+        backend = GeodesicBackend(grid, sh)
         so = SpectralOperators(sh, params.radius, grid,
-                               product_quadrature=product_quadrature)
+                               product_quadrature=product_quadrature,
+                               backend=backend)
 
         height_coeffs = generate_spectral_terrain_gpu(
             sph=sh,
