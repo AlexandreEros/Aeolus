@@ -157,8 +157,16 @@ class Planet:
                  grid_resolution: int = 3,
                  terrain_params: Optional[SpectralTerrainParams] = None,
                  tectonic_params: Optional[TectonicParams] = None,
-                 l_max: int = 15) -> 'Planet':
-
+                 l_max: int = 15,
+                 product_quadrature: str = "fine") -> 'Planet':
+        """
+        product_quadrature : {"fine", "coarse"}
+            Passed to SpectralOperators. "fine" (default) evaluates nonlinear
+            products on a reusable resolution-(grid_resolution+1) product grid
+            ("overresolved product quadrature", KNOWN_RISKS.md R-3);
+            "coarse" retains the historical state-grid product path for
+            A/B comparisons.
+        """
         if terrain_params is None:
             terrain_params = SpectralTerrainParams(
                 rms_elevation=params.radius * 0.001,  # 0.1% of radius
@@ -168,9 +176,10 @@ class Planet:
 
         # Create grid
         grid = GeodesicGridGeometry(grid_resolution, params.radius)
-        
+
         sh = GeodesicSphericalHarmonics(grid, l_max)
-        so = SpectralOperators(sh, params.radius, grid)
+        so = SpectralOperators(sh, params.radius, grid,
+                               product_quadrature=product_quadrature)
 
         height_coeffs = generate_spectral_terrain_gpu(
             sph=sh,

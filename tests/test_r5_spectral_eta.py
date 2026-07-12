@@ -26,6 +26,7 @@ except Exception:  # pragma: no cover - import guard
 pytestmark = pytest.mark.skipif(not _HAS_CUDA, reason="CUDA/CuPy not available")
 
 if _HAS_CUDA:
+    from planetary_sandbox.numerics import SpectralOperators
     from planetary_sandbox.planet import Planet, PlanetaryParameters
     from planetary_sandbox.run.bve.barotropic_vorticity import (
         BarotropicState,
@@ -88,31 +89,54 @@ def test_analytic_f_matches_transform_within_envelope(rotating):
 # ---------------------------------------------------------------------------
 
 def test_tendency_does_not_roundtrip_state(rotating):
-    """The tendency must call the forward transform exactly once per
-    evaluation (analysis of the advection product with dealias=True happens
-    inside the Jacobian; the outer transform of -J is the second) — the old
-    code performed a third, extra analysis of inv_transform(zeta)+f.
-    FAILS ON PARENT (counts 3)."""
+    """Structural lock on the tendency's transform usage.
+
+    History: the pre-R5 code performed 3 forward transforms on the state
+    grid per tendency call (eta round trip + jacobian truncation round trip
+    + advection). R-5 removed the eta round trip (2 calls). The R-3 fix
+    ("overresolved product quadrature", spectral return) moves the single
+    remaining product analysis onto the fine product grid and eliminates the
+    truncation synthesis/re-analysis round trip entirely:
+
+        state-grid forward transforms per tendency:   0
+        product-grid forward transforms per tendency: 1
+
+    FAILS ON EVERY EARLIER REVISION (parent of R-5 counts 3 on the state
+    grid; post-R5/pre-R3 counts 2)."""
     planet = rotating
     model = BarotropicVorticity(planet, viscosity=0.0)
     zeta_lm = planet.sh.transform(make_ic("two_vortices", planet))
 
-    calls = {"n": 0}
-    orig = planet.sh.transform
+    assert planet.so.product_quadrature == "fine", \
+        "production Planet.generate should default to the fine product grid"
 
-    def counting(values):
-        calls["n"] += 1
-        return orig(values)
+    calls = {"coarse": 0, "fine": 0}
+    orig_coarse = planet.sh.transform
+    orig_fine = planet.so.product_sh.transform
 
-    planet.sh.transform = counting
+    def counting_coarse(values):
+        calls["coarse"] += 1
+        return orig_coarse(values)
+
+    def counting_fine(values):
+        calls["fine"] += 1
+        return orig_fine(values)
+
+    planet.sh.transform = counting_coarse
+    planet.so.product_sh.transform = counting_fine
     try:
         model.tendency(BarotropicState(zeta_lm), None)
     finally:
-        planet.sh.transform = orig
+        planet.sh.transform = orig_coarse
+        planet.so.product_sh.transform = orig_fine
 
-    assert calls["n"] == 2, (
-        f"tendency performed {calls['n']} forward transforms; expected 2 "
-        "(jacobian dealias + advection). A third indicates the eta round trip."
+    assert calls["coarse"] == 0, (
+        f"tendency performed {calls['coarse']} state-grid analyses; expected 0 "
+        "(a nonzero count indicates a synthesis/re-analysis round trip)."
+    )
+    assert calls["fine"] == 1, (
+        f"tendency performed {calls['fine']} product-grid analyses; expected "
+        "exactly 1 (the single analysis of the pointwise product)."
     )
 
 
@@ -201,10 +225,21 @@ def test_rotating_short_integration_conserves_energy(rotating):
     Threshold 5e-3 sits 2.9x above the measured branch value (margin against
     hardware jitter) and 6.8x below the measured parent value (regression
     discrimination). FAILS ON PARENT.
+
+    Isolation note (added when the R-3 fine product landed): this test targets
+    R-5 (the eta construction), so it pins the nonlinear-product path to the
+    historical "coarse" quadrature. Otherwise the R-3 fine product would also
+    enter, and on the quasi-steady two_vortices IC the fine product honestly
+    resolves nascent filamentation cascade into the truncation (integ5 rises
+    to 6.7e-3) -- a real, IC-specific effect that has nothing to do with the
+    eta round trip this test guards. Holding product_quadrature='coarse'
+    keeps exactly one variable (eta construction) in play.
     """
     planet = rotating
     model = BarotropicVorticity(planet, viscosity=0.0)
-    sh, so, grid = planet.sh, planet.so, planet.grid
+    model.so = SpectralOperators(planet.sh, planet.params.radius, planet.grid,
+                                 product_quadrature="coarse")
+    sh, so, grid = planet.sh, model.so, planet.grid
     R, omega = planet.params.radius, planet.params.angular_velocity
 
     zeta_lm = sh.transform(make_ic("two_vortices", planet))

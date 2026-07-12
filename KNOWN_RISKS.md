@@ -96,7 +96,7 @@ still owed by VALIDATION_PLAN A-1. Locked by `tests/test_spectral_operators.py`
 
 ## S2 — Materially degrades results
 
-### R-3. "Dealiasing" is truncation-only and does not dealias
+### R-3. "Dealiasing" is truncation-only and does not dealias  — ✅ FIXED (branch `fix/r3-fine-product-grid`)
 
 The 2/3-rule zeroing in `jacobian_pseudospectral`/`advect_scalar_by_streamfunction` is
 applied *after* analyzing the product on the same point set. With inexact quadrature there
@@ -124,15 +124,49 @@ flip), as expected for quadrature error and not for isotropic-in-l truncation er
 At res 5 the quadrature term shrinks ~6× and the extra round trip (A↔B) becomes the
 next visible contributor (−7.2e−4 vs −3.8e−4).
 
-**Smallest falsifiable repair** (not yet implemented): promote variant D to production —
-evaluate the nonlinear product on a resolution-(r+1) co-grid at the same l_max
-(synthesize the four derivative fields on fine points, multiply, analyze with fine
-weights, truncate spectrally, return spectral — which also removes the extra round
-trip). State, linear operators, truncation level, and time stepping unchanged.
-Pre-registered predictions: res4/l21 RH4 5-day E drift −2.64e−3 → −4.5e−4 (±20 %);
-t0 production rate → ≈ −6e−5/day; tilt-60° drift magnitude shrinks by ≥3×.
-Measured cost: ~3.5× tendency cost at res 4 (22.6 s vs 6.4 s per 5-day run) — far
-cheaper than running the whole model at res 5.
+**Smallest falsifiable repair** (pre-registered before implementation): promote variant D
+to production — evaluate the nonlinear product on a resolution-(r+1) co-grid at the same
+l_max (synthesize the four derivative fields on fine points, multiply, analyze with fine
+weights, truncate spectrally, return spectral — which also removes the extra round trip).
+State, linear operators, truncation level, and time stepping unchanged. Pre-registered
+predictions: (P1) res4/l21 RH4 5-day E drift −2.64e−3 → −4.5e−4 (±20 %); (P2) t0 production
+rate → ≈ −6e−5/day; (P3) tilt-60° drift magnitude shrinks by ≥3×. Measured cost ~3.5×
+tendency at res 4.
+
+**Fix applied** (`fix/r3-fine-product-grid`): `SpectralOperators(..., product_quadrature=
+"fine")` builds one reusable resolution-(r+1) product grid + SH evaluator at init;
+`jacobian_pseudospectral(..., return_spectral=True)` evaluates the derivative fields on
+those points, forms the product, analyzes with the fine quadrature, truncates once, and
+returns coefficients; the tendency consumes them directly. `Planet.generate` defaults to
+`"fine"`; `"coarse"` retains the historical path for A/B tests. **Verification (production
+path, res4/l21, RH4 5-day):**
+
+  P1 ✅ tilt-0 E drift −4.455e−4 (in band; 6.4× better than coarse; = variant D exactly)
+  P2 ✅ t0 production rate −6.1e−5/day (test `test_prediction_p2_t0_production_rate`)
+  P3 ❌ **refuted as worded** and corrected below.
+
+**Attribution correction (this fix supersedes the characterization's single-cause story).**
+Decomposing the fix into its two parts — round-trip removal (A→B) and fine quadrature
+(B→D) — across RH4 orientations reveals they dominate in *different* regimes:
+
+    tilt   A coarse+RT   B coarse+spec   D fine+spec (prod)
+      0°    −2.64e−3      −2.84e−3        −4.46e−4     ← fine quadrature does the work (6.4×)
+     30°    −1.11e−2      −1.03e−2        −9.69e−3     ← neither helps much (truncation floor)
+     60°    +1.75e−2      +5.41e−4        −9.26e−4     ← round-trip removal does the work (32×)
+
+So the characterization's "the product-analysis quadrature is *the* dominant defect" holds
+**on-axis only**; off-axis the extra synthesis/re-analysis round trip is a separate,
+larger, strongly orientation-dependent error (it was invisible in the characterization
+because the tilt sweep there ran variant A alone). P3 fails because it credited the fine
+*quadrature* with the tilt-60 gain; the gain is real (fix as a whole cuts tilt-60 19×,
++1.75e−2 → −9.26e−4) but comes from the round-trip removal — and the fine quadrature
+slightly *worsens* the (non-solution) tilt-60 flow. The fix is beneficial at every
+orientation (6.4× / 1.1× / 19×) and never harmful, so it stands; both components are
+warranted. **Remaining limitation:** tilt-30 barely improves — a genuinely cascading
+non-solution flow whose drift is set by the l=21 truncation removing real flux, which no
+product-quadrature upgrade can address (that is a resolution/hyperviscosity question, not
+R-3). Memory note: `"fine"` builds a res-(r+1) grid at init (res 5 co-grid ≈ 160 MB at
+l_max 21; res 6 co-grid for a res-5 state ≈ 1.3 GB — set `"coarse"` there).
 
 ### R-4. Time step is fixed from the initial state; "adaptive time-stepping" claim is wrong
 

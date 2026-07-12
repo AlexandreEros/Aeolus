@@ -61,13 +61,47 @@ class SpectralOperators:
         - axis 1 = order  m = 0..l_max  (entries with m > l are ignored/zero)
     """
 
-    def __init__(self, sh: GeodesicSphericalHarmonics, radius: float, grid: GeodesicGridGeometry):
+    def __init__(self, sh: GeodesicSphericalHarmonics, radius: float, grid: GeodesicGridGeometry,
+                 product_quadrature: str = "coarse"):
+        """
+        Parameters
+        ----------
+        product_quadrature : {"coarse", "fine"}
+            Where pseudospectral (pointwise) products are evaluated and
+            analyzed. "coarse" (default): on the state grid itself — the
+            historical behavior; its quadrature cannot integrate the
+            degree-~2·l_max product content, and the resulting aliasing lands
+            in the retained band (KNOWN_RISKS.md R-3). "fine": on a reusable
+            resolution-(r+1) geodesic *product grid* built once here —
+            "overresolved product quadrature". This is NOT exact dealiasing;
+            it is a quadrature upgrade whose measured effect is a ~6× smaller
+            invariant-production defect at res 4 / l_max 21.
+        """
         self.sh = sh
         self.R = float(radius)
         self.l_max = sh.l_max
         self.grid = grid
         self._diff_ops = None
         self._diff_ops_grid_id = None
+
+        if product_quadrature not in ("coarse", "fine"):
+            raise ValueError(f"product_quadrature must be 'coarse' or 'fine', got {product_quadrature!r}")
+        self.product_quadrature = product_quadrature
+        self.product_grid = None
+        self.product_sh = None
+        self._product_coslat = None
+        if product_quadrature == "fine":
+            if not isinstance(grid, GeodesicGridGeometry):
+                raise ValueError("product_quadrature='fine' requires a GeodesicGridGeometry state grid")
+            # One reusable resolution-(r+1) product grid + SH evaluator, built
+            # at operator initialization (never inside the tendency). The
+            # basis functions are the same Y_l^m up to the same l_max; they
+            # are *evaluated directly* at the fine points (no interpolation
+            # from the coarse state grid is involved anywhere).
+            self.product_grid = GeodesicGridGeometry(grid.resolution + 1, self.R)
+            self.product_sh = GeodesicSphericalHarmonics(
+                self.product_grid, self.l_max, weights="voronoi")
+            self._product_coslat = cp.maximum(self.product_grid.coslat, 1e-8)
 
         # --- Eigenvalues for diagonal spectral operators ---
         l = cp.arange(0, self.l_max + 1, dtype=cp.float64)              # (l,)
@@ -342,10 +376,10 @@ class SpectralOperators:
 
 
     def jacobian_pseudospectral(self, a_lm: cp.ndarray, b_lm: cp.ndarray,
-                                dealias: bool = True) -> cp.ndarray:
+                                dealias: bool = True,
+                                return_spectral: bool = False) -> cp.ndarray:
         """
-        Pseudospectral spherical Jacobian on *whatever grid the SH object
-        evaluates on* (latlon or geodesic nodes). No regridding.
+        Pseudospectral spherical Jacobian.
 
             J(a, b) = (1/(R^2 cosφ)) (a_λ b_φ - a_φ b_λ) = u_a · ∇b,
             with u_a = k × ∇a.
@@ -355,32 +389,61 @@ class SpectralOperators:
             a_sinth = (1/R) sinθ a_θ = -(1/R) cosφ a_φ   (θ = π/2 - φ colatitude)
         so, eliminating the physical φ-derivatives,
             J(a, b) = (a_sinth b_lam - a_lam b_sinth) / cos²φ.
+
+        Product evaluation grid (see __init__ `product_quadrature`):
+        with "fine", the derivative coefficient fields are evaluated directly
+        on the resolution-(r+1) product grid, multiplied pointwise there, and
+        the product is analyzed with the fine-grid quadrature into the same
+        (l_max+1, l_max+1) coefficient layout ("overresolved product
+        quadrature" — a quadrature upgrade, not exact dealiasing). With
+        "coarse", everything happens on the state grid (historical behavior).
+
+        Parameters
+        ----------
+        dealias : bool
+            Apply the 2/3-rule spectral truncation to the analyzed product
+            (exactly once). The historical name is kept; the operation is a
+            truncation.
+        return_spectral : bool
+            If True, return the truncated coefficients directly — no
+            synthesis/re-analysis round trip. If False (legacy), return a
+            field on the *state* grid: for dealias=True this reproduces the
+            historical truncate-then-synthesize behavior; combined with an
+            external `sh.transform`, that path reproduces the pre-fix
+            production tendency exactly (kept for A/B comparisons).
         """
+        if self.product_quadrature == "fine":
+            sh_p = self.product_sh
+            coslat = self._product_coslat
+        else:
+            sh_p = self.sh
+            coslat = cp.maximum(self.grid.coslat, 1e-8)
 
-        # Spectral -> grid derivatives
-        a_lam   = self.sh.inv_transform(self.d_lambda_coeffs(a_lm)).real               # (1/R) A_λ
-        b_lam   = self.sh.inv_transform(self.d_lambda_coeffs(b_lm)).real               # (1/R) B_λ
-
-        a_sinth = self.sh.inv_transform(self.sin_theta_d_theta_coeffs(a_lm)).real / self.R  # (1/R) sinθ A_θ
-        b_sinth = self.sh.inv_transform(self.sin_theta_d_theta_coeffs(b_lm)).real / self.R  # (1/R) sinθ B_θ
-
-        coslat = self.grid.coslat
-        coslat = cp.maximum(coslat, 1e-8)  # Divide by zero prevention
+        # Spectral -> product-grid derivative fields (direct basis evaluation
+        # at the product points; no interpolation from the state grid).
+        a_lam   = sh_p.inv_transform(self.d_lambda_coeffs(a_lm)).real               # (1/R) A_λ
+        b_lam   = sh_p.inv_transform(self.d_lambda_coeffs(b_lm)).real               # (1/R) B_λ
+        a_sinth = sh_p.inv_transform(self.sin_theta_d_theta_coeffs(a_lm)).real / self.R  # (1/R) sinθ A_θ
+        b_sinth = sh_p.inv_transform(self.sin_theta_d_theta_coeffs(b_lm)).real / self.R  # (1/R) sinθ B_θ
 
         J_grid = (a_sinth * b_lam - a_lam * b_sinth) / coslat**2
 
+        if not (dealias or return_spectral):
+            if sh_p is self.sh:
+                return J_grid
+            # Fine-path callers asking for a grid field get it on the STATE
+            # grid (callers' arrays are state-grid sized); one analysis +
+            # synthesis is unavoidable here.
+            return self.sh.inv_transform(sh_p.transform(J_grid)).real
 
-        if not dealias:
-            return J_grid
+        J_lm = sh_p.transform(J_grid)
 
-        # Dealias by filtering the *transformed* result (simple 2/3 rule)
-        J_lm = self.sh.transform(J_grid)
-        L = self.l_max
-        cut = (2 * L) // 3
+        if dealias:
+            # Spectral truncation (2/3 rule), applied exactly once.
+            cut = (2 * self.l_max) // 3
+            J_lm[cut + 1:, :] = 0.0
+            J_lm[:, cut + 1:] = 0.0
 
-        # zero out high l
-        J_lm[cut+1:, :] = 0.0
-        # and high m (keeping triangular structure)
-        J_lm[:, cut+1:] = 0.0
-
+        if return_spectral:
+            return J_lm
         return self.sh.inv_transform(J_lm).real

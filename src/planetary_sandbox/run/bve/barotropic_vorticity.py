@@ -146,10 +146,13 @@ class BarotropicVorticity:
         # (R-5: no synthesis/re-analysis round trip of the state).
         eta_c = zeta_c + self.f_lm
 
-        # # Compute advection: -J(ψ, η)
-        jacobian_grid = self.so.jacobian_pseudospectral(psi_c, eta_c)
-        # jacobian_grid = self.so.jacobian_pseudospectral(psi_c, eta_c, sin_theta=self.grid.sincolat)
-        advection_c = self.sh.transform(-jacobian_grid)
+        # Advection: -J(ψ, η), consumed spectrally — the Jacobian analyzes the
+        # product (on the fine product grid when so.product_quadrature="fine"),
+        # truncates once, and returns coefficients directly; no synthesis/
+        # re-analysis round trip (R-3 fix, "overresolved product quadrature").
+        advection_c = -self.so.jacobian_pseudospectral(psi_c, eta_c,
+                                                       dealias=True,
+                                                       return_spectral=True)
 
         # Compute diffusion: ν∇²ζ
         diffusion_c = self.nu * self.laplacian_eig[:, None] * zeta_c
