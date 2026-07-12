@@ -112,7 +112,7 @@ Also the CFL length scale should follow the spectral resolution (2πR/l_max), no
 edge, and RK4 stability for the ν∇² term is never checked. No instability was observed in
 short audit runs, but the margin is uncontrolled.
 
-### R-5. Inviscid invariants drift at O(1 %)/day; state round-trips through a lossy transform every tendency call
+### R-5. Inviscid invariants drift at O(1 %)/day; state round-trips through a lossy transform every tendency call  — ✅ FIXED (branch `fix/r5-spectral-absolute-vorticity`)
 
 `tendency` synthesizes ζ to the grid, adds f, and re-analyzes — 1 lossy round trip per
 evaluation, 4 per RK4 step — although `f_lm` is a constant (a single (1,0) coefficient)
@@ -120,6 +120,28 @@ that could be added in spectral space. **[measured]** ν = 0, res 4 / l_max 20, 
 (≈6 days): energy −2.4 %, enstrophy −1.4 % (circulation pinned to ~0 by construction).
 For a correctly dealiased spectral BVE these should be at time-integration error levels.
 No invariant is monitored during runs.
+
+**Fix applied** (`89985aa`): η = ζ + f_lm built in spectral space; f_lm is the exact
+(1,0) coefficient `2Ω·sqrt(4π/3)`; the state is never synthesized/re-analyzed in the
+tendency. Mechanism quantified (`tests/audit_r5_mechanism.py`): the transform recovers
+f's a₁₀ to machine precision but **leaks ~0.85 % of f across other degrees — ~12 % of
+‖ζ‖ injected into η per call** (f ≈ 48×‖ζ‖), 12.4× the ζ round-trip error.
+**[measured, 10-day rotating baseline res4/l21]** absolute-enstrophy drift
+−7.9e−3 → **−3.6e−4** (22×); l=1 energy loss −18.8 % → −5.7 %; 0.5-day energy drift
++1.1e−2 → +3.5e−5 (~300×); total 10-day energy drift −6.4 % → **−3.8 %**; wall time
+−21 % (8 fwd + 20 inv transforms per RK4 step, was 12 + 24). Locked by
+`tests/test_r5_spectral_eta.py` (verified failing on parent `0b6c135`).
+
+**Attribution corrections recorded for honesty:** (i) the earlier claim that the f
+round trip explained the *entire* rotating energy loss was wrong — the non-rotating
+"control" behind it is a quasi-steady state (axisymmetric vortices ~120° apart;
+tendency ~1e−13), i.e. it has no dynamics to lose energy; (ii) the falsifiable
+prediction "~0.01 % rotating drift after R-5" is **refuted** — the remaining −3.8 %/10 d
+is not the η construction (instantaneous dE/dt is a null for both constructions since
+∮ψJ(ψ,η)dA = 0 for any η; the damage was trajectory-level). Leading suspects for the
+remainder: truncation-only dealiasing (R-3) acting on the β-driven cascade, product-
+analysis quadrature error, and time-step size (R-4) — attribution is the next
+fixed-dt/resolution sweep, not yet established.
 
 ### R-6. `step_leapfrog` is dead code that crashes if called
 
