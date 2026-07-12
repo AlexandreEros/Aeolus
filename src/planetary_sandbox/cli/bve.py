@@ -23,7 +23,11 @@ def _resolve_writable_base_dir(requested_out: str) -> tuple[pathlib.Path, bool]:
         probe_path.unlink()
         return out_dir, False
     except OSError:
-        fallback_root = pathlib.Path(tempfile.mkdtemp(prefix="psx-bve-", dir="."))
+        # Fall back to the system temp location, NOT dir="." — dropping the
+        # temp dir into the repo root left persistent, sometimes ACL-locked
+        # `psx-bve-*` directories behind (one of which broke bare `pytest`
+        # collection). Keep run outputs out of the project tree entirely.
+        fallback_root = pathlib.Path(tempfile.mkdtemp(prefix="psx-bve-"))
         fallback_out_dir = fallback_root / out_dir.name
         fallback_out_dir.mkdir(parents=True, exist_ok=True)
         return fallback_out_dir, True
@@ -77,7 +81,12 @@ def main():
 
     base_dir, used_fallback = _resolve_writable_base_dir(args.out)
     if used_fallback:
-        print(f"Requested base path '{args.out}' is not writable. Using '{base_dir}' instead.")
+        banner = "=" * 72
+        print(banner)
+        print(f"WARNING: requested --out '{args.out}' is not writable.")
+        print(f"         Run outputs will be written OUTSIDE the project tree to:")
+        print(f"           {base_dir.resolve()}")
+        print(banner)
 
     # Build the config dict *before* creating the run dir so the run ID reflects
     # exactly what will be written to disk.
