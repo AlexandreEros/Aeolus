@@ -238,6 +238,7 @@ def write_run_manifest(
     *,
     run_id: Optional[str] = None,
     experiment: Optional[str] = None,
+    numerics: Optional[dict] = None,
 ) -> pathlib.Path:
     """Write a ``manifest.json`` capturing everything needed to reproduce."""
     versions = {"python": sys.version.split()[0]}
@@ -262,6 +263,9 @@ def write_run_manifest(
         "experiment": experiment,
         "argv": sys.argv,
         "run_config": run_config,
+        # Backend/state-sampling/product-sampling/transform provenance
+        # (SphericalGridBackend.describe()); None for legacy callers.
+        "numerics": numerics,
         "git": {
             "commit": _git(["rev-parse", "HEAD"]),
             "branch": _git(["rev-parse", "--abbrev-ref", "HEAD"]),

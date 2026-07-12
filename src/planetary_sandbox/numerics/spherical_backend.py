@@ -103,6 +103,23 @@ class SphericalGridBackend(ABC):
     def _build_product_space(self, mode: str) -> ProductSpace:
         """Construct the product space for a supported `mode` (called once)."""
 
+    def describe(self, product_quadrature: str) -> dict:
+        """JSON-serializable numerics provenance for run manifests.
+
+        Records the backend family, grid family, state sampling, the product
+        sampling actually used for `product_quadrature`, and the transform
+        type — enough to know which numerics produced a run's outputs.
+        """
+        return {
+            "backend": type(self).__name__,
+            "grid": type(self.geometry).__name__,
+            "state_sampling": self.product_space("coarse").label,
+            "product_quadrature": product_quadrature,
+            "product_sampling": self.product_space(product_quadrature).label,
+            "transform": type(self.sh).__name__,
+            "l_max": int(self.l_max),
+        }
+
     # -- shared helpers ------------------------------------------------------
 
     def _coarse_coslat(self) -> cp.ndarray:

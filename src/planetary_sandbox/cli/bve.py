@@ -43,6 +43,11 @@ def build_parser():
     # Default (l_max=21, resolution=4) keeps ~10 grid points per SH basis
     # function, within the transform's usable envelope (see KNOWN_RISKS.md R-2).
     parser.add_argument("--lmax", type=int, default=21)
+    parser.add_argument("--grid", type=str, default="geodesic",
+                        choices=["geodesic", "latlon"],
+                        help="Grid family / backend. 'geodesic' (default) "
+                             "uses --resolution; 'latlon' uses --nlat/--nlon "
+                             "(Gauss-Legendre latitudes, uniform longitudes).")
     parser.add_argument("--resolution", type=int, default=4)
     parser.add_argument("--nlat", type=int, default=128)
     parser.add_argument("--nlon", type=int, default=256)
@@ -111,6 +116,9 @@ def main():
         grid_resolution=args.resolution,
         l_max=args.lmax,
         product_quadrature=args.product_quadrature,
+        grid_type=args.grid,
+        nlat=args.nlat,
+        nlon=args.nlon,
     )
 
     # Initial condition on grid, then transform -> spectral ζ_lm
@@ -122,7 +130,8 @@ def main():
     run_config["experiment"] = args.experiment
     (out_dir / "config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
     write_run_manifest(out_dir, run_config,
-                       run_id=run_dir.run_id, experiment=args.experiment)
+                       run_id=run_dir.run_id, experiment=args.experiment,
+                       numerics=planet.so.backend.describe(args.product_quadrature))
 
     run_bve(planet=planet,
             zeta0_lm=zeta0_lm,
