@@ -230,8 +230,14 @@ class DiagnosticsRecorder:
 # Post-processing (separate from data production; safe to rerun offline)
 # ---------------------------------------------------------------------------
 
-def plot_diagnostics(out_dir: pathlib.Path) -> list[pathlib.Path]:
-    """Render standard figures from a run's diagnostics files."""
+def plot_diagnostics(out_dir: pathlib.Path,
+                     metadata: dict | None = None) -> list[pathlib.Path]:
+    """Render standard figures from a run's diagnostics files.
+
+    ``metadata`` is stamped into each PNG's tEXt chunks (matplotlib PNG
+    backend); per-figure ``Source`` is filled with the run-relative path of
+    the data file that fed the figure.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -241,6 +247,14 @@ def plot_diagnostics(out_dir: pathlib.Path) -> list[pathlib.Path]:
     fig_dir = out_dir / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
     written: list[pathlib.Path] = []
+
+    base_meta = dict(metadata) if metadata else {}
+
+    def _save(fig, path: pathlib.Path, source: str | None = None) -> None:
+        meta = dict(base_meta)
+        if source:
+            meta["Source"] = source
+        fig.savefig(path, dpi=150, bbox_inches="tight", metadata=meta or None)
 
     data = np.genfromtxt(diag_dir / "timeseries.csv", delimiter=",", names=True)
     data = np.atleast_1d(data)
@@ -267,7 +281,7 @@ def plot_diagnostics(out_dir: pathlib.Path) -> list[pathlib.Path]:
     ax.set_title("Inviscid invariant drift (should be ~0)")
     ax.legend()
     p = fig_dir / "invariant_drift.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
+    _save(fig, p, source="diagnostics/timeseries.csv")
     plt.close(fig)
     written.append(p)
 
@@ -281,7 +295,7 @@ def plot_diagnostics(out_dir: pathlib.Path) -> list[pathlib.Path]:
     ax2.set_ylabel("CFL number", color="C1")
     ax1.set_title("Flow speed and CFL (dt is fixed: R-4)")
     p = fig_dir / "cfl_history.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
+    _save(fig, p, source="diagnostics/timeseries.csv")
     plt.close(fig)
     written.append(p)
 
@@ -301,7 +315,7 @@ def plot_diagnostics(out_dir: pathlib.Path) -> list[pathlib.Path]:
     ax.set_title("Spectral health")
     ax.legend()
     p = fig_dir / "spectral_health.png"
-    fig.savefig(p, dpi=150, bbox_inches="tight")
+    _save(fig, p, source="diagnostics/timeseries.csv")
     plt.close(fig)
     written.append(p)
 
@@ -321,7 +335,7 @@ def plot_diagnostics(out_dir: pathlib.Path) -> list[pathlib.Path]:
         ax.set_title("Enstrophy degree spectra (watch for pile-up near l_max)")
         ax.legend()
         p = fig_dir / "spectra.png"
-        fig.savefig(p, dpi=150, bbox_inches="tight")
+        _save(fig, p, source="diagnostics/spectra.npz")
         plt.close(fig)
         written.append(p)
 

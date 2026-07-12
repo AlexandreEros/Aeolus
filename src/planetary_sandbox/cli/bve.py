@@ -8,11 +8,12 @@ import numpy as np
 from planetary_sandbox.planet import Planet, PlanetaryParameters
 from planetary_sandbox.run.bve.runner import run_bve
 from planetary_sandbox.run.bve.initial_conditions import make_ic, INITIAL_CONDITIONS
-from planetary_sandbox.run.bve.io import write_run_manifest
+from planetary_sandbox.run.bve.io import create_run_dir, write_run_manifest
 from planetary_sandbox.viz.vorticity_viewer import VorticityViewer
 
 
-def _resolve_writable_out_dir(requested_out: str) -> tuple[pathlib.Path, bool]:
+def _resolve_writable_base_dir(requested_out: str) -> tuple[pathlib.Path, bool]:
+    """Ensure the runs *base* directory exists and is writable; fall back if not."""
     out_dir = pathlib.Path(requested_out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -48,13 +49,38 @@ def main():
     parser.add_argument("--scenario", type=str, default="two_vortices",
                    choices=list(INITIAL_CONDITIONS.keys()))
     parser.add_argument("--viscosity", type=float, default=0.0)
-    parser.add_argument("--out", type=str, default="out/bve_run")
+    parser.add_argument("--out", type=str, default="runs",
+                        help="Base directory for run outputs. Each run creates a "
+                             "unique subdirectory under this (or under "
+                             "<out>/<experiment>/ if --experiment is given).")
+    parser.add_argument("--experiment", type=str, default=None,
+                        help="Optional grouping name; runs go to <out>/<experiment>/<run_id>/.")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="Reuse an existing run directory if the auto-generated "
+                             "run ID collides (same command in the same second). "
+                             "Off by default to keep runs immutable.")
 
     args = parser.parse_args()
 
-    out_dir, used_fallback = _resolve_writable_out_dir(args.out)
+    base_dir, used_fallback = _resolve_writable_base_dir(args.out)
     if used_fallback:
-        print(f"Requested output path '{args.out}' is not writable. Using '{out_dir}' instead.")
+        print(f"Requested base path '{args.out}' is not writable. Using '{base_dir}' instead.")
+
+    # Build the config dict *before* creating the run dir so the run ID reflects
+    # exactly what will be written to disk.
+    run_config = vars(args).copy()
+    run_config["out"] = str(base_dir)
+
+    run_dir = create_run_dir(
+        base_dir, run_config,
+        experiment=args.experiment,
+        overwrite=args.overwrite,
+    )
+    out_dir = run_dir.path
+    run_dir.update_latest_pointer()
+    print(f"Run directory: {out_dir}")
+    if run_dir.reused:
+        print("  (reused via --overwrite; existing files may be replaced)")
 
     planet = Planet.generate(
         params=PlanetaryParameters.from_earth_like(
@@ -69,10 +95,11 @@ def main():
     zeta0_lm = planet.sh.transform(zeta0_grid)
 
     # Save run config + provenance manifest (git commit, versions, GPU, argv)
-    run_config = vars(args).copy()
-    run_config["out"] = str(out_dir)
+    run_config["run_id"] = run_dir.run_id
+    run_config["experiment"] = args.experiment
     (out_dir / "config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
-    write_run_manifest(out_dir, run_config)
+    write_run_manifest(out_dir, run_config,
+                       run_id=run_dir.run_id, experiment=args.experiment)
 
     run_bve(planet=planet,
             zeta0_lm=zeta0_lm,
@@ -80,8 +107,9 @@ def main():
             t_end_days=args.duration_days,
             out_dir=out_dir,
             viscosity=args.viscosity,
-            scenario=args.scenario)
-                         
+            scenario=args.scenario,
+            figure_metadata=run_dir.figure_metadata())
+
 
 if __name__ == "__main__":
     main()

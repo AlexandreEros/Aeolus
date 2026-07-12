@@ -10,13 +10,14 @@ from .barotropic_vorticity import BarotropicVorticity, BarotropicState
 from .diagnostics import DiagnosticsRecorder, plot_diagnostics
 from ...viz.vorticity_viewer import VorticityViewer
 
-def run_bve(planet: Planet, 
+def run_bve(planet: Planet,
             zeta0_lm: cp.ndarray,
             dt_snapshots: float,
-            t_end_days: float, 
+            t_end_days: float,
             out_dir: pathlib.Path,
             viscosity: float,
-            scenario: str = "two_vortices") -> int:
+            scenario: str = "two_vortices",
+            figure_metadata: dict | None = None) -> int:
     state = BarotropicState(coeffs=zeta0_lm)
     model = BarotropicVorticity(planet, scenario=scenario, viscosity=viscosity)
 
@@ -80,7 +81,7 @@ def run_bve(planet: Planet,
 
     recorder.close()
     try:
-        plot_diagnostics(out_dir)
+        plot_diagnostics(out_dir, metadata=figure_metadata)
     except Exception as err:
         # Plotting must never take down a finished run; the CSV/npz survive.
         print(f"Diagnostics plotting failed (data preserved): {err}")
@@ -104,11 +105,12 @@ def run_bve(planet: Planet,
                              times=snapshot_times_arr)
 
     # Generate individual snapshot plots for debugging
-    viewer.plot_all_snapshots(scenario=scenario, out_dir=out_dir)
+    viewer.plot_all_snapshots(scenario=scenario, out_dir=out_dir,
+                              metadata=figure_metadata)
 
     # Generate summary plot
     fig = viewer.plot_summary()
-    fig.savefig(out_dir / "bve_summary.png", dpi=200)
+    fig.savefig(out_dir / "bve_summary.png", dpi=200, metadata=figure_metadata)
 
     return 0
     

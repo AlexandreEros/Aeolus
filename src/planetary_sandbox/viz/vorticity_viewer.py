@@ -144,7 +144,7 @@ class VorticityViewer:
         return self._view_grid, (u_grid, v_grid)
 
 
-    def plot_all_snapshots(self, scenario="snapshots", out_dir=None):
+    def plot_all_snapshots(self, scenario="snapshots", out_dir=None, metadata=None):
         """
         Create individual plots for each snapshot to diagnose time evolution.
 
@@ -268,7 +268,7 @@ class VorticityViewer:
         # Save figure
         dt = self.times[1] - self.times[0] if nsnap > 1 else 0.0
         filename = out_dir / f"{scenario}_t{self.times[0]:02.2f}h-{self.times[-1]:02.2f}h-{dt:02.2f}h.png"
-        fig.savefig(filename, dpi=200, bbox_inches='tight')
+        fig.savefig(filename, dpi=200, bbox_inches='tight', metadata=metadata)
         print(f"  Saved: {filename.name}")
         plt.close(fig)
 
