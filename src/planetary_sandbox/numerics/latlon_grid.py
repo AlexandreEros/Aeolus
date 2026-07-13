@@ -134,6 +134,15 @@ class GaussLatLonGridGeometry(GridGeometry):
         the shrinkage of the fastest representable zonal feature. GL colatitude
         nodes are near-uniform (theta_j ~ (j - 1/4)*pi/(nlat + 1/2)), so this
         scale is ~ pi*R/nlat, not pathologically small at the poles.
+
+        This is a grid proxy for the fundamental spectral scale ~R/l_max
+        (measured ~2x it at nlat~l_max). It is conservative in the resolved
+        regime the transform recommends -- nlat >= l_max+1, which
+        GaussLatLonSphericalHarmonics *warns* about but does not enforce: if a
+        caller ignores that warning and runs nlat < l_max+1, pi*R/nlat can
+        exceed R/l_max and this proxy is no longer guaranteed conservative
+        (the transform is also inexact there). Oversampling (nlat >> l_max)
+        stays safe but shrinks the proxy, making the timestep needlessly small.
         """
         colat = np.pi / 2.0 - self._latitudes_np
         return self.radius * float(np.min(np.abs(np.diff(colat))))

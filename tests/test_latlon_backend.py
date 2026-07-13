@@ -126,6 +126,58 @@ def test_fine_product_analysis_is_exact(latlon):
     assert err < 1e-11, f"fine product analysis not exact: {err:.2e}"
 
 
+def _full_degree_fields(l_max, seed=5):
+    rng = np.random.default_rng(seed)
+    a = cp.zeros((l_max + 1, l_max + 1), dtype=cp.complex128)
+    b = cp.zeros_like(a)
+    for l in range(l_max + 1):
+        a[l, 0] = rng.standard_normal()
+        b[l, 0] = rng.standard_normal()
+        for m in range(1, l + 1):
+            a[l, m] = rng.standard_normal() + 1j * rng.standard_normal()
+            b[l, m] = rng.standard_normal() + 1j * rng.standard_normal()
+    return a, b
+
+
+def test_fine_grid_strictly_larger_than_minimal_state_grid():
+    """With a MINIMAL state grid (exact for degree-l_max analysis but too
+    coarse for degree-2*l_max products), the fine product grid must be
+    strictly larger in both axes and restore exact product quadrature —
+    while the coarse (state) grid is measurably inexact. This exercises the
+    distinct-fine-grid path that a 3/2-sized state grid hides."""
+    # Minimal state grid for l_max=5: nlat >= 6, nlon >= 2*5+1 = 11.
+    state = GaussLatLonGridGeometry(L_MAX + 1, 2 * L_MAX + 1, radius=1.0)
+    assert state.grid_shape == (6, 11)
+    sh = GaussLatLonSphericalHarmonics(state, L_MAX)  # adequate: no warning
+    backend = LatLonBackend(state, sh)
+
+    fine = backend.product_space("fine").geometry
+    # 3/2 rule: nlat_f = (3*l_max)//2 + 1 = 8, nlon_f = 3*l_max + 1 = 16.
+    assert (fine.nlat, fine.nlon) == (8, 16)
+    assert fine.nlat > state.nlat and fine.nlon > state.nlon  # strictly larger
+
+    a, b = _full_degree_fields(L_MAX)
+
+    # Dense reference (well over-resolved) is the ground truth.
+    ref = GaussLatLonSphericalHarmonics(
+        GaussLatLonGridGeometry(4 * L_MAX, 8 * L_MAX, radius=1.0), L_MAX)
+    coeffs_ref = ref.transform(ref.inv_transform(a) * ref.inv_transform(b))
+
+    # Fine grid: exact.
+    fine_sh = backend.product_space("fine").sh
+    coeffs_fine = fine_sh.transform(fine_sh.inv_transform(a) * fine_sh.inv_transform(b))
+    err_fine = float(cp.max(cp.abs(coeffs_fine - coeffs_ref)))
+    assert err_fine < 1e-11, f"fine product analysis not exact: {err_fine:.2e}"
+
+    # Coarse (state) grid: measurably inexact — proves the fine grid is
+    # doing real work, not just duplicating the state sampling.
+    coeffs_coarse = sh.transform(sh.inv_transform(a) * sh.inv_transform(b))
+    err_coarse = float(cp.max(cp.abs(coeffs_coarse - coeffs_ref)))
+    assert err_coarse > 1e-6, (
+        f"coarse product analysis unexpectedly exact ({err_coarse:.2e}) — "
+        "the minimal state grid should alias degree-2*l_max products")
+
+
 def test_spectral_operators_fine_mode_on_latlon(latlon):
     """The seam works end-to-end: SpectralOperators accepts the lat-lon
     backend in 'fine' mode and the Jacobian contract holds (J(a,a)=0)."""
