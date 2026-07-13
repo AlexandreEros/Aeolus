@@ -25,8 +25,10 @@ def run_bve(planet: Planet,
     # length scale (geodesic: min edge length; lat-lon: min meridional
     # spacing — see the geometry's cfl_length_scale docstring).
     C = 0.5 # CFL safety factor
-    length_scale = getattr(planet.grid, "cfl_length_scale", None) \
-        or getattr(planet.grid, "min_edge_length", None)
+    # GridGeometry guarantees cfl_length_scale (base returns None; geodesic
+    # routes min_edge_length through it). None/0 falls through to the fixed
+    # default below.
+    length_scale = getattr(planet.grid, "cfl_length_scale", None)
     psi0_lm = planet.so.inv_laplacian(zeta0_lm)
     u0, v0 = planet.so.velocity_from_streamfunction(psi0_lm)
     max_speed = float(cp.max(cp.sqrt(u0**2 + v0**2)).item())
