@@ -7,32 +7,49 @@ from typing import Tuple
 
 from planetary_sandbox.planet import Planet
 from .barotropic_vorticity import BarotropicVorticity, BarotropicState
+from .diagnostics import DiagnosticsRecorder, plot_diagnostics
 from ...viz.vorticity_viewer import VorticityViewer
 
-def run_bve(planet: Planet, 
+def run_bve(planet: Planet,
             zeta0_lm: cp.ndarray,
             dt_snapshots: float,
-            t_end_days: float, 
+            t_end_days: float,
             out_dir: pathlib.Path,
             viscosity: float,
-            scenario: str = "two_vortices") -> int:
+            scenario: str = "two_vortices",
+            figure_metadata: dict | None = None) -> int:
     state = BarotropicState(coeffs=zeta0_lm)
     model = BarotropicVorticity(planet, scenario=scenario, viscosity=viscosity)
 
-    # CFL-based timestep from initial max speed and minimum edge length.
+    # CFL-based timestep from initial max speed and the geometry-owned
+    # length scale (geodesic: min edge length; lat-lon: min meridional
+    # spacing — see the geometry's cfl_length_scale docstring).
     C = 0.5 # CFL safety factor
-    min_edge_length = getattr(planet.grid, "min_edge_length", None)
+    # GridGeometry guarantees cfl_length_scale (base returns None; geodesic
+    # routes min_edge_length through it). None/0 falls through to the fixed
+    # default below.
+    length_scale = getattr(planet.grid, "cfl_length_scale", None)
     psi0_lm = planet.so.inv_laplacian(zeta0_lm)
     u0, v0 = planet.so.velocity_from_streamfunction(psi0_lm)
     max_speed = float(cp.max(cp.sqrt(u0**2 + v0**2)).item())
-    if min_edge_length and max_speed > 0:
-        dt_cfl = C * min_edge_length / max_speed
+    if length_scale and max_speed > 0:
+        dt_cfl = C * length_scale / max_speed
     else:
         dt_cfl = 600 # idk
 
     t = 0.0
     t_end = t_end_days * 86400.0
     ovarall_step = 0
+
+    # Scalar diagnostics recorded every accepted step, straight from the
+    # spectral state (not the plotting fields). Cheap; append-only.
+    recorder = DiagnosticsRecorder(
+        sh=planet.sh, so=planet.so, grid=planet.grid,
+        radius=planet.params.radius,
+        omega=planet.params.angular_velocity,
+        out_dir=out_dir,
+    )
+    recorder.record(t, state.coeffs, dt=0.0, step=0)
 
     all_zeta_lm = []
     vorticity_grid_snapshot_list = []
@@ -65,7 +82,15 @@ def run_bve(planet: Planet,
         t += dt_step
         time_to_snapshot = max(0.0, time_to_snapshot - dt_step)
         ovarall_step += 1
-    
+        recorder.record(t, state.coeffs, dt=dt_step, step=ovarall_step)
+
+    recorder.close()
+    try:
+        plot_diagnostics(out_dir, metadata=figure_metadata)
+    except Exception as err:
+        # Plotting must never take down a finished run; the CSV/npz survive.
+        print(f"Diagnostics plotting failed (data preserved): {err}")
+
     all_zeta_lm = cp.array(all_zeta_lm)
     np.save(out_dir / "vorticity_coeffs.npy", cp.asnumpy(all_zeta_lm))
     
@@ -85,11 +110,12 @@ def run_bve(planet: Planet,
                              times=snapshot_times_arr)
 
     # Generate individual snapshot plots for debugging
-    viewer.plot_all_snapshots(scenario=scenario, out_dir=out_dir)
+    viewer.plot_all_snapshots(scenario=scenario, out_dir=out_dir,
+                              metadata=figure_metadata)
 
     # Generate summary plot
     fig = viewer.plot_summary()
-    fig.savefig(out_dir / "bve_summary.png", dpi=200)
+    fig.savefig(out_dir / "bve_summary.png", dpi=200, metadata=figure_metadata)
 
     return 0
     

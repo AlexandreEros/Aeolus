@@ -61,13 +61,50 @@ class SpectralOperators:
         - axis 1 = order  m = 0..l_max  (entries with m > l are ignored/zero)
     """
 
-    def __init__(self, sh: GeodesicSphericalHarmonics, radius: float, grid: GeodesicGridGeometry):
+    def __init__(self, sh: GeodesicSphericalHarmonics, radius: float, grid: GeodesicGridGeometry,
+                 product_quadrature: str = "coarse", backend=None):
+        """
+        Parameters
+        ----------
+        product_quadrature : str
+            Where pseudospectral (pointwise) products are evaluated and
+            analyzed; the mode set is defined by the backend
+            (`backend.supported_product_quadratures()`). "coarse" (default,
+            supported by every backend): on the state sampling itself — the
+            historical behavior; its quadrature cannot integrate the
+            degree-~2·l_max product content, and the resulting aliasing lands
+            in the retained band (KNOWN_RISKS.md R-3). "fine" (where
+            supported): a backend-chosen overresolved product sampling —
+            the geodesic backend uses a resolution-(r+1) co-grid built once
+            at initialization ("overresolved product quadrature"). This is
+            NOT exact dealiasing; it is a quadrature upgrade whose measured
+            effect is a ~6× smaller invariant-production defect at
+            res 4 / l_max 21. Unsupported modes raise ValueError (no silent
+            fallback).
+        backend : SphericalGridBackend, optional
+            The geometry/transform pairing that owns product-space policy.
+            Inferred from `grid` when omitted (GeodesicBackend for geodesic
+            geometries, coarse-only PointSetBackend otherwise).
+        """
+        from .spherical_backend import make_backend
+
         self.sh = sh
         self.R = float(radius)
         self.l_max = sh.l_max
         self.grid = grid
         self._diff_ops = None
         self._diff_ops_grid_id = None
+
+        self.backend = backend if backend is not None else make_backend(grid, sh)
+        self.product_quadrature = product_quadrature
+        # Built once here (never inside the tendency); raises on unsupported
+        # modes.
+        self._product_space = self.backend.product_space(product_quadrature)
+        # Back-compat attributes (used by tests and diagnostics tooling):
+        # populated only when a distinct product sampling exists.
+        self.product_grid = self._product_space.geometry
+        self.product_sh = (self._product_space.sh
+                           if self._product_space.geometry is not None else None)
 
         # --- Eigenvalues for diagonal spectral operators ---
         l = cp.arange(0, self.l_max + 1, dtype=cp.float64)              # (l,)
@@ -270,12 +307,10 @@ class SpectralOperators:
         """
         Return (u, v) on the SH evaluation grid (u=eastward, v=northward).
         """
-        xyz = cp.asarray(self.grid.points, cp.float64)
-        x,y,z = cp.ascontiguousarray(xyz[:,0]), cp.ascontiguousarray(xyz[:,1]), cp.ascontiguousarray(xyz[:,2])
-        r = cp.sqrt(x*x + y*y + z*z)
-
-        # cosφ = sqrt(x^2+y^2)/r, sinθ = cosφ
-        coslat = cp.sqrt(x*x + y*y) / r
+        # cosφ from the geometry interface only (no grid-family assumptions;
+        # cos(lat) >= 0, identical to the old sqrt(x^2+y^2)/r for unit points).
+        lat = cp.asarray(self.grid.point_latitudes, cp.float64)
+        coslat = cp.cos(lat)
         coslat_safe = cp.where(cp.abs(coslat) < 1e-6, cp.nan, coslat)
 
         # spectral derivatives -> grid
@@ -341,37 +376,72 @@ class SpectralOperators:
     
 
 
-    def jacobian_pseudospectral(self, a_lm: cp.ndarray, b_lm: cp.ndarray, 
-                                dealias: bool = True) -> cp.ndarray:
+    def jacobian_pseudospectral(self, a_lm: cp.ndarray, b_lm: cp.ndarray,
+                                dealias: bool = True,
+                                return_spectral: bool = False) -> cp.ndarray:
         """
-        Pseudospectral Jacobian on *whatever grid the SH object evaluates on*
-        (latlon or geodesic nodes). No regridding.
+        Pseudospectral spherical Jacobian.
+
+            J(a, b) = (1/(R^2 cosφ)) (a_λ b_φ - a_φ b_λ) = u_a · ∇b,
+            with u_a = k × ∇a.
+
+        The available derivative fields are
+            a_lam   = (1/R) a_λ
+            a_sinth = (1/R) sinθ a_θ = -(1/R) cosφ a_φ   (θ = π/2 - φ colatitude)
+        so, eliminating the physical φ-derivatives,
+            J(a, b) = (a_sinth b_lam - a_lam b_sinth) / cos²φ.
+
+        Product evaluation sampling (see __init__ `product_quadrature`):
+        the backend's ProductSpace decides where the derivative coefficient
+        fields are evaluated, multiplied pointwise, and analyzed back into
+        the same (l_max+1, l_max+1) coefficient layout. With the geodesic
+        backend, "fine" is a resolution-(r+1) co-grid ("overresolved product
+        quadrature" — a quadrature upgrade, not exact dealiasing); "coarse"
+        is the state sampling itself (historical behavior).
+
+        Parameters
+        ----------
+        dealias : bool
+            Apply the 2/3-rule spectral truncation to the analyzed product
+            (exactly once). The historical name is kept; the operation is a
+            truncation.
+        return_spectral : bool
+            If True, return the truncated coefficients directly — no
+            synthesis/re-analysis round trip. If False (legacy), return a
+            field on the *state* grid: for dealias=True this reproduces the
+            historical truncate-then-synthesize behavior; combined with an
+            external `sh.transform`, that path reproduces the pre-fix
+            production tendency exactly (kept for A/B comparisons).
         """
+        ps = self._product_space
+        sh_p = ps.sh
+        coslat = ps.coslat
 
-        # Spectral -> grid derivatives
-        a_lam   = self.sh.inv_transform(self.d_lambda_coeffs(a_lm)).real               # (1/R) A_λ
-        b_lam   = self.sh.inv_transform(self.d_lambda_coeffs(b_lm)).real               # (1/R) B_λ
+        # Spectral -> product-grid derivative fields (direct basis evaluation
+        # at the product points; no interpolation from the state grid).
+        a_lam   = sh_p.inv_transform(self.d_lambda_coeffs(a_lm)).real               # (1/R) A_λ
+        b_lam   = sh_p.inv_transform(self.d_lambda_coeffs(b_lm)).real               # (1/R) B_λ
+        a_sinth = sh_p.inv_transform(self.sin_theta_d_theta_coeffs(a_lm)).real / self.R  # (1/R) sinθ A_θ
+        b_sinth = sh_p.inv_transform(self.sin_theta_d_theta_coeffs(b_lm)).real / self.R  # (1/R) sinθ B_θ
 
-        a_sinth = self.sh.inv_transform(self.sin_theta_d_theta_coeffs(a_lm)).real / self.R  # (1/R) 
-        b_sinth = self.sh.inv_transform(self.sin_theta_d_theta_coeffs(b_lm)).real / self.R  # (1/R) 
+        J_grid = (a_sinth * b_lam - a_lam * b_sinth) / coslat**2
 
-        coslat = self.grid.coslat
-        coslat = cp.maximum(coslat, 1e-8)  # Divide by zero prevention
+        if not (dealias or return_spectral):
+            if sh_p is self.sh:
+                return J_grid
+            # Fine-path callers asking for a grid field get it on the STATE
+            # grid (callers' arrays are state-grid sized); one analysis +
+            # synthesis is unavoidable here.
+            return self.sh.inv_transform(sh_p.transform(J_grid)).real
 
-        J_grid = (a_lam * b_sinth - a_sinth * b_lam) / coslat
+        J_lm = sh_p.transform(J_grid)
 
+        if dealias:
+            # Spectral truncation (2/3 rule), applied exactly once.
+            cut = (2 * self.l_max) // 3
+            J_lm[cut + 1:, :] = 0.0
+            J_lm[:, cut + 1:] = 0.0
 
-        if not dealias:
-            return J_grid
-
-        # Dealias by filtering the *transformed* result (simple 2/3 rule)
-        J_lm = self.sh.transform(J_grid)
-        L = self.l_max
-        cut = (2 * L) // 3
-
-        # zero out high l
-        J_lm[cut+1:, :] = 0.0
-        # and high m (keeping triangular structure)
-        J_lm[:, cut+1:] = 0.0
-
+        if return_spectral:
+            return J_lm
         return self.sh.inv_transform(J_lm).real

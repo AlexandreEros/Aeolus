@@ -21,6 +21,7 @@ tests/.sh_cache/
 
 # Outputs/artifacts
 out/
+runs/
 tmp_downloads/
 psx-bve-*/
 tmp_codex_out/

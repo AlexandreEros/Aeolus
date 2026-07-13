@@ -41,15 +41,24 @@ class BarotropicVorticity:
         self.R = planet.params.radius
         self.Omega = planet.params.angular_velocity
 
-        # Precompute planetary vorticity f = 2Ω sin(φ)
-        # φ is latitude, but we have colatitude θ
-        # sin(φ) = sin(π/2 - θ) = cos(θ)
+        # Precompute planetary vorticity f = 2Ω sin(φ), φ = latitude.
         lat = cp.asarray(self.grid.point_latitudes)
         f = 2 * self.Omega * cp.sin(lat)
         shape = getattr(self.grid, "grid_shape", None)
         if shape is not None and f.size == int(shape[0] * shape[1]):
             f = f.reshape(shape)
-        self.f = f  # Coriolis parameter
+        self.f = f  # Coriolis parameter on the grid (kept for diagnostics/viz)
+
+        # Exact spectral representation of f: sin(φ) = sqrt(4π/3)·Y_1^0, so f
+        # occupies the single coefficient (l,m) = (1,0). Constructing η = ζ + f
+        # in spectral space avoids round-tripping the state through the
+        # (inexact) transform each tendency call; the transform's ~0.85%
+        # leakage of the large f mode into other degrees was measured to
+        # inject errors of ~12% of ||ζ|| per call (KNOWN_RISKS.md R-5,
+        # tests/audit_r5_mechanism.py).
+        l_max = self.sh.l_max
+        self.f_lm = cp.zeros((l_max + 1, l_max + 1), dtype=cp.complex128)
+        self.f_lm[1, 0] = 2.0 * self.Omega * (4.0 * cp.pi / 3.0) ** 0.5
 
         # Precompute Laplacian eigenvalues
         l_vals = cp.arange(self.sh.l_max + 1, dtype=cp.float64)
@@ -133,15 +142,17 @@ class BarotropicVorticity:
         # Get stream function
         psi_c = self.vorticity_to_streamfunction(vrt_state)
 
-        # Get absolute vorticity η = ζ + f
-        zeta_grid = self.sh.inv_transform(zeta_c)
-        eta_grid = zeta_grid + self.f
-        eta_c = self.sh.transform(eta_grid)
+        # Absolute vorticity η = ζ + f, built directly in spectral space
+        # (R-5: no synthesis/re-analysis round trip of the state).
+        eta_c = zeta_c + self.f_lm
 
-        # # Compute advection: -J(ψ, η)
-        jacobian_grid = self.so.jacobian_pseudospectral(psi_c, eta_c)
-        # jacobian_grid = self.so.jacobian_pseudospectral(psi_c, eta_c, sin_theta=self.grid.sincolat)
-        advection_c = self.sh.transform(-jacobian_grid)
+        # Advection: -J(ψ, η), consumed spectrally — the Jacobian analyzes the
+        # product (on the fine product grid when so.product_quadrature="fine"),
+        # truncates once, and returns coefficients directly; no synthesis/
+        # re-analysis round trip (R-3 fix, "overresolved product quadrature").
+        advection_c = -self.so.jacobian_pseudospectral(psi_c, eta_c,
+                                                       dealias=True,
+                                                       return_spectral=True)
 
         # Compute diffusion: ν∇²ζ
         diffusion_c = self.nu * self.laplacian_eig[:, None] * zeta_c

@@ -157,8 +157,25 @@ class Planet:
                  grid_resolution: int = 3,
                  terrain_params: Optional[SpectralTerrainParams] = None,
                  tectonic_params: Optional[TectonicParams] = None,
-                 l_max: int = 15) -> 'Planet':
-
+                 l_max: int = 15,
+                 product_quadrature: str = "fine",
+                 grid_type: str = "geodesic",
+                 nlat: int = 128,
+                 nlon: int = 256) -> 'Planet':
+        """
+        product_quadrature : {"fine", "coarse"}
+            Passed to SpectralOperators. "fine" (default) evaluates nonlinear
+            products on a backend-chosen overresolved product sampling:
+            geodesic uses a resolution-(grid_resolution+1) co-grid
+            ("overresolved product quadrature", KNOWN_RISKS.md R-3), lat-lon
+            a 3/2-rule Gauss-Legendre grid (exact product quadrature).
+            "coarse" retains the historical state-grid product path for
+            A/B comparisons.
+        grid_type : {"geodesic", "latlon"}
+            Grid family. "geodesic" (default) uses `grid_resolution`;
+            "latlon" uses `nlat`/`nlon` (Gauss-Legendre latitudes, uniform
+            longitudes). Unknown values raise (no silent fallback).
+        """
         if terrain_params is None:
             terrain_params = SpectralTerrainParams(
                 rms_elevation=params.radius * 0.001,  # 0.1% of radius
@@ -166,11 +183,27 @@ class Planet:
         if tectonic_params is None:
             tectonic_params = TectonicParams()
 
-        # Create grid
-        grid = GeodesicGridGeometry(grid_resolution, params.radius)
-        
-        sh = GeodesicSphericalHarmonics(grid, l_max)
-        so = SpectralOperators(sh, params.radius, grid)
+        # Grid geometry, SH transform, and their pairing (the backend, which
+        # owns product-quadrature policy) are three separate objects.
+        from ..numerics.spherical_backend import GeodesicBackend, LatLonBackend
+        from ..numerics.latlon_grid import (
+            GaussLatLonGridGeometry, GaussLatLonSphericalHarmonics)
+
+        if grid_type == "geodesic":
+            grid = GeodesicGridGeometry(grid_resolution, params.radius)
+            sh = GeodesicSphericalHarmonics(grid, l_max)
+            backend = GeodesicBackend(grid, sh)
+        elif grid_type == "latlon":
+            grid = GaussLatLonGridGeometry(nlat, nlon, params.radius)
+            sh = GaussLatLonSphericalHarmonics(grid, l_max)
+            backend = LatLonBackend(grid, sh)
+        else:
+            raise ValueError(
+                f"grid_type must be 'geodesic' or 'latlon', got {grid_type!r} "
+                "(no silent fallback)")
+        so = SpectralOperators(sh, params.radius, grid,
+                               product_quadrature=product_quadrature,
+                               backend=backend)
 
         height_coeffs = generate_spectral_terrain_gpu(
             sph=sh,
@@ -246,8 +279,10 @@ class Planet:
 
         # Reference oblate spheroid radius at each latitude
         # r(lat) = R_eq * sqrt(cos²(lat) + (1-f)² * sin²(lat))
-        cos_lat = np.cos(grid.latitudes)
-        sin_lat = np.sin(grid.latitudes)
+        # Per-point latitudes: matches the flat (n_points,) surface_height
+        # for both unstructured and structured grid families.
+        cos_lat = np.cos(grid.point_latitudes)
+        sin_lat = np.sin(grid.point_latitudes)
 
         reference_radius = R_eq * np.sqrt(
             cos_lat**2 + (1 - f)**2 * sin_lat**2

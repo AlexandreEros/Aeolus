@@ -35,8 +35,10 @@ def geodesic_to_latlon_grid(
     if values_arr.ndim > 2:
         raise ValueError("values must be 1D or 2D (n_points, n_fields)")
 
-    lon_src = cp.asnumpy(geodesic_grid.longitudes)
-    lat_src = cp.asnumpy(geodesic_grid.latitudes)
+    # Per-point coordinates: identical to .longitudes/.latitudes for geodesic
+    # grids, and the flattened axes for structured source grids.
+    lon_src = cp.asnumpy(cp.asarray(geodesic_grid.point_longitudes))
+    lat_src = cp.asnumpy(cp.asarray(geodesic_grid.point_latitudes))
     lon_tgt = cp.asnumpy(latlon_grid.lon_grid)
     lat_tgt = cp.asnumpy(latlon_grid.lat_grid)
 
