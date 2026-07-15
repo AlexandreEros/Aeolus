@@ -341,14 +341,31 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     try:
         if manifest_path.exists():
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-            run_config = manifest.get("run_config") or {}
+            if not isinstance(manifest, dict):
+                return _error(
+                    f"malformed manifest.json under {run_dir}: "
+                    f"expected an object, got {type(manifest).__name__}")
+            raw_run_config = manifest.get("run_config")
+            if raw_run_config is None:
+                run_config = {}
+            elif isinstance(raw_run_config, dict):
+                run_config = raw_run_config
+            else:
+                return _error(
+                    f"malformed manifest.json under {run_dir}: "
+                    f"'run_config' is {type(raw_run_config).__name__}, "
+                    "expected an object")
         else:
             manifest = {}
             run_config = json.loads(config_path.read_text(encoding="utf-8"))
+            if not isinstance(run_config, dict):
+                return _error(
+                    f"malformed config.json under {run_dir}: "
+                    f"expected an object, got {type(run_config).__name__}")
     except (json.JSONDecodeError, UnicodeDecodeError) as err:
         return _error(f"malformed run metadata under {run_dir}: {err}")
-    if not isinstance(run_config, dict) or not isinstance(manifest, dict):
-        return _error(f"malformed run metadata under {run_dir}: not an object")
+    except OSError as err:
+        return _error(f"could not read run metadata under {run_dir}: {err}")
 
     print(f"Run directory: {run_dir}")
     if note:
@@ -359,8 +376,14 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
             print(f"  {label:<18}{value}")
 
     show("run id", manifest.get("run_id") or run_config.get("run_id"))
+    show("status", manifest.get("status"))
     show("created (UTC)", manifest.get("created_utc"))
+    if manifest.get("updated_utc"):
+        show("updated (UTC)", manifest.get("updated_utc"))
     show("experiment", manifest.get("experiment") or run_config.get("experiment"))
+    err = manifest.get("error") or {}
+    if isinstance(err, dict) and err.get("type"):
+        show("failure", f"{err['type']}: {err.get('message', '')}".rstrip(": "))
 
     git = manifest.get("git") or {}
     if git.get("commit"):

@@ -21,11 +21,13 @@ Public API:
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import pathlib
 import subprocess
 import sys
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
@@ -106,6 +108,20 @@ def _snapshot_tag(config: dict) -> str:
     return f"snap{int(config.get('n_snapshots') or 0)}"
 
 
+def _config_hash(config: dict) -> str:
+    """Short deterministic hash of a run's scientific configuration.
+
+    Purely locational/control values (``out``, ``experiment``,
+    ``overwrite``) and derived-artifact values (``plots``) are excluded so
+    two runs of the same science produce the same hash regardless of
+    output location or plot selection.
+    """
+    scrubbed = {k: v for k, v in config.items()
+                if k not in ("out", "experiment", "overwrite", "plots")}
+    blob = json.dumps(scrubbed, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.blake2b(blob, digest_size=4).hexdigest()
+
+
 def make_run_id(
     config: dict,
     *,
@@ -133,6 +149,14 @@ def make_run_id(
         f"l{int(config['lmax'])}",
         _snapshot_tag(config),
     ]
+    # Legacy interval-mode runs preserve their historical run-id format
+    # exactly (dtNh token, no scientific hash) so downstream tooling that
+    # matched on the old shape keeps working. New count-mode / N=0-or-1
+    # runs get a 4-byte hash of the scientific config so distinct
+    # backends, dimensions, duration, viscosity, quadrature, or snapshot
+    # schedule do not collide at the same timestamp.
+    if config.get("snapshot_mode") == "count":
+        parts.append(_config_hash(config))
     if commit:
         parts.append(_sanitize(commit))
     return "_".join(parts)
@@ -249,6 +273,12 @@ def create_run_dir(
 # Manifest
 # ---------------------------------------------------------------------------
 
+#: Run lifecycle states recorded in manifest.json["status"].
+RUN_STATUS_RUNNING = "running"
+RUN_STATUS_COMPLETED = "completed"
+RUN_STATUS_FAILED = "failed"
+
+
 def write_run_manifest(
     out_dir: pathlib.Path,
     run_config: dict,
@@ -256,8 +286,16 @@ def write_run_manifest(
     run_id: Optional[str] = None,
     experiment: Optional[str] = None,
     numerics: Optional[dict] = None,
+    status: str = RUN_STATUS_RUNNING,
+    error: Optional[dict] = None,
 ) -> pathlib.Path:
-    """Write a ``manifest.json`` capturing everything needed to reproduce."""
+    """Write a ``manifest.json`` capturing everything needed to reproduce.
+
+    ``status`` records the run lifecycle: 'running' is written before
+    execution, then 'completed' or 'failed' overwrites the file when the
+    run finishes. ``error`` holds ``{type, message}`` for failed runs so
+    an operator can see at a glance why a capsule is incomplete.
+    """
     versions = {"python": sys.version.split()[0]}
     for mod in ("numpy", "scipy", "cupy", "matplotlib"):
         try:
@@ -273,11 +311,12 @@ def write_run_manifest(
     except Exception:
         pass
 
-    status = _git(["status", "--porcelain"])
+    git_status = _git(["status", "--porcelain"])
     manifest = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "run_id": run_id,
         "experiment": experiment,
+        "status": status,
         "argv": sys.argv,
         "run_config": run_config,
         # Backend/state-sampling/product-sampling/transform provenance
@@ -286,17 +325,50 @@ def write_run_manifest(
         "git": {
             "commit": _git(["rev-parse", "HEAD"]),
             "branch": _git(["rev-parse", "--abbrev-ref", "HEAD"]),
-            "dirty": bool(status) if status is not None else None,
+            "dirty": bool(git_status) if git_status is not None else None,
         },
         "versions": versions,
         "gpu": gpu,
         "notes": {
             "equations": "barotropic vorticity equation on a rotating sphere (see docs/MATHEMATICAL_MODEL.md)",
-            "timestep_policy": "fixed dt from initial CFL (docs/KNOWN_RISKS.md R-4)",
+            "timestep_policy": "fixed dt ceiling from initial CFL; individual steps may be shortened to land exactly on output times and t_end (docs/KNOWN_RISKS.md R-4)",
             "diagnostics": "see diagnostics.py module docstring for definitions",
         },
     }
+    if error is not None:
+        manifest["error"] = error
 
     path = pathlib.Path(out_dir) / "manifest.json"
     path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return path
+
+
+def update_manifest_status(out_dir: pathlib.Path, status: str,
+                           error: Optional[dict] = None) -> None:
+    """Rewrite an existing manifest.json's status and optional error block.
+
+    Preserves all other manifest fields (numerics, versions, git). No-op if
+    the manifest is missing or unreadable — the caller has already surfaced
+    the underlying error.
+    """
+    path = pathlib.Path(out_dir) / "manifest.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    manifest["status"] = status
+    if error is not None:
+        manifest["error"] = error
+    elif status == RUN_STATUS_COMPLETED and "error" in manifest:
+        del manifest["error"]
+    manifest["updated_utc"] = datetime.now(timezone.utc).isoformat()
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def failure_record(exc: BaseException) -> dict:
+    """Concise error record for the manifest."""
+    return {
+        "type": type(exc).__name__,
+        "message": str(exc),
+        "traceback": "".join(traceback.format_exception_only(type(exc), exc)).strip(),
+    }

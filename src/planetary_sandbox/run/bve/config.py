@@ -45,8 +45,8 @@ rather than inventing a fake interval.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Mapping, Optional
+from dataclasses import dataclass
+from typing import Mapping, Optional, Sequence
 
 SECONDS_PER_DAY = 86400.0
 
@@ -59,6 +59,12 @@ DEFAULT_N_SNAPSHOTS = 5
 
 GRID_TYPES = ("geodesic", "latlon")
 PRODUCT_QUADRATURES = ("fine", "coarse")
+
+#: Minimum lat-lon dimensions accepted by the CLI. The transforms need at
+#: least a two-point latitude sample and a longitude wraparound; smaller
+#: grids trip assertions deep in the numerics without a useful message.
+MIN_NLAT = 2
+MIN_NLON = 4
 
 #: All currently implemented plot products, in the fixed deterministic
 #: execution order. 'diagnostics' renders figures/ from the diagnostics CSV
@@ -88,15 +94,41 @@ BASE_DEFAULTS: dict = {
     "overwrite": False,
 }
 
-#: Keys a preset or explicit-value mapping may set on top of BASE_DEFAULTS.
-_RESOLVABLE_KEYS = frozenset(BASE_DEFAULTS) | {
-    "n_snapshots", "dt_snapshots", "plots", "no_plots",
-}
+#: Keys a preset may set on top of BASE_DEFAULTS. Plot selection is a
+#: per-invocation user choice (`--plot` / `--no-plots`) and never comes
+#: from a preset; only these snapshot controls are additionally allowed.
+_PRESET_ONLY_KEYS = frozenset({"n_snapshots", "dt_snapshots"})
+_EXPLICIT_ONLY_KEYS = _PRESET_ONLY_KEYS | frozenset({"plots", "no_plots"})
 
-#: Tolerance the runner uses when matching output times (seconds). Durations
-#: are O(1e5) s where doubles resolve ~1e-11 s, so 1e-6 s is generous while
-#: physically negligible.
-SNAPSHOT_TIME_TOLERANCE_SECONDS = 1e-6
+#: Cap on t_end (seconds). A duration this large trips scale-aware
+#: tolerances and downstream time bookkeeping; it is far above any
+#: physically motivated Aeolus run and rejects overflow explicitly.
+_MAX_T_END_SECONDS = 1e12  # ~31,700 years
+
+
+def _require_finite_number(name: str, value) -> float:
+    """Reject NaN, +/-inf, and non-numeric values with a clear message."""
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a real number, got {value!r}")
+    if not math.isfinite(f):
+        raise ValueError(f"{name} must be finite, got {value}")
+    return f
+
+
+def _require_finite_positive(name: str, value) -> float:
+    f = _require_finite_number(name, value)
+    if not f > 0:
+        raise ValueError(f"{name} must be > 0, got {f}")
+    return f
+
+
+def _require_finite_nonneg(name: str, value) -> float:
+    f = _require_finite_number(name, value)
+    if f < 0:
+        raise ValueError(f"{name} must be >= 0, got {f}")
+    return f
 
 
 def interval_snapshot_times(dt_snapshots: float, t_end: float) -> list[float]:
@@ -128,6 +160,49 @@ def count_snapshot_times(n_snapshots: int, t_end: float) -> list[float]:
     times = [i * spacing for i in range(n_snapshots)]
     times[-1] = t_end  # exact, no accumulated float error
     return times
+
+
+def scheduler_tolerance(t_end: float, times: Sequence[float]) -> float:
+    """Scale/gap-aware tolerance for matching schedule entries at runtime.
+
+    Small enough that two distinct entries are never coalesced (a fraction
+    of the smallest positive inter-entry gap), and small enough that a
+    short simulation is not entirely consumed (a fraction of t_end), while
+    staying well above floating-point noise (>= 1e-12 s).
+    """
+    tol = max(1e-12, 1e-9 * t_end) if t_end > 0 else 1e-12
+    if len(times) >= 2:
+        gaps = [b - a for a, b in zip(times, times[1:]) if b > a]
+        if gaps:
+            tol = min(tol, 0.25 * min(gaps))
+    return tol
+
+
+def validate_snapshot_schedule(times: Sequence[float], t_end: float) -> list[float]:
+    """Return a clean schedule; raise ValueError on any anomaly.
+
+    Entries must be finite, strictly increasing, non-duplicated, and lie in
+    [0, t_end] (allowing a scale-aware slack against float noise on the
+    endpoints; interior duplicates are always rejected).
+    """
+    if t_end <= 0 or not math.isfinite(t_end):
+        raise ValueError(f"t_end must be finite and positive, got {t_end}")
+    cleaned: list[float] = []
+    slack = max(1e-9, 1e-9 * t_end)
+    for i, t in enumerate(times):
+        if not math.isfinite(t):
+            raise ValueError(
+                f"snapshot_times[{i}] = {t} is not finite")
+        if t < -slack or t > t_end + slack:
+            raise ValueError(
+                f"snapshot_times[{i}] = {t} is outside [0, {t_end}]")
+        clipped = max(0.0, min(t_end, float(t)))
+        if cleaned and not clipped > cleaned[-1]:
+            raise ValueError(
+                "snapshot_times must be strictly increasing without "
+                f"duplicates; got {times!r}")
+        cleaned.append(clipped)
+    return cleaned
 
 
 @dataclass(frozen=True)
@@ -170,25 +245,54 @@ class BVERunConfig:
             raise ValueError(f"lmax must be >= 1, got {self.lmax}")
         if self.resolution < 0:
             raise ValueError(f"resolution must be >= 0, got {self.resolution}")
-        if self.nlat < 1 or self.nlon < 1:
+
+        # Lat-lon dimensions matter only when the lat-lon backend is used,
+        # but the values live in the config either way; enforce the
+        # backend-relevant floor to reject transforms that would crash
+        # deep inside the numerics with an unhelpful assertion.
+        if self.grid == "latlon":
+            if self.nlat < MIN_NLAT:
+                raise ValueError(
+                    f"lat-lon backend requires nlat >= {MIN_NLAT}, got {self.nlat}")
+            if self.nlon < MIN_NLON:
+                raise ValueError(
+                    f"lat-lon backend requires nlon >= {MIN_NLON}, got {self.nlon}")
+        elif self.nlat < 1 or self.nlon < 1:
+            # Sanity check even for backends that don't consume these,
+            # since they still land in config.json.
             raise ValueError(f"nlat/nlon must be positive, got {self.nlat}x{self.nlon}")
-        if not self.duration_days > 0:
-            raise ValueError(f"duration must be positive, got {self.duration_days} days")
-        if self.viscosity < 0:
-            raise ValueError(f"viscosity must be >= 0, got {self.viscosity}")
+
+        duration = _require_finite_positive("duration_days", self.duration_days)
+        t_end = duration * SECONDS_PER_DAY
+        if not math.isfinite(t_end) or t_end <= 0 or t_end > _MAX_T_END_SECONDS:
+            raise ValueError(
+                f"duration_days = {self.duration_days} overflows t_end "
+                f"(got {t_end} s, cap {_MAX_T_END_SECONDS} s)")
+
+        _require_finite_positive("radius_earth_units", self.radius_earth_units)
+        _require_finite_nonneg("viscosity", self.viscosity)
+
+        # day_hours == +inf is the sentinel for the non-rotating mode
+        # (f_lm == 0); every other non-finite or non-positive value is a
+        # user error and shouldn't silently coast into the solver.
+        if self.day_hours != math.inf:
+            _require_finite_positive("day_hours", self.day_hours)
 
         if self.snapshot_mode == "interval":
-            if self.dt_snapshots is None or not self.dt_snapshots > 0:
-                raise ValueError(
-                    f"snapshot interval must be positive, got {self.dt_snapshots} s")
+            if self.dt_snapshots is None:
+                raise ValueError("snapshot interval must be provided in interval mode")
+            _require_finite_positive("snapshot interval", self.dt_snapshots)
             if self.n_snapshots is not None:
                 raise ValueError("n_snapshots must be None in interval mode")
         elif self.snapshot_mode == "count":
-            if self.n_snapshots is None or self.n_snapshots < 0:
+            if not isinstance(self.n_snapshots, int) or isinstance(self.n_snapshots, bool):
                 raise ValueError(
-                    f"snapshot count must be an integer >= 0, got {self.n_snapshots}")
+                    f"snapshot count must be an integer, got {self.n_snapshots!r}")
+            if self.n_snapshots < 0:
+                raise ValueError(
+                    f"snapshot count must be >= 0, got {self.n_snapshots}")
             if self.n_snapshots >= 2:
-                expected = self.duration_days * SECONDS_PER_DAY / (self.n_snapshots - 1)
+                expected = t_end / (self.n_snapshots - 1)
                 if self.dt_snapshots is None or not math.isclose(
                         self.dt_snapshots, expected, rel_tol=1e-12):
                     raise ValueError(
@@ -228,10 +332,15 @@ class BVERunConfig:
         """
         explicit = {k: v for k, v in dict(explicit).items() if v is not None}
         preset = dict(preset) if preset else {}
-        for name, layer in (("explicit", explicit), ("preset", preset)):
-            unknown = set(layer) - _RESOLVABLE_KEYS
-            if unknown:
-                raise ValueError(f"unknown {name} settings: {sorted(unknown)}")
+
+        allowed_explicit = set(BASE_DEFAULTS) | _EXPLICIT_ONLY_KEYS
+        allowed_preset = set(BASE_DEFAULTS) | _PRESET_ONLY_KEYS
+        unknown = set(explicit) - allowed_explicit
+        if unknown:
+            raise ValueError(f"unknown explicit settings: {sorted(unknown)}")
+        unknown = set(preset) - allowed_preset
+        if unknown:
+            raise ValueError(f"unknown preset settings: {sorted(unknown)}")
 
         # The two snapshot controls are one mutually exclusive choice: an
         # explicit flag replaces whichever form the preset used.
@@ -252,10 +361,16 @@ class BVERunConfig:
         merged.update(explicit)
         n = merged.get("n_snapshots")
         interval = merged.get("dt_snapshots")
-        duration_days = settings["duration_days"]
-        if not duration_days > 0:
-            raise ValueError(f"duration must be positive, got {duration_days} days")
+
+        # Basic domain validation on values that participate in schedule
+        # arithmetic so ordinary user errors fail here, before the full
+        # dataclass constructor is called with a nonsensical dt.
+        duration_days = _require_finite_positive(
+            "duration_days", settings["duration_days"])
         t_end = duration_days * SECONDS_PER_DAY
+        if not math.isfinite(t_end) or t_end > _MAX_T_END_SECONDS:
+            raise ValueError(
+                f"duration_days = {duration_days} overflows t_end (got {t_end} s)")
 
         if n is not None and interval is not None:
             raise ValueError(
@@ -271,17 +386,16 @@ class BVERunConfig:
                     f"unknown snapshot_default: {snapshot_default!r}")
 
         if n is not None:
+            if isinstance(n, bool) or not isinstance(n, int):
+                raise ValueError(f"snapshot count must be an integer, got {n!r}")
             if n < 0:
-                raise ValueError(
-                    f"snapshot count must be an integer >= 0, got {n}")
+                raise ValueError(f"snapshot count must be >= 0, got {n}")
             snapshot_mode = "count"
             dt = t_end / (n - 1) if n >= 2 else None
         else:
-            if not interval > 0:
-                raise ValueError(
-                    f"snapshot interval must be positive, got {interval} s")
+            interval = _require_finite_positive("snapshot interval", interval)
             snapshot_mode = "interval"
-            dt = float(interval)
+            dt = interval
 
         plots = cls._resolve_plots(
             explicit.get("plots"), explicit.get("no_plots"),
@@ -337,7 +451,22 @@ class BVERunConfig:
     def includes_final_state(self) -> bool:
         times = self.snapshot_times_seconds()
         t_end = self.duration_days * SECONDS_PER_DAY
-        return bool(times) and abs(times[-1] - t_end) <= SNAPSHOT_TIME_TOLERANCE_SECONDS
+        tol = scheduler_tolerance(t_end, times)
+        return bool(times) and abs(times[-1] - t_end) <= tol
+
+    def scientific_config_dict(self) -> dict:
+        """Config subset used to derive the run-id hash.
+
+        Deliberately excludes purely locational/control values (out,
+        experiment, overwrite) so that the same scientific configuration
+        gets the same hash regardless of where it is written or whether
+        it is being re-run. Plot selection also stays out — figures are
+        derived artifacts, not part of the scientific state.
+        """
+        d = self.to_run_config_dict()
+        for key in ("out", "experiment", "overwrite", "plots"):
+            d.pop(key, None)
+        return d
 
     def to_run_config_dict(self) -> dict:
         """Config dict for make_run_id, config.json, and manifest.json.

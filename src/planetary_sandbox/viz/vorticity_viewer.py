@@ -42,17 +42,18 @@ class VorticityViewer:
             f"Final:   {max_speed1:.2f} m/s\n"
         )
 
-    def __init__(self, 
+    def __init__(self,
                  planet: Planet,
                  scenario: str,
-                 vorticity_snapshots: np.ndarray, 
-                 times: np.ndarray = np.empty((0,), dtype=np.float32)):
+                 vorticity_snapshots: np.ndarray,
+                 times: np.ndarray = np.empty((0,), dtype=np.float32),
+                 initial_field: np.ndarray | None = None):
         """
         Visualizer for Barotropic Vorticity Equation results.
 
         Parameters
         ----------
-        planet : Planet 
+        planet : Planet
             Planet object containing grid and spectral operators
         scenario : str
             Initial condition scenario name
@@ -60,6 +61,11 @@ class VorticityViewer:
             Time series of vorticity snapshots for conservation checks
         times: np.ndarray, optional
             Corresponding times for the snapshots in hours
+        initial_field : np.ndarray, optional
+            Genuine ``t=0`` vorticity field on the state grid. When given,
+            the summary plot compares it against the last stored snapshot
+            even if the initial state was not persisted (N=1 case);
+            without it, the first stored snapshot is treated as initial.
         """
         self.planet = planet
         self.grid = planet.grid
@@ -84,7 +90,8 @@ class VorticityViewer:
             assert vorticity_snapshots.ndim in (2, 3), "Snapshots must be 3D (time, lat, lon) or 2D (time, n_points) for geodesic grids."
 
         self.snapshots = vorticity_snapshots
-        self.zeta_init = vorticity_snapshots[0]
+        self.zeta_init = (initial_field if initial_field is not None
+                          else vorticity_snapshots[0])
         self.zeta_final = vorticity_snapshots[-1]
         self.times = times
 

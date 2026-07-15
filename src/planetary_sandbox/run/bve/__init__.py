@@ -14,6 +14,10 @@ _LAZY_EXPORTS = {
     "rk4_step": ".runner",
 }
 
+# Wildcard exports match the historical eager __init__ so
+# ``from planetary_sandbox.run.bve import *`` keeps its previous surface.
+__all__ = tuple(_LAZY_EXPORTS)
+
 
 def __getattr__(name):
     try:
