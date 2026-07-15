@@ -91,31 +91,38 @@ import the numerical stack.
 flowchart TD
     main["main._cmd_run_bve() / bve.main()"] --> parse["parse_args()"]
     parse --> resolve["BVERunConfig.resolve()<br/>presets, snapshot schedule, plots"]
-    resolve --> writable["_resolve_writable_base_dir()"]
+    resolve --> writable["_resolve_writable_base_dir()<br/>mkdir + probe, temp-dir fallback"]
     writable --> create["create_run_dir()"]
-    create --> runDir["RunDirectory"]
-    runDir --> latest["update_latest_pointer()"]
+    create --> runDir["RunDirectory (no pointer yet)"]
+    runDir --> initcfg["write config.json + manifest.json<br/>status='running'"]
 
-    main --> generate["Planet.generate()"]
+    initcfg --> generate["Planet.generate()"]
     generate --> describe["planet.so.backend.describe()"]
 
-    main --> ic["make_ic(scenario, planet)"]
+    describe --> ic["make_ic(scenario, planet)"]
     ic --> initialGrid["initial vorticity on state grid"]
     initialGrid --> transform["planet.sh.transform()"]
     transform --> initialLM["initial spectral state zeta_lm"]
 
-    runDir --> config["write config.json"]
-    describe --> manifest["write_run_manifest()"]
-    runDir --> manifest
-    initialLM --> run["run_bve()"]
-    generate --> run
+    describe --> refresh["rewrite manifest.json<br/>with numerics provenance"]
+    refresh --> run["run_bve(snapshot_times, plots)"]
+    initialLM --> run
     runDir -. "path + figure metadata" .-> run
+    run -- "success" --> ok["status='completed'<br/>update_latest_pointer()"]
+    run -- "exception" --> fail["status='failed' + error record<br/>latest pointer untouched"]
 ```
 
-If the requested output base is not writable, setup moves the run beneath a
-system temporary directory before creating its immutable run folder. The
-manifest records the actual backend, grid, transform, product sampling,
-`l_max`, environment, GPU, command, and Git provenance.
+If the requested output base cannot be created *or* is not writable
+(either the `mkdir` fails or a probe file cannot be written), setup moves
+the run beneath a system temporary directory before creating its
+immutable run folder — so neither an unwritable target nor a missing
+parent escapes as an unhandled exception. The manifest records the
+actual backend, grid, transform, product sampling, `l_max`, environment,
+GPU, command, and Git provenance. A `running` capsule that never
+transitions to `completed` (interrupted or failed run) is left as a
+diagnosable trace, and `latest_run.txt` is only updated after the runner
+returns cleanly so shell scripts polling that pointer never see an empty
+capsule.
 
 ## BVE integration loop
 

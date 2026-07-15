@@ -150,11 +150,15 @@ matrix `G = Yᴴ diag(w) Y = I`. **[measured]** round-trip quality with Voronoi 
 | config | pts/basis | worst diagonal error | worst leakage (rms of spurious coeffs) |
 |---|---|---|---|
 | res 4, l_max 15 | 18.8 | 2.2e−3 (l=15) | 6e−3 |
-| **res 4, l_max 45 (CLI default)** | **2.4** | **7.1e−2 (l=45)** | **3.0e−1** |
+| **res 4, l_max 21 (CLI default)** | **11.1** | ≈2e−3 (l=21) | ≈1e−2 |
+| res 4, l_max 45 (audit worst case) | 2.4 | 7.1e−2 (l=45) | 3.0e−1 |
 | res 5, l_max 45 | 9.5 | 9.0e−4 | 1.0e−2 |
 
-The **default CLI configuration (`--lmax 45 --resolution 4`) is severely under-resolved**
-(see R-2). Low degrees (l ≤ 2) are exact to machine precision at every tested resolution.
+The **default CLI configuration (`--l-max 21 --resolution 4`)** keeps
+approximately eleven grid points per SH basis function; the historical
+l_max = 45 default (recorded in the audit as severely under-resolved,
+R-2) has been retired. Low degrees (l ≤ 2) are exact to machine precision
+at every tested resolution.
 
 `GeodesicSphericalHarmonics` wraps this with three weight modes: `"voronoi"` (default),
 `"uniform"`, and `"optimize"` (bounded-variable least squares solving `Σ_i w_i |Y_ki|² = 1`
@@ -250,14 +254,19 @@ per evaluation, eight per RK4 step.
 - **Scheme**: classical explicit **RK4** on the spectral vorticity coefficients
   ([runner.py](../src/planetary_sandbox/run/bve/runner.py) `rk4_step`), diffusion included
   explicitly (no integrating factor / implicit treatment).
-- **Step size**: fixed for the whole run, chosen once from the *initial* condition:
-  `dt = 0.5 · min_edge_length / max|u₀|` (falls back to 600 s if degenerate). Despite the
-  commit message "added adaptive time-stepping", **dt never adapts**; in the audit smoke run
-  the maximum speed grew from 25.4 to 37.5 m/s while dt stayed fixed, eroding the CFL margin
-  (R-4). The mesh edge length is also not the natural CFL length for a spectral method
-  (the resolved wavelength `2πR/l_max` is).
-- **Snapshot logic**: the step is clipped to `min(dt_cfl, time_to_next_snapshot,
-  time_remaining)`; snapshots therefore perturb the step sequence.
+- **Step-size policy**: a **CFL ceiling** is computed *once* from the initial condition,
+  `dt_cfl = 0.5 · cfl_length_scale / max|u₀|` (falls back to 600 s if degenerate), and stays
+  constant for the run — dt never adapts, so a smoke run in which the maximum speed grew
+  from 25.4 to 37.5 m/s while dt stayed fixed will erode the CFL margin (R-4). The mesh edge
+  length is also not the natural CFL length for a spectral method (the resolved wavelength
+  `2πR/l_max` is).
+- **Output-time clipping**: individual steps may be *shortened* to
+  `min(dt_cfl, next_scheduled_time − t, t_end − t)` so the integrator lands exactly on every
+  requested output time and on `t_end`; nothing lengthens a step past `dt_cfl`. The
+  scheduler tolerance is scale/gap-aware and, for legacy interval-mode invocations, preserves
+  the historical `1e-6 · dt_snapshots` end tolerance so the misaligned-final-time behavior
+  is bit-for-bit unchanged. Snapshot requests therefore perturb the step sequence around
+  output boundaries but not the fixed CFL ceiling.
 - **Leapfrog**: `step_leapfrog` exists but is dead code and would crash if called
   (it passes raw arrays where a `BarotropicState` is asserted) (R-6).
 - The l = 0 row of every tendency is hard-zeroed ("mass conservation"), which pins the
@@ -274,11 +283,12 @@ per evaluation, eight per RK4 step.
 - **Truncation**: the 2/3-style zeroing described in §6, every tendency evaluation.
 - **Implicit / unintended**: every tendency evaluation round-trips `η = ζ + f` through
   analysis∘synthesis (grid-space addition of f), which acts as a lossy filter whenever the
-  Gram matrix ≠ I — i.e. always, and severely at the default l_max/resolution pairing.
+  Gram matrix ≠ I — i.e. always, and severely at any under-sampled l_max/resolution pairing.
   **[measured]** with ν = 0: kinetic energy −2.4 %, enstrophy −1.4 % over ≈6 simulated days
-  at res 4 / l_max 20; kinetic energy −2.5 % in *12 simulated hours* at the CLI default
-  res 4 / l_max 45 (R-2, R-5). A spectrally clean BVE core should hold these invariants to
-  time-discretization accuracy (orders of magnitude tighter).
+  at res 4 / l_max 20; kinetic energy −2.5 % in *12 simulated hours* at the historical
+  res 4 / l_max 45 pairing (R-2, R-5), which is what motivated shipping l_max 21 as the CLI
+  default. A spectrally clean BVE core should hold these invariants to time-discretization
+  accuracy (orders of magnitude tighter).
 
 ---
 

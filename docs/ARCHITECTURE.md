@@ -78,11 +78,23 @@ f = 2Ω sin φ
 u = k × ∇ψ
 ```
 
-The CLI uses classical explicit RK4, exact spectral Laplacian eigenvalues, a
-fixed step calculated once from the initial velocity, and no forcing (`F=0`).
-SI units and a perfect spherical surface are used throughout. Equation
-conventions and normalizations are detailed in
+The CLI uses classical explicit RK4, exact spectral Laplacian eigenvalues,
+and no forcing (`F=0`). The timestep policy is a **fixed CFL ceiling**
+computed once from the initial velocity and the geometry-owned CFL length
+scale; individual steps are shortened only to land exactly on a requested
+snapshot time or on `t_end`, never lengthened. SI units and a perfect
+spherical surface are used throughout. Equation conventions and
+normalizations are detailed in
 [MATHEMATICAL_MODEL.md](MATHEMATICAL_MODEL.md).
+
+User-facing configuration is fully validated *before* CuPy is imported or
+CUDA is initialized: the CLI parses with all defaults set to `None`, and
+[`BVERunConfig.resolve`](../src/planetary_sandbox/run/bve/config.py) layers
+explicit values over the selected preset over ordinary defaults, checks
+finiteness/domains, and resolves the snapshot schedule and plot selection.
+Ordinary user errors (invalid backend, negative viscosity, NaN duration,
+misaligned `--plot summary --n-snapshots 0`) therefore fail with a clear
+parser message instead of a mid-run CUDA traceback.
 
 ## Backends
 
@@ -173,12 +185,26 @@ regardless of plot selection (and are empty-but-present when
 psx-bve key set plus the additive keys `snapshot_mode`, `n_snapshots`,
 `snapshot_times` (the resolved schedule in seconds), and `plots`.
 `dt_snapshots` remains the uniform interval where one exists (interval mode,
-or count mode with `N >= 2`) and is `null` for `N` in {0, 1}; run ids keep
-the historical `dtNh` token where an interval exists and use `snapN`
-otherwise. `manifest.json` adds the exact command, UTC creation time, Git
-commit/branch/dirty flag, Python and library versions, GPU, transform, state
-sampling, and actual product sampling. Run directories are unique and
-collision-resistant by default; figures also embed run metadata.
+or count mode with `N >= 2`) and is `null` for `N` in {0, 1}. `manifest.json`
+adds the exact command, UTC creation time, run **status**
+(`running` → `completed` or `failed`, with a concise error record on
+failure), Git commit/branch/dirty flag, Python and library versions, GPU,
+transform, state sampling, and actual product sampling.
+
+Run ids encode UTC timestamp, scenario, rotation state, resolution, l_max,
+and a snapshot tag (`dtNh` where a uniform interval exists, `snapN` for
+count modes with `N` in {0, 1}). Legacy interval-mode runs keep the
+historical run-id form byte-for-byte. New canonical (count-mode) runs also
+append a short 8-hex-character deterministic hash of the resolved
+scientific configuration (backend, dimensions, duration, viscosity,
+quadrature, snapshot schedule); purely locational fields (`out`,
+`experiment`, `overwrite`) and derived artifacts (`plots`) are excluded
+from the hash. Two runs that differ only in output location share a hash;
+two runs that differ scientifically do not, so wall-clock collisions in
+the same second do not silently coalesce distinct science. Figures embed
+run metadata; `--overwrite` reuses a directory but first removes known
+generated artifacts so a stale plot selection cannot survive alongside a
+new run configuration.
 
 The authoritative scientific diagnostics are `diagnostics/timeseries.csv` (one
 flushed row per accepted step, including energy, relative and absolute

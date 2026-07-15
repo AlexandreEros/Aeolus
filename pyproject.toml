@@ -7,7 +7,7 @@ name = "planetary-sandbox"
 version = "0.1.0"
 description = "Core spectral / spherical-harmonics engine for Planetary Sandbox"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
   { name = "Alexandre Silva" }
 ]
@@ -26,8 +26,8 @@ dev = [
 
 # This creates CLI commands in the project venv.
 # `aeolus` is the canonical interface; the psx-* commands are kept as
-# compatibility aliases (psx-bve == aeolus run bve, psx-gen == aeolus
-# planet generate, psx-recompile == aeolus cache rebuild).
+# compatibility aliases (psx-bve == aeolus run bve, psx-gen == aeolus gen,
+# psx-recompile == aeolus recompile).
 [project.scripts]
 aeolus = "planetary_sandbox.cli.main:main"
 psx-gen = "planetary_sandbox.cli.generate_planet:main"
