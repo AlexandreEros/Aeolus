@@ -12,8 +12,11 @@ authors = [
   { name = "Alexandre Silva" }
 ]
 
-# Temporarily empty because the slightest perturbation will send us back into dependency hell
-dependencies = []
+# Runtime dependencies live in requirements.txt so the pinned versions have a single source of truth.
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
 
 [project.optional-dependencies]
 dev = [
@@ -37,6 +40,13 @@ include = ["planetary_sandbox*"]
 # Make sure CUDA kernels under planetary_sandbox/numerics/cuda/ are included
 [tool.setuptools.package-data]
 "planetary_sandbox.numerics.cuda" = ["*.cu"]
+
+[tool.deptry]
+# Treat the "dev" PEP 621 optional-dependency group as development-only.
+optional_dependencies_dev_groups = ["dev"]
+
+[tool.deptry.package_module_name_map]
+cupy-cuda11x = ["cupy", "cupyx", "cupy_backends"]
 
 [tool.pytest.ini_options]
 # Restrict discovery to tests/ so a pathless `pytest` from the project root
