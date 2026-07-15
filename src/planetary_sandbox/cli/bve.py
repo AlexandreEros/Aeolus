@@ -1,15 +1,19 @@
+"""psx-bve compatibility entry point and the BVE run executor.
+
+``aeolus run bve`` (planetary_sandbox.cli.main) is the canonical interface;
+``psx-bve`` delegates to it unchanged. Heavy imports (CuPy, matplotlib)
+happen inside :func:`execute_run`, so parsing and ``--help`` never
+initialize CUDA.
+"""
 from __future__ import annotations
 
 import json
 import pathlib
 import tempfile
-import numpy as np
+from typing import TYPE_CHECKING
 
-from planetary_sandbox.planet import Planet, PlanetaryParameters
-from planetary_sandbox.run.bve.runner import run_bve
-from planetary_sandbox.run.bve.initial_conditions import make_ic, INITIAL_CONDITIONS
-from planetary_sandbox.run.bve.io import create_run_dir, write_run_manifest
-from planetary_sandbox.viz.vorticity_viewer import VorticityViewer
+if TYPE_CHECKING:
+    from planetary_sandbox.run.bve.config import BVERunConfig
 
 
 def _resolve_writable_base_dir(requested_out: str) -> tuple[pathlib.Path, bool]:
@@ -34,74 +38,37 @@ def _resolve_writable_base_dir(requested_out: str) -> tuple[pathlib.Path, bool]:
 
 
 def build_parser():
-    import argparse
-    parser = argparse.ArgumentParser("psx-bve",
-        description="Run barotropic vorticity equation on a planet.",
-        usage="psx-bve [options]"
-    )
+    """Legacy import surface: the full BVE parser with defaults applied.
 
-    # Default (l_max=21, resolution=4) keeps ~10 grid points per SH basis
-    # function, within the transform's usable envelope (see docs/KNOWN_RISKS.md R-2).
-    parser.add_argument("--lmax", type=int, default=21)
-    parser.add_argument("--grid", type=str, default="geodesic",
-                        choices=["geodesic", "latlon"],
-                        help="Grid family / backend. 'geodesic' (default) "
-                             "uses --resolution; 'latlon' uses --nlat/--nlon "
-                             "(Gauss-Legendre latitudes, uniform longitudes).")
-    parser.add_argument("--resolution", type=int, default=4)
-    parser.add_argument("--nlat", type=int, default=128)
-    parser.add_argument("--nlon", type=int, default=256)
-    parser.add_argument("--day-hours", type=float, default=np.inf)
-    parser.add_argument("--radius-earth-units", type=float, default=1.0)
-    parser.add_argument("--duration-days", type=float, default=1.0)
-    parser.add_argument("--dt-snapshots", type=float, default=6*3600.0)
-    parser.add_argument("--scenario", type=str, default="two_vortices",
-                   choices=list(INITIAL_CONDITIONS.keys()))
-    parser.add_argument("--viscosity", type=float, default=0.0)
-    parser.add_argument("--product-quadrature", type=str, default="fine",
-                        choices=["fine", "coarse"],
-                        help="Where nonlinear (pseudospectral) products are "
-                             "evaluated and analyzed. 'fine' (default): on a "
-                             "reusable resolution-(r+1) product grid "
-                             "('overresolved product quadrature', "
-                             "docs/KNOWN_RISKS.md R-3). 'coarse': the historical "
-                             "state-grid path, kept for A/B comparisons. "
-                             "There is no silent fallback: an unsupported "
-                             "combination raises at startup.")
-    parser.add_argument("--out", type=str, default="runs",
-                        help="Base directory for run outputs. Each run creates a "
-                             "unique subdirectory under this (or under "
-                             "<out>/<experiment>/ if --experiment is given).")
-    parser.add_argument("--experiment", type=str, default=None,
-                        help="Optional grouping name; runs go to <out>/<experiment>/<run_id>/.")
-    parser.add_argument("--overwrite", action="store_true",
-                        help="Reuse an existing run directory if the auto-generated "
-                             "run ID collides (same command in the same second). "
-                             "Off by default to keep runs immutable.")
-    return parser
+    Equivalent to the historical psx-bve parser (same flags, same defaults),
+    plus the aeolus additions (--preset, --n-snapshots, aliases).
+    """
+    from planetary_sandbox.cli.main import build_bve_parser
+    return build_bve_parser(prog="psx-bve", apply_defaults=True)
 
 
-def main():
-    args = build_parser().parse_args()
+def execute_run(cfg: "BVERunConfig") -> int:
+    """Execute one resolved BVE run: run dir, provenance, then the solver."""
+    from planetary_sandbox.run.bve.io import create_run_dir, write_run_manifest
 
-    base_dir, used_fallback = _resolve_writable_base_dir(args.out)
+    base_dir, used_fallback = _resolve_writable_base_dir(cfg.out)
     if used_fallback:
         banner = "=" * 72
         print(banner)
-        print(f"WARNING: requested --out '{args.out}' is not writable.")
+        print(f"WARNING: requested --out '{cfg.out}' is not writable.")
         print(f"         Run outputs will be written OUTSIDE the project tree to:")
         print(f"           {base_dir.resolve()}")
         print(banner)
 
-    # Build the config dict *before* creating the run dir so the run ID reflects
-    # exactly what will be written to disk.
-    run_config = vars(args).copy()
+    # Build the config dict *before* creating the run dir so the run ID
+    # reflects exactly what will be written to disk.
+    run_config = cfg.to_run_config_dict()
     run_config["out"] = str(base_dir)
 
     run_dir = create_run_dir(
         base_dir, run_config,
-        experiment=args.experiment,
-        overwrite=args.overwrite,
+        experiment=cfg.experiment,
+        overwrite=cfg.overwrite,
     )
     out_dir = run_dir.path
     run_dir.update_latest_pointer()
@@ -109,39 +76,52 @@ def main():
     if run_dir.reused:
         print("  (reused via --overwrite; existing files may be replaced)")
 
+    # Heavy imports only now, after all user-error validation is done.
+    from planetary_sandbox.planet import Planet, PlanetaryParameters
+    from planetary_sandbox.run.bve.runner import run_bve
+    from planetary_sandbox.run.bve.initial_conditions import make_ic
+
     planet = Planet.generate(
         params=PlanetaryParameters.from_earth_like(
-            day_hours=args.day_hours,
-            radius_earth_units=args.radius_earth_units),
-        grid_resolution=args.resolution,
-        l_max=args.lmax,
-        product_quadrature=args.product_quadrature,
-        grid_type=args.grid,
-        nlat=args.nlat,
-        nlon=args.nlon,
+            day_hours=cfg.day_hours,
+            radius_earth_units=cfg.radius_earth_units),
+        grid_resolution=cfg.resolution,
+        l_max=cfg.lmax,
+        product_quadrature=cfg.product_quadrature,
+        grid_type=cfg.grid,
+        nlat=cfg.nlat,
+        nlon=cfg.nlon,
     )
 
     # Initial condition on grid, then transform -> spectral ζ_lm
-    zeta0_grid = make_ic(args.scenario, planet)                  # (nlat, nlon) cupy or numpy ok
+    zeta0_grid = make_ic(cfg.scenario, planet)                  # (nlat, nlon) cupy or numpy ok
     zeta0_lm = planet.sh.transform(zeta0_grid)
 
     # Save run config + provenance manifest (git commit, versions, GPU, argv)
     run_config["run_id"] = run_dir.run_id
-    run_config["experiment"] = args.experiment
+    run_config["experiment"] = cfg.experiment
     (out_dir / "config.json").write_text(json.dumps(run_config, indent=2), encoding="utf-8")
     write_run_manifest(out_dir, run_config,
-                       run_id=run_dir.run_id, experiment=args.experiment,
-                       numerics=planet.so.backend.describe(args.product_quadrature))
+                       run_id=run_dir.run_id, experiment=cfg.experiment,
+                       numerics=planet.so.backend.describe(cfg.product_quadrature))
 
     run_bve(planet=planet,
             zeta0_lm=zeta0_lm,
-            dt_snapshots=args.dt_snapshots,
-            t_end_days=args.duration_days,
+            dt_snapshots=cfg.dt_snapshots,
+            t_end_days=cfg.duration_days,
             out_dir=out_dir,
-            viscosity=args.viscosity,
-            scenario=args.scenario,
+            viscosity=cfg.viscosity,
+            scenario=cfg.scenario,
             figure_metadata=run_dir.figure_metadata())
+    return 0
+
+
+def main() -> int:
+    """psx-bve == aeolus run bve."""
+    import sys
+    from planetary_sandbox.cli.main import main as aeolus_main
+    return aeolus_main(["run", "bve", *sys.argv[1:]])
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
