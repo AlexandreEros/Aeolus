@@ -112,15 +112,25 @@ def execute_run(cfg: "BVERunConfig") -> int:
             out_dir=out_dir,
             viscosity=cfg.viscosity,
             scenario=cfg.scenario,
-            figure_metadata=run_dir.figure_metadata())
+            figure_metadata=run_dir.figure_metadata(),
+            snapshot_times=cfg.snapshot_times_seconds(),
+            plots=cfg.plots)
     return 0
 
 
 def main() -> int:
-    """psx-bve == aeolus run bve."""
+    """psx-bve == aeolus run bve, with the legacy snapshot default.
+
+    The only behavioral difference from the canonical interface: when
+    neither --n-snapshots nor --snapshot-interval-seconds is given, psx-bve
+    keeps the historical 21600 s interval instead of the count default, so
+    old invocations do not silently change behavior.
+    """
     import sys
-    from planetary_sandbox.cli.main import main as aeolus_main
-    return aeolus_main(["run", "bve", *sys.argv[1:]])
+    from planetary_sandbox.cli.main import build_bve_parser, run_bve_command
+    parser = build_bve_parser(prog="psx-bve")
+    args = parser.parse_args(sys.argv[1:])
+    return run_bve_command(args, parser, snapshot_default="interval")
 
 
 if __name__ == "__main__":

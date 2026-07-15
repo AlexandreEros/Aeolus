@@ -1,6 +1,6 @@
 """Clear the CuPy kernel cache and verify kernel compilation.
 
-``aeolus cache rebuild`` is the canonical interface; ``psx-recompile`` is a
+``aeolus recompile`` is the canonical interface; ``psx-recompile`` is a
 compatibility alias. Output is plain ASCII so legacy Windows code pages
 (CP1252) can print it, and ``--help`` shows help instead of touching the
 cache. CuPy is imported only when the command actually runs.
@@ -83,7 +83,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    """psx-recompile == aeolus cache rebuild."""
+    """psx-recompile == aeolus recompile."""
     return run(build_parser().parse_args())
 
 

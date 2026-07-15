@@ -92,6 +92,20 @@ def _dt_tag(dt_seconds: float) -> str:
     return f"dt{dt:g}s".replace(".", "p")
 
 
+def _snapshot_tag(config: dict) -> str:
+    """Snapshot token of the run id.
+
+    Runs with a uniform snapshot interval (legacy interval mode, and count
+    mode with N >= 2) keep the historical `dtNh`/`dtNm`/`dtNs` form. Count
+    modes without a meaningful interval (`dt_snapshots is None`, i.e. N=0
+    or N=1) get a deterministic `snapN` tag instead.
+    """
+    dt = config.get("dt_snapshots")
+    if dt is not None:
+        return _dt_tag(float(dt))
+    return f"snap{int(config.get('n_snapshots') or 0)}"
+
+
 def make_run_id(
     config: dict,
     *,
@@ -100,7 +114,10 @@ def make_run_id(
 ) -> str:
     """Deterministic run identifier from `config` + wall clock + commit.
 
-    Required config keys: ``scenario, day_hours, resolution, lmax, dt_snapshots``.
+    Required config keys: ``scenario, day_hours, resolution, lmax,
+    dt_snapshots`` — where ``dt_snapshots`` may be None for count-based
+    snapshot modes without a uniform interval (N=0/N=1), in which case
+    ``n_snapshots`` supplies the `snapN` tag instead.
     """
     if now is None:
         now = datetime.now(timezone.utc)
@@ -114,7 +131,7 @@ def make_run_id(
         _rotation_tag(float(config.get("day_hours", math.inf))),
         f"r{int(config['resolution'])}",
         f"l{int(config['lmax'])}",
-        _dt_tag(float(config["dt_snapshots"])),
+        _snapshot_tag(config),
     ]
     if commit:
         parts.append(_sanitize(commit))

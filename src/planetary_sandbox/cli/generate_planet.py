@@ -1,8 +1,7 @@
 """Generate a demo planet and save a summary plot.
 
-``aeolus planet generate`` is the canonical interface; ``psx-gen`` is a
-compatibility alias. Heavy imports (CuPy, matplotlib) happen after
-argument parsing.
+``aeolus gen`` is the canonical interface; ``psx-gen`` is a compatibility
+alias. Heavy imports (CuPy, matplotlib) happen after argument parsing.
 """
 from __future__ import annotations
 
@@ -45,6 +44,19 @@ def build_parser(prog: str = "psx-gen") -> argparse.ArgumentParser:
     return parser
 
 
+def resolve_output_path(output: str) -> pathlib.Path:
+    """Relative outputs go under out/ (historical layout); absolute pass through.
+
+    The parent directory is created, fixing the historical crash when out/
+    did not exist in a fresh clone.
+    """
+    out_path = pathlib.Path(output)
+    if not out_path.is_absolute():
+        out_path = pathlib.Path("out") / out_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    return out_path
+
+
 def run(args: argparse.Namespace) -> int:
     # Heavy imports (CuPy via Planet, matplotlib via viz) after parsing.
     from planetary_sandbox.planet import Planet, PlanetaryParameters
@@ -69,17 +81,14 @@ def run(args: argparse.Namespace) -> int:
     viewer = PlanetViewer(planet)
     fig = viewer.plot_summary()
 
-    out_path = pathlib.Path(args.output)
-    if not out_path.is_absolute():
-        out_path = pathlib.Path("out") / out_path
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path = resolve_output_path(args.output)
     fig.savefig(out_path, dpi=200)
     print(f"Saved planet summary to {out_path}")
     return 0
 
 
 def main() -> int:
-    """psx-gen == aeolus planet generate."""
+    """psx-gen == aeolus gen."""
     return run(build_parser().parse_args())
 
 

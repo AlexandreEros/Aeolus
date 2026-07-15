@@ -5,24 +5,29 @@ Command tree::
     aeolus run bve [...]        run the barotropic vorticity solver
     aeolus list presets         named run configurations
     aeolus list scenarios       initial-condition scenarios
-    aeolus inspect RUN_DIR      summarize a finished run from its manifest
-    aeolus planet generate      demo planet + summary plot (psx-gen)
-    aeolus cache rebuild        clear/verify the CuPy kernel cache (psx-recompile)
+    aeolus inspect RUN_PATH     summarize a finished run from its manifest
+    aeolus gen [...]            demo planet + summary plot (psx-gen)
+    aeolus recompile [...]      clear/verify the CuPy kernel cache (psx-recompile)
+
+``aeolus validate`` and ``aeolus list planets`` are reserved: there is no
+automated validation scorer and no planet catalog yet, so they are neither
+implemented nor advertised.
 
 The ``psx-bve`` / ``psx-gen`` / ``psx-recompile`` commands are kept as
-compatibility aliases and delegate here.
+compatibility entry points and delegate to the same implementations.
 
 Design rules for this module:
 
 - Import-light: parsing, ``--help``, ``list``, and ``inspect`` must never
-  import CuPy or matplotlib. Heavy imports happen inside command handlers,
-  after argument validation.
-- Parser options default to ``None``; the documented defaults live in
-  ``BVE_DEFAULTS`` and are applied during configuration resolution so that
-  presets can be layered between defaults and explicit flags
-  (defaults < preset < explicit flags).
-- Resolved run semantics live in ``planetary_sandbox.run.bve.config``;
-  this module owns only parsing, aliases, and presets.
+  import CuPy, matplotlib, Planet, the runner, or visualization modules.
+  Heavy imports happen inside command handlers, after validation.
+- Every run-bve option parses with a ``None`` default so that explicit
+  values are distinguishable from defaults; the documented defaults live in
+  ``run.bve.config.BASE_DEFAULTS`` and are applied during resolution, which
+  enforces the precedence: explicit flag > preset value > ordinary default.
+- Resolution, cross-field validation, snapshot schedules, and plot
+  selection live in ``planetary_sandbox.run.bve.config`` (BVERunConfig);
+  this module owns only parsing, aliases, and the preset registry.
 """
 from __future__ import annotations
 
@@ -31,13 +36,15 @@ import sys
 from typing import Optional, Sequence
 
 from planetary_sandbox.cli import clear_cache, generate_planet
+from planetary_sandbox.run.bve.config import (  # import-light (stdlib only)
+    BASE_DEFAULTS, PLOT_TYPES, BVERunConfig)
 
 # ---------------------------------------------------------------------------
-# Choices, defaults, presets
+# Choices and presets
 # ---------------------------------------------------------------------------
 
 #: Initial-condition scenarios. Must match INITIAL_CONDITIONS in
-#: run/bve/initial_conditions.py (kept as a plain tuple here because that
+#: run/bve/initial_conditions.py (kept as a plain mapping here because that
 #: module imports CuPy at import time; parity is enforced by a test).
 SCENARIOS = {
     "two_vortices": "Two opposite-signed Gaussian vortices at +/-33 deg latitude.",
@@ -53,35 +60,9 @@ SCENARIOS = {
 #: User-facing backend spellings; 'gauss-latlon' normalizes to 'latlon'.
 BACKEND_CHOICES = ("geodesic", "latlon", "gauss-latlon")
 
-#: Documented defaults for `aeolus run bve`, identical to the historical
-#: psx-bve argparse defaults. Parser options default to None; these are
-#: applied in resolution so presets can sit between them and explicit flags.
-BVE_DEFAULTS = {
-    "lmax": 21,
-    "grid": "geodesic",
-    "resolution": 4,
-    "nlat": 128,
-    "nlon": 256,
-    "day_hours": float("inf"),
-    "radius_earth_units": 1.0,
-    "duration_days": 1.0,
-    "scenario": "two_vortices",
-    "viscosity": 0.0,
-    "product_quadrature": "fine",
-    "out": "runs",
-    "experiment": None,
-    "overwrite": False,
-}
-
-#: Snapshot controls stay None by default; the 21600 s historical default
-#: is applied by resolve_snapshot_interval() only when neither is given.
-SNAPSHOT_DEFAULTS = {
-    "n_snapshots": None,
-    "snapshot_interval_seconds": None,
-}
-
-#: Named bundles of run-bve settings (the README-documented configurations).
-#: Explicit flags always override preset values.
+#: Named bundles of run-bve settings, corresponding to configurations
+#: already documented in the README / docs/VALIDATION.md. Keys are argparse
+#: dest names; explicit user flags always override preset values.
 PRESETS = {
     "rh4": {
         "description": "One-day Rossby-Haurwitz wavenumber-4 validation run "
@@ -92,13 +73,13 @@ PRESETS = {
             "resolution": 4,
             "day_hours": 24.0,
             "duration_days": 1.0,
-            "snapshot_interval_seconds": 21600.0,
+            "dt_snapshots": 21600.0,
             "product_quadrature": "fine",
             "viscosity": 0.0,
             "experiment": "validation-rh4",
         },
     },
-    "two-vortices": {
+    "two-vortices-quick": {
         "description": "Small, fast two-vortex smoke run "
                        "(the README quickstart configuration).",
         "settings": {
@@ -108,7 +89,7 @@ PRESETS = {
             "nlat": 12,
             "nlon": 24,
             "duration_days": 0.02,
-            "snapshot_interval_seconds": 864.0,
+            "dt_snapshots": 864.0,
             "experiment": "quickstart",
         },
     },
@@ -116,20 +97,22 @@ PRESETS = {
 
 
 # ---------------------------------------------------------------------------
-# run bve: arguments and configuration resolution
+# run bve: arguments and dispatch
 # ---------------------------------------------------------------------------
 
 _BVE_EXAMPLES = """\
 examples:
-  aeolus run bve                          geodesic grid, two_vortices, 1 day, 6 h snapshots
+  aeolus run bve                          geodesic grid, two_vortices, 1 day, 5 snapshots
   aeolus run bve --preset rh4             documented RH4 validation configuration
-  aeolus run bve --days 1 --n-snapshots 5
-  aeolus run bve --backend gauss-latlon --nlat 12 --nlon 24 --lmax 8 --days 0.02 --n-snapshots 3
+  aeolus run bve --days 1 --n-snapshots 9
+  aeolus run bve --n-snapshots 20 --no-plots
+  aeolus run bve --n-snapshots 1 --plot summary
+  aeolus run bve --backend gauss-latlon --nlat 12 --nlon 24 --l-max 8 --days 0.02
 """
 
 
 def add_bve_arguments(parser: argparse.ArgumentParser) -> None:
-    """All `run bve` options. Defaults are None (see module docstring)."""
+    """All `run bve` options. Every default is None (see module docstring)."""
     parser.add_argument(
         "--preset", choices=sorted(PRESETS), default=None,
         help="Named bundle of settings (see 'aeolus list presets'). "
@@ -142,12 +125,12 @@ def add_bve_arguments(parser: argparse.ArgumentParser) -> None:
              "latitudes, uniform longitudes). 'geodesic' uses --resolution; "
              "'latlon' uses --nlat/--nlon.")
     parser.add_argument(
-        "--lmax", type=int, default=None,
+        "--l-max", "--lmax", dest="lmax", type=int, default=None,
         help="Maximum spherical harmonic degree [default: 21].")
     parser.add_argument(
         "--resolution", type=int, default=None,
         help="Geodesic grid subdivision level [default: 4]. "
-             "The (resolution=4, lmax=21) default keeps ~10 grid points per "
+             "The (resolution=4, l_max=21) default keeps ~10 grid points per "
              "SH basis function (docs/KNOWN_RISKS.md R-2).")
     parser.add_argument(
         "--nlat", type=int, default=None,
@@ -169,17 +152,18 @@ def add_bve_arguments(parser: argparse.ArgumentParser) -> None:
     snapshots = parser.add_mutually_exclusive_group()
     snapshots.add_argument(
         "--n-snapshots", type=int, metavar="N", default=None,
-        help="Store N states, including both the initial and the final state, "
-             "evenly spaced over the duration (N >= 2). Mutually exclusive "
-             "with --snapshot-interval-seconds.")
+        help="Store N field states evenly spaced over the duration "
+             "[default: 5]. N=0: none; N=1: only the final state; N>=2: "
+             "exactly N states including both t=0 and t_end. Mutually "
+             "exclusive with --snapshot-interval-seconds.")
     snapshots.add_argument(
         "--snapshot-interval-seconds", "--dt-snapshots",
-        dest="snapshot_interval_seconds", type=float, metavar="SECONDS",
-        default=None,
-        help="Store a state every SECONDS of simulated time [default: 21600 "
-             "(6 h)]. The initial state is always stored; the final state is "
+        dest="dt_snapshots", type=float, metavar="SECONDS", default=None,
+        help="Store a state every SECONDS of simulated time instead of a "
+             "count. The initial state is always stored; the final state is "
              "stored only if the duration is a multiple of the interval. "
-             "--dt-snapshots is a compatibility alias.")
+             "--dt-snapshots is a compatibility alias (and the legacy "
+             "psx-bve default: 21600 s).")
 
     parser.add_argument(
         "--scenario", choices=sorted(SCENARIOS), default=None,
@@ -195,6 +179,22 @@ def add_bve_arguments(parser: argparse.ArgumentParser) -> None:
              "('overresolved product quadrature', docs/KNOWN_RISKS.md R-3). "
              "'coarse': the historical state-grid path, kept for A/B "
              "comparisons. An unsupported combination raises at startup.")
+
+    plot_group = parser.add_mutually_exclusive_group()
+    plot_group.add_argument(
+        "--plot", dest="plots", action="append", metavar="TYPE",
+        choices=list(PLOT_TYPES) + ["all"], default=None,
+        help="Generate only the named image product; repeatable "
+             f"({', '.join(PLOT_TYPES)}, or 'all'). Duplicates are ignored "
+             "and execution order is fixed. Without any plot option, every "
+             "product the snapshot schedule supports is generated. Field "
+             "snapshots and numerical diagnostics are always written "
+             "regardless of plot selection.")
+    plot_group.add_argument(
+        "--no-plots", action="store_true", default=None,
+        help="Generate no image files (field snapshots and numerical "
+             "diagnostics are still written).")
+
     parser.add_argument(
         "--out", type=str, default=None,
         help="Base directory for run outputs [default: runs]. Each run "
@@ -214,10 +214,10 @@ def build_bve_parser(prog: str = "aeolus run bve",
                      apply_defaults: bool = False) -> argparse.ArgumentParser:
     """Standalone `run bve` parser.
 
-    ``apply_defaults=True`` fills in the documented defaults directly on the
-    parser (the historical psx-bve behavior; kept for the legacy
-    ``planetary_sandbox.cli.bve.build_parser`` import surface). Snapshot
-    controls stay None either way — their default is applied in resolution.
+    ``apply_defaults=True`` fills in the ordinary defaults directly on the
+    parser (kept for the legacy ``planetary_sandbox.cli.bve.build_parser``
+    import surface). Snapshot and plot controls stay None either way —
+    their defaults are applied in configuration resolution.
     """
     parser = argparse.ArgumentParser(
         prog=prog,
@@ -226,86 +226,41 @@ def build_bve_parser(prog: str = "aeolus run bve",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     add_bve_arguments(parser)
     if apply_defaults:
-        parser.set_defaults(**BVE_DEFAULTS)
+        parser.set_defaults(**BASE_DEFAULTS)
     return parser
 
 
-def resolve_bve_config(args: argparse.Namespace):
-    """Layer defaults < preset < explicit flags into a BVERunConfig.
+#: Parsed-namespace keys forwarded into configuration resolution.
+_EXPLICIT_KEYS = tuple(BASE_DEFAULTS) + (
+    "n_snapshots", "dt_snapshots", "plots", "no_plots")
 
-    Raises ValueError for invalid combinations (the caller maps that onto a
-    parser error). No CuPy/matplotlib import happens here.
+
+def run_bve_command(args: argparse.Namespace,
+                    parser: argparse.ArgumentParser,
+                    snapshot_default: str = "count") -> int:
+    """Resolve, print the resolved configuration, and dispatch the run.
+
+    ``snapshot_default`` selects the interface default when neither
+    snapshot control is given: "count" (aeolus, N=5) or "interval"
+    (legacy psx-bve, 21600 s).
     """
-    from planetary_sandbox.run.bve.config import (
-        BVERunConfig, resolve_snapshot_interval)
-
-    settings = dict(BVE_DEFAULTS, **SNAPSHOT_DEFAULTS)
-    preset = dict(PRESETS[args.preset]["settings"]) if getattr(args, "preset", None) else {}
-    explicit = {k: v for k, v in vars(args).items()
-                if k in settings and v is not None}
-
-    # The two snapshot controls are one mutually exclusive choice: an
-    # explicit flag replaces whichever form the preset used.
-    if "n_snapshots" in explicit or "snapshot_interval_seconds" in explicit:
-        preset.pop("n_snapshots", None)
-        preset.pop("snapshot_interval_seconds", None)
-
-    settings.update(preset)
-    settings.update(explicit)
-
-    dt_snapshots = resolve_snapshot_interval(
-        settings["duration_days"],
-        n_snapshots=settings.pop("n_snapshots"),
-        snapshot_interval_seconds=settings.pop("snapshot_interval_seconds"))
-
-    if settings["grid"] == "gauss-latlon":
-        settings["grid"] = "latlon"
-
-    return BVERunConfig(dt_snapshots=dt_snapshots, **settings)
-
-
-def _print_resolved_config(cfg, preset: Optional[str]) -> None:
-    times = cfg.snapshot_times_seconds()
-    lines = ["Resolved run configuration:"]
-    if preset:
-        lines.append(f"  preset              {preset}")
-    lines.append(f"  backend/grid        {cfg.grid}")
-    if cfg.grid == "geodesic":
-        lines.append(f"  resolution          {cfg.resolution} (geodesic subdivision level)")
-    else:
-        lines.append(f"  nlat x nlon         {cfg.nlat} x {cfg.nlon} "
-                     "(Gauss-Legendre latitudes x uniform longitudes)")
-    day = "inf (non-rotating)" if cfg.day_hours == float("inf") else f"{cfg.day_hours:g} h"
-    out = cfg.out if cfg.experiment is None else f"{cfg.out} (experiment: {cfg.experiment})"
-    lines += [
-        f"  l_max               {cfg.lmax}",
-        f"  scenario            {cfg.scenario}",
-        f"  day length          {day}",
-        f"  radius              {cfg.radius_earth_units:g} Earth radii",
-        f"  duration            {cfg.duration_days:g} days",
-        f"  snapshot interval   {cfg.dt_snapshots:g} s "
-        f"({len(times)} stored states incl. t=0)",
-        f"  viscosity           {cfg.viscosity:g} m^2/s",
-        f"  product quadrature  {cfg.product_quadrature}",
-        f"  output base         {out}",
-    ]
-    if not cfg.includes_final_state:
-        lines.append(
-            "  note: the duration is not a multiple of the snapshot interval, "
-            "so the final state will not be stored (use --n-snapshots to "
-            "include it).")
-    print("\n".join(lines))
-
-
-def _cmd_run_bve(args: argparse.Namespace) -> int:
+    preset_name = getattr(args, "preset", None)
+    explicit = {k: getattr(args, k, None) for k in _EXPLICIT_KEYS}
     try:
-        cfg = resolve_bve_config(args)
+        cfg = BVERunConfig.resolve(
+            explicit=explicit,
+            preset=PRESETS[preset_name]["settings"] if preset_name else None,
+            snapshot_default=snapshot_default)
     except ValueError as err:
-        args._parser.error(str(err))
-    _print_resolved_config(cfg, args.preset)
+        parser.error(str(err))
+    print("\n".join(cfg.summary_lines(preset=preset_name)))
     # Heavy imports (CuPy, matplotlib) happen inside execute_run.
     from planetary_sandbox.cli import bve as bve_module
     return bve_module.execute_run(cfg)
+
+
+def _cmd_run_bve(args: argparse.Namespace) -> int:
+    return run_bve_command(args, args._parser, snapshot_default="count")
 
 
 # ---------------------------------------------------------------------------
@@ -333,31 +288,71 @@ def _cmd_list_scenarios(args: argparse.Namespace) -> int:
 # inspect
 # ---------------------------------------------------------------------------
 
-def _cmd_inspect(args: argparse.Namespace) -> int:
-    import json
+def _error(message: str) -> int:
+    print(f"error: {message}", file=sys.stderr)
+    return 2
+
+
+def _resolve_inspect_target(target):
+    """Resolve RUN_PATH into a concrete run directory.
+
+    Accepts a run directory, a base directory with latest_run.txt, or an
+    experiment directory (picks the newest run, which the timestamped
+    run-id naming makes the lexically greatest).
+    """
     import pathlib
 
-    target = pathlib.Path(args.run_dir)
-    run_dir = target
-    if not (run_dir / "manifest.json").exists() and (target / "latest_run.txt").exists():
-        pointer = (target / "latest_run.txt").read_text(encoding="utf-8").strip()
+    target = pathlib.Path(target)
+    if (target / "manifest.json").exists() or (target / "config.json").exists():
+        return target, None
+
+    pointer_file = target / "latest_run.txt"
+    if pointer_file.exists():
+        pointer = pointer_file.read_text(encoding="utf-8").strip()
         pointed = pathlib.Path(pointer)
-        run_dir = pointed if pointed.is_absolute() else target / pointer
+        return (pointed if pointed.is_absolute() else target / pointer), None
+
+    if target.is_dir():
+        runs = sorted(
+            child for child in target.iterdir()
+            if child.is_dir() and ((child / "manifest.json").exists()
+                                   or (child / "config.json").exists()))
+        if runs:
+            note = (f"(newest of {len(runs)} runs in {target})"
+                    if len(runs) > 1 else None)
+            return runs[-1], note
+    return None, None
+
+
+def _cmd_inspect(args: argparse.Namespace) -> int:
+    import json
+
+    run_dir, note = _resolve_inspect_target(args.run_path)
+    if run_dir is None:
+        return _error(
+            f"no run found under: {args.run_path} (expected a run directory, "
+            "an experiment directory, or a base directory with latest_run.txt)")
 
     manifest_path = run_dir / "manifest.json"
     config_path = run_dir / "config.json"
     if not manifest_path.exists() and not config_path.exists():
-        print(f"error: no manifest.json or config.json found under: {run_dir}",
-              file=sys.stderr)
-        return 2
+        return _error(f"no manifest.json or config.json found under: {run_dir}")
+
+    try:
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            run_config = manifest.get("run_config") or {}
+        else:
+            manifest = {}
+            run_config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as err:
+        return _error(f"malformed run metadata under {run_dir}: {err}")
+    if not isinstance(run_config, dict) or not isinstance(manifest, dict):
+        return _error(f"malformed run metadata under {run_dir}: not an object")
 
     print(f"Run directory: {run_dir}")
-    if manifest_path.exists():
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        run_config = manifest.get("run_config") or {}
-    else:
-        manifest = {}
-        run_config = json.loads(config_path.read_text(encoding="utf-8"))
+    if note:
+        print(f"  {note}")
 
     def show(label: str, value) -> None:
         if value not in (None, "", {}):
@@ -383,11 +378,29 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         show("grid", f"{grid} r{run_config.get('resolution')}")
     show("l_max", run_config.get("lmax"))
     show("scenario", run_config.get("scenario"))
+    day_hours = run_config.get("day_hours")
+    if day_hours is not None:
+        show("day length", "non-rotating" if day_hours in (float("inf"), "Infinity")
+             else f"{day_hours} h")
     if run_config.get("duration_days") is not None:
-        show("duration", f"{run_config['duration_days']} days "
-                         f"(snapshots every {run_config.get('dt_snapshots')} s)")
-    show("viscosity", run_config.get("viscosity"))
+        show("duration", f"{run_config['duration_days']} days")
 
+    mode = run_config.get("snapshot_mode")
+    times = run_config.get("snapshot_times")
+    if mode == "count":
+        show("snapshots", f"count mode, N={run_config.get('n_snapshots')}")
+    elif mode == "interval" or run_config.get("dt_snapshots") is not None:
+        show("snapshots", f"interval mode, every {run_config.get('dt_snapshots')} s")
+    if isinstance(times, list) and times:
+        hours = ", ".join(f"{s/3600.0:g}" for s in times[:8])
+        if len(times) > 8:
+            hours += f", ... ({len(times)} total)"
+        show("snapshot times", f"{hours} h")
+    plots = run_config.get("plots")
+    if plots is not None:
+        show("plots", ", ".join(plots) if plots else "none")
+
+    show("viscosity", run_config.get("viscosity"))
     numerics = manifest.get("numerics") or {}
     show("backend", numerics.get("backend"))
     show("product sampling", numerics.get("product_sampling"))
@@ -395,18 +408,23 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     versions = manifest.get("versions") or {}
     if versions:
         show("versions", ", ".join(f"{k} {v}" for k, v in versions.items() if v))
+
+    files = sorted(p.name + ("/" if p.is_dir() else "")
+                   for p in run_dir.iterdir())
+    if files:
+        show("output files", ", ".join(files))
     return 0
 
 
 # ---------------------------------------------------------------------------
-# planet / cache
+# gen / recompile
 # ---------------------------------------------------------------------------
 
-def _cmd_planet_generate(args: argparse.Namespace) -> int:
+def _cmd_gen(args: argparse.Namespace) -> int:
     return generate_planet.run(args)
 
 
-def _cmd_cache_rebuild(args: argparse.Namespace) -> int:
+def _cmd_recompile(args: argparse.Namespace) -> int:
     return clear_cache.run(args)
 
 
@@ -418,12 +436,12 @@ _TOP_EXAMPLES = """\
 examples:
   aeolus run bve --preset rh4
   aeolus run bve --backend gauss-latlon --scenario two_vortices --days 10
-  aeolus run bve --days 1 --n-snapshots 5
+  aeolus run bve --days 1 --n-snapshots 9
   aeolus list presets
   aeolus inspect runs
 
-psx-bve, psx-gen, and psx-recompile remain as compatibility aliases for
-'aeolus run bve', 'aeolus planet generate', and 'aeolus cache rebuild'.
+psx-bve, psx-gen, and psx-recompile remain available as compatibility
+entry points for 'aeolus run bve', 'aeolus gen', and 'aeolus recompile'.
 """
 
 
@@ -463,44 +481,32 @@ def build_parser() -> argparse.ArgumentParser:
         "scenarios", help="Initial-condition scenarios for 'aeolus run bve --scenario'.")
     scenarios_parser.set_defaults(_handler=_cmd_list_scenarios)
 
-    # aeolus inspect RUN_DIR
+    # aeolus inspect RUN_PATH
     inspect_parser = commands.add_parser(
         "inspect", help="Summarize a run directory from its manifest.",
-        description="Print a summary of a finished run from its manifest.json "
-                    "/ config.json. Never initializes CUDA.")
+        description="Print a summary of a finished run from its manifest.json"
+                    " / config.json. Never initializes CUDA.")
     inspect_parser.add_argument(
-        "run_dir",
-        help="A run directory, or a base directory containing latest_run.txt "
-             "(e.g. 'runs').")
+        "run_path",
+        help="A run directory, an experiment directory, or a base directory "
+             "containing latest_run.txt (e.g. 'runs').")
     inspect_parser.set_defaults(_handler=_cmd_inspect)
 
-    # aeolus planet generate
-    planet_parser = commands.add_parser(
-        "planet", help="Planet utilities.",
-        description="Planet utilities.")
-    planet_subparsers = planet_parser.add_subparsers(dest="action",
-                                                     metavar="ACTION",
-                                                     required=True)
-    generate_parser = planet_subparsers.add_parser(
-        "generate", help="Generate a demo planet and save a summary plot.",
+    # aeolus gen
+    gen_parser = commands.add_parser(
+        "gen", help="Generate a demo planet and save a summary plot.",
         description="Generate a demo planet and save a summary plot.")
-    generate_planet.add_arguments(generate_parser)
-    generate_parser.set_defaults(_handler=_cmd_planet_generate)
+    generate_planet.add_arguments(gen_parser)
+    gen_parser.set_defaults(_handler=_cmd_gen)
 
-    # aeolus cache rebuild
-    cache_parser = commands.add_parser(
-        "cache", help="CuPy kernel-cache utilities.",
-        description="CuPy kernel-cache utilities.")
-    cache_subparsers = cache_parser.add_subparsers(dest="action",
-                                                   metavar="ACTION",
-                                                   required=True)
-    rebuild_parser = cache_subparsers.add_parser(
-        "rebuild",
+    # aeolus recompile
+    recompile_parser = commands.add_parser(
+        "recompile",
         help="Clear the CuPy kernel cache and verify kernel compilation.",
         description="Clear CuPy's kernel cache and verify that the "
                     "spherical-harmonics kernel recompiles.")
-    clear_cache.add_arguments(rebuild_parser)
-    rebuild_parser.set_defaults(_handler=_cmd_cache_rebuild)
+    clear_cache.add_arguments(recompile_parser)
+    recompile_parser.set_defaults(_handler=_cmd_recompile)
 
     return parser
 
