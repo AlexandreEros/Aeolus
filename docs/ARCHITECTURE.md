@@ -17,8 +17,8 @@ model, and how to add or compare a backend.
 ```text
 src/planetary_sandbox/
 ├── numerics/        grids, transforms, backends, product spaces, operators
-├── run/bve/         equation, RK4 runner, initial conditions, diagnostics, I/O
-├── cli/             psx-bve, psx-gen, psx-recompile
+├── run/bve/         equation, RK4 runner, run config resolution, ICs, diagnostics, I/O
+├── cli/             aeolus (main.py); psx-bve/psx-gen/psx-recompile compatibility entry points
 ├── planet/          planet assembly and decorative terrain
 └── viz/             maps and run visualizations
 tests/               asserting GPU tests plus standalone audit scripts
@@ -61,7 +61,12 @@ Runner / Diagnostics
 - `SpectralOperators` contains Laplacian, derivative recurrence, velocity, and
   pseudospectral Jacobian operations without branching on grid family.
 - `BarotropicVorticity` owns the equation and exact spectral Coriolis mode; the
-  runner owns RK4, snapshots, capsules, and diagnostics.
+  runner owns RK4, snapshot storage, capsules, and diagnostics.
+- `run/bve/config.py` (`BVERunConfig`) owns configuration resolution for the
+  CLI: preset layering (explicit flag > preset > ordinary default), snapshot
+  scheduling, and plot selection — all validated before CUDA initialization.
+  The runner consumes the resolved explicit snapshot schedule and clips
+  integration steps to land exactly on the requested output times.
 
 The prognostic variable is relative vorticity, represented by complex
 spherical-harmonic coefficients for `m >= 0`:
@@ -157,11 +162,23 @@ runs/
     └── logs/         # reserved; CLI stdout is not persisted yet
 ```
 
-`config.json` is the authoritative model/CLI configuration. `manifest.json`
-adds the exact command, UTC creation time, Git commit/branch/dirty flag, Python
-and library versions, GPU, transform, state sampling, and actual product
-sampling. Run directories are unique and collision-resistant by default;
-figures also embed run metadata.
+Which figures exist depends on the run's plot selection (`--plot` /
+`--no-plots`): `figures/` comes from the `diagnostics` plot product, the
+`<scenario>_t<times>.png` panel from `snapshots`, and `bve_summary.png` from
+`summary`. The `.npy` state files and `diagnostics/` data are written
+regardless of plot selection (and are empty-but-present when
+`--n-snapshots 0` stores no field states).
+
+`config.json` is the authoritative model/CLI configuration: the historical
+psx-bve key set plus the additive keys `snapshot_mode`, `n_snapshots`,
+`snapshot_times` (the resolved schedule in seconds), and `plots`.
+`dt_snapshots` remains the uniform interval where one exists (interval mode,
+or count mode with `N >= 2`) and is `null` for `N` in {0, 1}; run ids keep
+the historical `dtNh` token where an interval exists and use `snapN`
+otherwise. `manifest.json` adds the exact command, UTC creation time, Git
+commit/branch/dirty flag, Python and library versions, GPU, transform, state
+sampling, and actual product sampling. Run directories are unique and
+collision-resistant by default; figures also embed run metadata.
 
 The authoritative scientific diagnostics are `diagnostics/timeseries.csv` (one
 flushed row per accepted step, including energy, relative and absolute

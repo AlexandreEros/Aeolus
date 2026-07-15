@@ -60,8 +60,13 @@ install exactly one CuPy package. Confirm the GPU is visible:
 
 ```powershell
 python -c "import cupy as cp; print(cp.cuda.runtime.getDeviceProperties(0)['name'])"
-psx-bve --help
+aeolus --help
 ```
+
+`aeolus` is the canonical command-line interface. The `psx-bve`, `psx-gen`,
+and `psx-recompile` commands remain available as compatibility entry points
+(see below). Entry points are created at install time, so rerun
+`pip install -e .` after pulling a change that touches them.
 
 If PowerShell blocks venv activation, allow it for the current process only
 (`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`) and activate
@@ -70,27 +75,72 @@ CuPy compatibility notes.
 
 ## Minimal run examples
 
-Short geodesic run:
+Short two-vortex smoke run (the README quickstart configuration, packaged as
+a preset):
 
 ```powershell
-psx-bve --grid geodesic --resolution 3 --lmax 8 --scenario two_vortices --duration-days 0.02 --dt-snapshots 864 --out runs --experiment quickstart-geodesic
+aeolus run bve --preset two-vortices-quick
 ```
 
-Short Gauss lat–lon run (the `12 × 24` state grid is adequate for `lmax=8`;
-fine products are evaluated on the required `13 × 25` grid):
+The same quickstart on the Gauss lat–lon backend (the `12 × 24` state grid is
+adequate for `l_max=8`; fine products are evaluated on the required `13 × 25`
+grid):
 
 ```powershell
-psx-bve --grid latlon --nlat 12 --nlon 24 --lmax 8 --scenario two_vortices --duration-days 0.02 --dt-snapshots 864 --out runs --experiment quickstart-latlon
+aeolus run bve --preset two-vortices-quick --backend gauss-latlon
 ```
 
 One-day RH4 validation run at the production default envelope:
 
 ```powershell
-psx-bve --grid geodesic --resolution 4 --lmax 21 --scenario rh4 --day-hours 24 --duration-days 1 --dt-snapshots 21600 --product-quadrature fine --viscosity 0 --out runs --experiment validation-rh4
+aeolus run bve --preset rh4
 ```
 
-The CLI prints the absolute run directory and updates `runs/latest_run.txt`.
-`psx-bve --help` is the complete, current source of truth for options.
+which is shorthand for:
+
+```powershell
+aeolus run bve --backend geodesic --resolution 4 --l-max 21 --scenario rh4 --day-hours 24 --days 1 --snapshot-interval-seconds 21600 --product-quadrature fine --viscosity 0 --experiment validation-rh4
+```
+
+Explicit flags always override preset values. The CLI prints the resolved
+configuration and the absolute run directory, and updates
+`runs/latest_run.txt`. `aeolus run bve --help` is the complete, current
+source of truth for options; `aeolus list presets` and
+`aeolus list scenarios` enumerate the available presets and initial
+conditions, and `aeolus inspect runs` summarizes the latest run capsule.
+
+### Snapshots and plots
+
+Field-state storage and image generation are controlled independently:
+
+- `--n-snapshots N` (canonical, default `5`) stores `N` evenly spaced states
+  **including both `t=0` and `t_end`**. `N=0` stores no field snapshots;
+  `N=1` stores only the final state. For the default one-day run, `N=5`
+  reproduces the historical 0 h / 6 h / 12 h / 18 h / 24 h states.
+- `--snapshot-interval-seconds S` (compatibility alias `--dt-snapshots`)
+  keeps the historical interval semantics instead: `t=0` and every interval
+  boundary are stored, and the final state is stored **only** when the
+  duration is a multiple of the interval. The two controls are mutually
+  exclusive. Legacy `psx-bve` invocations default to a 21600 s interval, so
+  existing commands behave exactly as before.
+- `--plot TYPE` (repeatable: `diagnostics`, `snapshots`, `summary`, or
+  `all`) selects which image products to render; `--no-plots` renders none.
+  Field snapshots (`vorticity_coeffs.npy` / `vorticity_grid.npy`) and the
+  per-step numerical diagnostics CSV are always written regardless of plot
+  selection, so `--n-snapshots 20 --no-plots` saves twenty states without
+  rendering a single figure, and `--n-snapshots 0` still yields a
+  diagnostics-only run.
+
+### Compatibility entry points
+
+`psx-bve`, `psx-gen`, and `psx-recompile` delegate to the same
+implementations as `aeolus run bve`, `aeolus gen`, and `aeolus recompile`.
+Existing option spellings (`--lmax`, `--grid`, `--duration-days`,
+`--dt-snapshots`) remain accepted everywhere as aliases of the canonical
+names, and legacy interval-based invocations keep their historical run-id
+format, `config.json` keys, and output behavior. `config.json` additionally
+records `snapshot_mode`, `n_snapshots`, `snapshot_times`, and `plots`
+(additive keys only).
 
 ## Example outputs
 

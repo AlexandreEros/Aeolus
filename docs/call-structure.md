@@ -1,17 +1,23 @@
 # Call Structure
 
-Updated from the implementation on 2026-07-12. Solid arrows are direct calls
+Updated from the implementation on 2026-07-15. Solid arrows are direct calls
 or construction; dashed arrows show selected data passed into a later stage.
 
 ## Entry points and planet construction
+
+`aeolus` (cli/main.py) is the canonical executable; its `run bve`, `gen`, and
+`recompile` subcommands share implementations with the `psx-*` compatibility
+entry points. `aeolus list` and `aeolus inspect` are pure-stdlib and never
+reach the assembly stage below.
 
 ```mermaid
 flowchart LR
     subgraph cli["CLI entry points"]
         scripts["pyproject.toml scripts"]
-        gen["psx-gen<br/>generate_planet.main()"]
-        bve["psx-bve<br/>bve.main()"]
-        cache["psx-recompile<br/>clear_cache.main()"]
+        aeolus["aeolus<br/>main.main()"]
+        gen["psx-gen / aeolus gen<br/>generate_planet"]
+        bve["psx-bve / aeolus run bve<br/>bve.execute_run()"]
+        cache["psx-recompile / aeolus recompile<br/>clear_cache"]
     end
 
     subgraph assembly["Planet assembly"]
@@ -37,6 +43,10 @@ flowchart LR
         png["out/&lt;output&gt;.png"]
     end
 
+    scripts --> aeolus
+    aeolus --> gen
+    aeolus --> bve
+    aeolus --> cache
     scripts --> gen
     scripts --> bve
     scripts --> cache
@@ -68,12 +78,20 @@ dense GPU point-set transform. `SpectralOperators` receives the selected
 backend, which owns nonlinear-product sampling. A fine product space is built
 once on first use and then cached.
 
-## `psx-bve` setup and provenance
+## `aeolus run bve` setup and provenance
+
+Parsing and configuration resolution happen before any CuPy import:
+`BVERunConfig.resolve()` (run/bve/config.py) layers explicit flags over the
+selected preset over ordinary defaults, resolves the snapshot schedule and
+plot selection, validates cross-field constraints, and prints the resolved
+configuration. Only then does `execute_run` create the run directory and
+import the numerical stack.
 
 ```mermaid
 flowchart TD
-    main["bve.main()"] --> parse["build_parser().parse_args()"]
-    parse --> writable["_resolve_writable_base_dir()"]
+    main["main._cmd_run_bve() / bve.main()"] --> parse["parse_args()"]
+    parse --> resolve["BVERunConfig.resolve()<br/>presets, snapshot schedule, plots"]
+    resolve --> writable["_resolve_writable_base_dir()"]
     writable --> create["create_run_dir()"]
     create --> runDir["RunDirectory"]
     runDir --> latest["update_latest_pointer()"]
@@ -114,11 +132,14 @@ flowchart TD
     run --> recorder["DiagnosticsRecorder()"]
     recorder --> record0["record initial state"]
 
-    cfl --> loop{"t &lt;= t_end?"}
-    loop -- "yes" --> snapshot{"snapshot due?"}
+    run --> schedule["explicit snapshot schedule<br/>(resolved by BVERunConfig)"]
+
+    cfl --> loop{"t &lt; t_end?"}
+    schedule --> snapshot
+    loop -- "yes" --> snapshot{"schedule time reached?"}
     snapshot -- "yes" --> synth["planet.sh.inv_transform(state.coeffs)"]
     synth --> memory["append vorticity grid + time"]
-    snapshot --> dt["dt_step = min(CFL, snapshot, remaining)"]
+    snapshot --> dt["dt_step = min(CFL, next schedule time, t_end)"]
     memory --> dt
     dt --> rk4["rk4_step(model, state, t, dt_step)"]
 
@@ -135,12 +156,17 @@ flowchart TD
     record --> loop
 
     loop -- "no" --> close["DiagnosticsRecorder.close()"]
-    close --> diagPlot["plot_diagnostics()"]
-    diagPlot --> save["save coefficient/grid snapshots"]
-    save --> viewer["VorticityViewer()"]
+    close --> save["save coefficient/grid snapshots<br/>(always, independent of plots)"]
+    save --> plotsel{"plot selection"}
+    plotsel -- "diagnostics" --> diagPlot["plot_diagnostics()"]
+    plotsel -- "snapshots / summary" --> viewer["VorticityViewer()"]
     viewer --> snapshots["plot_all_snapshots()"]
     viewer --> summary["plot_summary()"]
 ```
+
+Image products run in a fixed order (diagnostics, snapshots, summary) and
+only when selected; `--no-plots` skips all of them while the `.npy` states
+and diagnostics CSV are still written.
 
 ## One tendency evaluation
 
