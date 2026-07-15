@@ -73,7 +73,7 @@ class SpectralOperators:
             supported by every backend): on the state sampling itself — the
             historical behavior; its quadrature cannot integrate the
             degree-~2·l_max product content, and the resulting aliasing lands
-            in the retained band (KNOWN_RISKS.md R-3). "fine" (where
+            in the retained band (docs/KNOWN_RISKS.md R-3). "fine" (where
             supported): a backend-chosen overresolved product sampling —
             the geodesic backend uses a resolution-(r+1) co-grid built once
             at initialization ("overresolved product quadrature"). This is

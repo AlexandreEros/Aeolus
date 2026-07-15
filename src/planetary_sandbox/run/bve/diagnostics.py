@@ -2,12 +2,12 @@
 
 Computes conservation and spectral-health diagnostics *directly from the
 dynamical state* (spectral coefficients + the transform's own quadrature
-weights) — never from the interpolated plotting fields (see KNOWN_RISKS.md
+weights) — never from the interpolated plotting fields (see docs/KNOWN_RISKS.md
 R-14). Data production is decoupled from visualization: `DiagnosticsRecorder`
 appends numbers to ``diagnostics/timeseries.csv`` and ``diagnostics/spectra.npz``
 during the run; `plot_diagnostics` reads those files afterwards.
 
-Spectral conventions (see MATHEMATICAL_MODEL.md §2): orthonormal complex
+Spectral conventions (see docs/MATHEMATICAL_MODEL.md §2): orthonormal complex
 spherical harmonics, coefficients stored for m >= 0 in a dense
 (l_max+1, l_max+1) array, real fields implied. For a real field f with
 coefficients a_lm the area integrals reduce to degree sums:

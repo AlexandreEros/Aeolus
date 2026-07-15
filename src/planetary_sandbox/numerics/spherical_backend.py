@@ -23,7 +23,7 @@ pointwise products are formed and analyzed back into the shared
   analyze point values back to coefficients with its own quadrature.
 
 Unsupported modes must raise ``ValueError``; there is **no silent fallback**
-(KNOWN_RISKS.md R-3 provenance requirement). Product spaces are constructed
+(docs/KNOWN_RISKS.md R-3 provenance requirement). Product spaces are constructed
 once per backend (at first request, cached) — never per tendency call.
 """
 from __future__ import annotations
@@ -134,7 +134,7 @@ class GeodesicBackend(SphericalGridBackend):
 
     'fine' builds one resolution-(r+1) geodesic co-grid with Voronoi
     quadrature at the same l_max ("overresolved product quadrature",
-    KNOWN_RISKS.md R-3) — a backend-specific choice, not part of the
+    docs/KNOWN_RISKS.md R-3) — a backend-specific choice, not part of the
     interface contract.
     """
 

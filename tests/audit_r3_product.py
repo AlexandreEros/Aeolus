@@ -1,4 +1,4 @@
-"""Characterization audit for KNOWN_RISKS.md R-3: which operation in the
+"""Characterization audit for docs/KNOWN_RISKS.md R-3: which operation in the
 pseudospectral nonlinear product introduces the dominant invariant defect?
 
 NO production numerics are modified; all variants live in this script.

@@ -41,7 +41,7 @@ def build_parser():
     )
 
     # Default (l_max=21, resolution=4) keeps ~10 grid points per SH basis
-    # function, within the transform's usable envelope (see KNOWN_RISKS.md R-2).
+    # function, within the transform's usable envelope (see docs/KNOWN_RISKS.md R-2).
     parser.add_argument("--lmax", type=int, default=21)
     parser.add_argument("--grid", type=str, default="geodesic",
                         choices=["geodesic", "latlon"],
@@ -64,7 +64,7 @@ def build_parser():
                              "evaluated and analyzed. 'fine' (default): on a "
                              "reusable resolution-(r+1) product grid "
                              "('overresolved product quadrature', "
-                             "KNOWN_RISKS.md R-3). 'coarse': the historical "
+                             "docs/KNOWN_RISKS.md R-3). 'coarse': the historical "
                              "state-grid path, kept for A/B comparisons. "
                              "There is no silent fallback: an unsupported "
                              "combination raises at startup.")

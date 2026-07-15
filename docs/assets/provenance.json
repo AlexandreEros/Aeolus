@@ -1,0 +1,380 @@
+{
+  "two_vortices_evolution.png": [
+    {
+      "run_id": "20260713T042407Z_two-vortices_rot24h_r4_l21_dt24h_4a840226",
+      "commit": "4a84022651b6b37752a168a2d8ef660359df945c",
+      "dirty": true,
+      "config": {
+        "lmax": 21,
+        "grid": "geodesic",
+        "resolution": 4,
+        "nlat": 128,
+        "nlon": 256,
+        "day_hours": 24.0,
+        "radius_earth_units": 1.0,
+        "duration_days": 10.0,
+        "dt_snapshots": 86400.0,
+        "scenario": "two_vortices",
+        "viscosity": 0.0,
+        "product_quadrature": "fine",
+        "out": "runs",
+        "experiment": "readme-dynamic",
+        "overwrite": false,
+        "run_id": "20260713T042407Z_two-vortices_rot24h_r4_l21_dt24h_4a840226"
+      },
+      "numerics": {
+        "backend": "GeodesicBackend",
+        "grid": "GeodesicGridGeometry",
+        "state_sampling": "geodesic-res4-state",
+        "product_quadrature": "fine",
+        "product_sampling": "geodesic-res5-voronoi",
+        "transform": "GeodesicSphericalHarmonics",
+        "l_max": 21
+      }
+    }
+  ],
+  "rh4_simulation_summary.png": [
+    {
+      "run_id": "20260713T022542Z_rh4_rot24h_r4_l21_dt6h_4a840226",
+      "commit": "4a84022651b6b37752a168a2d8ef660359df945c",
+      "dirty": true,
+      "config": {
+        "lmax": 21,
+        "grid": "geodesic",
+        "resolution": 4,
+        "nlat": 128,
+        "nlon": 256,
+        "day_hours": 24.0,
+        "radius_earth_units": 1.0,
+        "duration_days": 1.0,
+        "dt_snapshots": 21600.0,
+        "scenario": "rh4",
+        "viscosity": 0.0,
+        "product_quadrature": "fine",
+        "out": "runs",
+        "experiment": "validation-rh4",
+        "overwrite": false,
+        "run_id": "20260713T022542Z_rh4_rot24h_r4_l21_dt6h_4a840226"
+      },
+      "numerics": {
+        "backend": "GeodesicBackend",
+        "grid": "GeodesicGridGeometry",
+        "state_sampling": "geodesic-res4-state",
+        "product_quadrature": "fine",
+        "product_sampling": "geodesic-res5-voronoi",
+        "transform": "GeodesicSphericalHarmonics",
+        "l_max": 21
+      }
+    }
+  ],
+  "rh4_geodesic_vs_latlon.png": [
+    {
+      "run_id": "20260713T022542Z_rh4_rot24h_r4_l21_dt6h_4a840226",
+      "commit": "4a84022651b6b37752a168a2d8ef660359df945c",
+      "dirty": true,
+      "config": {
+        "lmax": 21,
+        "grid": "geodesic",
+        "resolution": 4,
+        "nlat": 128,
+        "nlon": 256,
+        "day_hours": 24.0,
+        "radius_earth_units": 1.0,
+        "duration_days": 1.0,
+        "dt_snapshots": 21600.0,
+        "scenario": "rh4",
+        "viscosity": 0.0,
+        "product_quadrature": "fine",
+        "out": "runs",
+        "experiment": "validation-rh4",
+        "overwrite": false,
+        "run_id": "20260713T022542Z_rh4_rot24h_r4_l21_dt6h_4a840226"
+      },
+      "numerics": {
+        "backend": "GeodesicBackend",
+        "grid": "GeodesicGridGeometry",
+        "state_sampling": "geodesic-res4-state",
+        "product_quadrature": "fine",
+        "product_sampling": "geodesic-res5-voronoi",
+        "transform": "GeodesicSphericalHarmonics",
+        "l_max": 21
+      }
+    },
+    {
+      "run_id": "20260713T022748Z_rh4_rot24h_r4_l21_dt6h_4a840226",
+      "commit": "4a84022651b6b37752a168a2d8ef660359df945c",
+      "dirty": true,
+      "config": {
+        "lmax": 21,
+        "grid": "latlon",
+        "resolution": 4,
+        "nlat": 32,
+        "nlon": 64,
+        "day_hours": 24.0,
+        "radius_earth_units": 1.0,
+        "duration_days": 1.0,
+        "dt_snapshots": 21600.0,
+        "scenario": "rh4",
+        "viscosity": 0.0,
+        "product_quadrature": "fine",
+        "out": "runs",
+        "experiment": "validation-rh4-latlon",
+        "overwrite": false,
+        "run_id": "20260713T022748Z_rh4_rot24h_r4_l21_dt6h_4a840226"
+      },
+      "numerics": {
+        "backend": "LatLonBackend",
+        "grid": "GaussLatLonGridGeometry",
+        "state_sampling": "latlon-gauss-32x64-state",
+        "product_quadrature": "fine",
+        "product_sampling": "latlon-gauss-32x64-3/2rule",
+        "transform": "GaussLatLonSphericalHarmonics",
+        "l_max": 21
+      }
+    }
+  ],
+  "two_vortices_rotation_comparison.png": [
+    {
+      "run_id": "20260713T024849Z_two-vortices-north-pole_norot_r4_l21_dt12h_4a840226",
+      "commit": "4a84022651b6b37752a168a2d8ef660359df945c",
+      "dirty": true,
+      "config": {
+        "grid": "geodesic",
+        "resolution": 4,
+        "nlat": 128,
+        "nlon": 256,
+        "lmax": 21,
+        "day_hours": "Infinity",
+        "radius_earth_units": 1.0,
+        "duration_days": 1.0,
+        "dt_snapshots": 43200.0,
+        "viscosity": 0.0,
+        "product_quadrature": "fine",
+        "scenario": "two-vortices-north-pole",
+        "out": "C:\\Users\\User\\Projects\\PlanetarySandbox\\runs\\readme-rotations-final",
+        "experiment": null,
+        "overwrite": false,
+        "custom_initial_condition": {
+          "kind": "antipodal_gaussian_vortex_pair",
+          "positive_center_lat_deg": 89.999999,
+          "positive_center_lon_deg": 0.0,
+          "negative_center": "antipode",
+          "amplitude_s-1": 5e-05,
+          "sigma_deg": 10.0
+        },
+        "run_id": "20260713T024849Z_two-vortices-north-pole_norot_r4_l21_dt12h_4a840226"
+      },
+      "numerics": {
+        "backend": "GeodesicBackend",
+        "grid": "GeodesicGridGeometry",
+        "state_sampling": "geodesic-res4-state",
+        "product_quadrature": "fine",
+        "product_sampling": "geodesic-res5-voronoi",
+        "transform": "GeodesicSphericalHarmonics",
+        "l_max": 21
+      }
+    },
+    {
+      "run_id": "20260713T024900Z_two-vortices-equator-0e_norot_r4_l21_dt12h_4a840226",
+      "commit": "4a84022651b6b37752a168a2d8ef660359df945c",
+      "dirty": true,
+      "config": {
+        "grid": "geodesic",
+        "resolution": 4,
+        "nlat": 128,
+        "nlon": 256,
+        "lmax": 21,
+        "day_hours": "Infinity",
+        "radius_earth_units": 1.0,
+        "duration_days": 1.0,
+        "dt_snapshots": 43200.0,
+        "viscosity": 0.0,
+        "product_quadrature": "fine",
+        "scenario": "two-vortices-equator-0e",
+        "out": "C:\\Users\\User\\Projects\\PlanetarySandbox\\runs\\readme-rotations-final",
+        "experiment": null,
+        "overwrite": false,
+        "custom_initial_condition": {
+          "kind": "antipodal_gaussian_vortex_pair",
+          "positive_center_lat_deg": 0.0,
+          "positive_center_lon_deg": 0.0,
+          "negative_center": "antipode",
+          "amplitude_s-1": 5e-05,
+          "sigma_deg": 10.0
+        },
+        "run_id": "20260713T024900Z_two-vortices-equator-0e_norot_r4_l21_dt12h_4a840226"
+      },
+      "numerics": {
+        "backend": "GeodesicBackend",
+        "grid": "GeodesicGridGeometry",
+        "state_sampling": "geodesic-res4-state",
+        "product_quadrature": "fine",
+        "product_sampling": "geodesic-res5-voronoi",
+        "transform": "GeodesicSphericalHarmonics",
+        "l_max": 21
+      }
+    },
+    {
+      "run_id": "20260713T024914Z_two-vortices-equator-90e_norot_r4_l21_dt12h_4a840226",
+      "commit": "4a84022651b6b37752a168a2d8ef660359df945c",
+      "dirty": true,
+      "config": {
+        "grid": "geodesic",
+        "resolution": 4,
+        "nlat": 128,
+        "nlon": 256,
+        "lmax": 21,
+        "day_hours": "Infinity",
+        "radius_earth_units": 1.0,
+        "duration_days": 1.0,
+        "dt_snapshots": 43200.0,
+        "viscosity": 0.0,
+        "product_quadrature": "fine",
+        "scenario": "two-vortices-equator-90e",
+        "out": "C:\\Users\\User\\Projects\\PlanetarySandbox\\runs\\readme-rotations-final",
+        "experiment": null,
+        "overwrite": false,
+        "custom_initial_condition": {
+          "kind": "antipodal_gaussian_vortex_pair",
+          "positive_center_lat_deg": 0.0,
+          "positive_center_lon_deg": 90.0,
+          "negative_center": "antipode",
+          "amplitude_s-1": 5e-05,
+          "sigma_deg": 10.0
+        },
+        "run_id": "20260713T024914Z_two-vortices-equator-90e_norot_r4_l21_dt12h_4a840226"
+      },
+      "numerics": {
+        "backend": "GeodesicBackend",
+        "grid": "GeodesicGridGeometry",
+        "state_sampling": "geodesic-res4-state",
+        "product_quadrature": "fine",
+        "product_sampling": "geodesic-res5-voronoi",
+        "transform": "GeodesicSphericalHarmonics",
+        "l_max": 21
+      }
+    }
+  ],
+  "two_vortices_rotating_streamlines.png": [
+    {
+      "run_id": "20260713T044006Z_two-vortices-north-pole_rot24h_r4_l21_dt24h_4a840226",
+      "commit": "4a84022651b6b37752a168a2d8ef660359df945c",
+      "dirty": true,
+      "config": {
+        "grid": "geodesic",
+        "resolution": 4,
+        "nlat": 128,
+        "nlon": 256,
+        "lmax": 21,
+        "day_hours": 24.0,
+        "radius_earth_units": 1.0,
+        "duration_days": 5.0,
+        "dt_snapshots": 86400.0,
+        "viscosity": 0.0,
+        "product_quadrature": "fine",
+        "scenario": "two-vortices-north-pole",
+        "out": "C:\\Users\\User\\Projects\\PlanetarySandbox\\runs\\readme-rotations-rot24h",
+        "experiment": null,
+        "overwrite": false,
+        "custom_initial_condition": {
+          "kind": "antipodal_gaussian_vortex_pair",
+          "positive_center_lat_deg": 89.999999,
+          "positive_center_lon_deg": 0.0,
+          "negative_center": "antipode",
+          "amplitude_s-1": 5e-05,
+          "sigma_deg": 10.0
+        },
+        "run_id": "20260713T044006Z_two-vortices-north-pole_rot24h_r4_l21_dt24h_4a840226"
+      },
+      "numerics": {
+        "backend": "GeodesicBackend",
+        "grid": "GeodesicGridGeometry",
+        "state_sampling": "geodesic-res4-state",
+        "product_quadrature": "fine",
+        "product_sampling": "geodesic-res5-voronoi",
+        "transform": "GeodesicSphericalHarmonics",
+        "l_max": 21
+      }
+    },
+    {
+      "run_id": "20260713T044027Z_two-vortices-equator-0e_rot24h_r4_l21_dt24h_4a840226",
+      "commit": "4a84022651b6b37752a168a2d8ef660359df945c",
+      "dirty": true,
+      "config": {
+        "grid": "geodesic",
+        "resolution": 4,
+        "nlat": 128,
+        "nlon": 256,
+        "lmax": 21,
+        "day_hours": 24.0,
+        "radius_earth_units": 1.0,
+        "duration_days": 5.0,
+        "dt_snapshots": 86400.0,
+        "viscosity": 0.0,
+        "product_quadrature": "fine",
+        "scenario": "two-vortices-equator-0e",
+        "out": "C:\\Users\\User\\Projects\\PlanetarySandbox\\runs\\readme-rotations-rot24h",
+        "experiment": null,
+        "overwrite": false,
+        "custom_initial_condition": {
+          "kind": "antipodal_gaussian_vortex_pair",
+          "positive_center_lat_deg": 0.0,
+          "positive_center_lon_deg": 0.0,
+          "negative_center": "antipode",
+          "amplitude_s-1": 5e-05,
+          "sigma_deg": 10.0
+        },
+        "run_id": "20260713T044027Z_two-vortices-equator-0e_rot24h_r4_l21_dt24h_4a840226"
+      },
+      "numerics": {
+        "backend": "GeodesicBackend",
+        "grid": "GeodesicGridGeometry",
+        "state_sampling": "geodesic-res4-state",
+        "product_quadrature": "fine",
+        "product_sampling": "geodesic-res5-voronoi",
+        "transform": "GeodesicSphericalHarmonics",
+        "l_max": 21
+      }
+    },
+    {
+      "run_id": "20260713T044053Z_two-vortices-equator-90e_rot24h_r4_l21_dt24h_4a840226",
+      "commit": "4a84022651b6b37752a168a2d8ef660359df945c",
+      "dirty": true,
+      "config": {
+        "grid": "geodesic",
+        "resolution": 4,
+        "nlat": 128,
+        "nlon": 256,
+        "lmax": 21,
+        "day_hours": 24.0,
+        "radius_earth_units": 1.0,
+        "duration_days": 5.0,
+        "dt_snapshots": 86400.0,
+        "viscosity": 0.0,
+        "product_quadrature": "fine",
+        "scenario": "two-vortices-equator-90e",
+        "out": "C:\\Users\\User\\Projects\\PlanetarySandbox\\runs\\readme-rotations-rot24h",
+        "experiment": null,
+        "overwrite": false,
+        "custom_initial_condition": {
+          "kind": "antipodal_gaussian_vortex_pair",
+          "positive_center_lat_deg": 0.0,
+          "positive_center_lon_deg": 90.0,
+          "negative_center": "antipode",
+          "amplitude_s-1": 5e-05,
+          "sigma_deg": 10.0
+        },
+        "run_id": "20260713T044053Z_two-vortices-equator-90e_rot24h_r4_l21_dt24h_4a840226"
+      },
+      "numerics": {
+        "backend": "GeodesicBackend",
+        "grid": "GeodesicGridGeometry",
+        "state_sampling": "geodesic-res4-state",
+        "product_quadrature": "fine",
+        "product_sampling": "geodesic-res5-voronoi",
+        "transform": "GeodesicSphericalHarmonics",
+        "l_max": 21
+      }
+    }
+  ]
+}

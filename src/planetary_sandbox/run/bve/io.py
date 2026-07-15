@@ -274,8 +274,8 @@ def write_run_manifest(
         "versions": versions,
         "gpu": gpu,
         "notes": {
-            "equations": "barotropic vorticity equation on a rotating sphere (see MATHEMATICAL_MODEL.md)",
-            "timestep_policy": "fixed dt from initial CFL (KNOWN_RISKS.md R-4)",
+            "equations": "barotropic vorticity equation on a rotating sphere (see docs/MATHEMATICAL_MODEL.md)",
+            "timestep_policy": "fixed dt from initial CFL (docs/KNOWN_RISKS.md R-4)",
             "diagnostics": "see diagnostics.py module docstring for definitions",
         },
     }

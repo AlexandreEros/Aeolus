@@ -1,6 +1,6 @@
 """R-5 regression tests: absolute vorticity must be built in spectral space.
 
-Locks the fix for KNOWN_RISKS.md R-5: the production tendency used to compute
+Locks the fix for docs/KNOWN_RISKS.md R-5: the production tendency used to compute
 eta = transform(inv_transform(zeta) + f_grid), round-tripping the state through
 the inexact transform every evaluation. Because f is a single huge (1,0) mode
 (~48x ||zeta|| for Earth-like rotation at the two-vortices amplitude), the

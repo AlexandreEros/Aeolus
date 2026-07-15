@@ -19,7 +19,7 @@ __all__ = ["GeodesicSphericalHarmonics", "OptimizedGeodesicSH"]
 # Minimum grid points per spherical-harmonic basis function for the discrete
 # (non-exact) quadrature to keep analysis/synthesis round trips well conditioned.
 # Empirically (audit 2026-07): ~2.4 pts/basis gives O(10%) leakage, ~9.5 gives
-# O(1%). See KNOWN_RISKS.md R-2 and VALIDATION_PLAN.md A-1.
+# O(1%). See docs/KNOWN_RISKS.md R-2 and docs/VALIDATION_PLAN.md A-1.
 MIN_POINTS_PER_BASIS = 6.0
 
 
@@ -34,7 +34,7 @@ def _warn_if_underresolved(n_points: int, l_max: int) -> None:
             f"{MIN_POINTS_PER_BASIS:.0f}). Analysis/synthesis round trips will leak "
             f"energy across modes and the solver will lose invariants spuriously. "
             f"Use l_max <= {l_safe} at this resolution, or a finer grid. "
-            f"See KNOWN_RISKS.md R-2.",
+            f"See docs/KNOWN_RISKS.md R-2.",
             stacklevel=3,
         )
 

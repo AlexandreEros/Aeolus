@@ -37,7 +37,7 @@ Severity scale: **S1** invalidates results · **S2** materially degrades results
 ### R-1. The Jacobian used by the BVE tendency computes −cos φ·J(ψ,η) instead of J(ψ,η)  — ✅ FIXED (branch `fix/s1-jacobian-and-envelope`)
 
 `SpectralOperators.jacobian_pseudospectral`
-([spectral_operators.py:344](src/planetary_sandbox/numerics/spectral_operators.py)) forms
+([spectral_operators.py:344](../src/planetary_sandbox/numerics/spectral_operators.py)) forms
 
 ```
 J_code = (a_λ·(sinθ b_θ) − (sinθ a_θ)·b_λ) / (R² cos φ)

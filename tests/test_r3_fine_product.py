@@ -1,7 +1,7 @@
 """R-3 fix regression tests: fine-grid product evaluation.
 
 Locks the "overresolved product quadrature" repair characterized in
-tests/audit_r3_product.py and preregistered in KNOWN_RISKS.md R-3: the
+tests/audit_r3_product.py and preregistered in docs/KNOWN_RISKS.md R-3: the
 pointwise Jacobian product is evaluated and analyzed on a reusable
 resolution-(r+1) product grid at the same l_max, truncated once spectrally,
 and consumed spectrally by the tendency.

@@ -1,6 +1,6 @@
 """Correctness tests for the spectral differential operators.
 
-These lock the behaviour that regressed as KNOWN_RISKS.md R-1: the
+These lock the behaviour that regressed as docs/KNOWN_RISKS.md R-1: the
 pseudospectral Jacobian used by the barotropic-vorticity tendency must equal the
 true spherical Jacobian J(a, b) = u_a . grad b, not -cosφ * J.
 

@@ -167,7 +167,7 @@ class Planet:
             Passed to SpectralOperators. "fine" (default) evaluates nonlinear
             products on a backend-chosen overresolved product sampling:
             geodesic uses a resolution-(grid_resolution+1) co-grid
-            ("overresolved product quadrature", KNOWN_RISKS.md R-3), lat-lon
+            ("overresolved product quadrature", docs/KNOWN_RISKS.md R-3), lat-lon
             a 3/2-rule Gauss-Legendre grid (exact product quadrature).
             "coarse" retains the historical state-grid product path for
             A/B comparisons.
