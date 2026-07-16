@@ -9,6 +9,9 @@ from planetary_sandbox.planet import Planet
 from .barotropic_vorticity import BarotropicVorticity, BarotropicState
 from .config import (PLOT_TYPES, IntegrationScheduler, advective_cfl_timestep,
                      validate_snapshot_schedule)
+# The physics-agnostic driver loop lives in the shared engine; `_integrate`
+# is kept as this module's historical name for it (tests import it here).
+from ..engine import integrate as _integrate
 from .diagnostics import DiagnosticsRecorder, plot_diagnostics
 from ...viz.vorticity_viewer import VorticityViewer
 
@@ -194,38 +197,6 @@ def run_bve(planet: Planet,
 
     return 0
 
-
-
-def _integrate(scheduler: IntegrationScheduler, dt_cfl: float,
-               length_scale: float | None, *, on_step, on_store) -> tuple:
-    """Drive an IntegrationScheduler with state-adaptive advective-CFL stepping.
-
-    Physics-agnostic control seam (kept separate so it is CPU-testable with
-    stubbed callbacks): the scheduler is asked for one event at a time using
-    the *current* ceiling ``dt_cfl``; after each accepted step the ceiling is
-    recomputed from that step's max speed, so the flow speed of the newly
-    accepted state governs the next accepted step.
-
-    ``on_step(t_before, t_after, dt_step, step)`` advances one accepted RK step
-    and returns the post-step max speed (m/s); ``on_store(event_time)``
-    persists a snapshot (and does not affect the ceiling). Returns the final
-    ``(t, step)`` reached.
-    """
-    t = 0.0
-    step = 0
-    while True:
-        event = scheduler.next_event(dt_cfl)
-        if event is None:
-            break
-        kind, dt_step, event_time = event
-        if kind == "store":
-            on_store(event_time)
-        else:  # step
-            step += 1
-            max_speed = on_step(t, event_time, dt_step, step)
-            t = event_time
-            dt_cfl = advective_cfl_timestep(length_scale, max_speed)
-    return t, step
 
 
 def rk4_step(model: BarotropicVorticity, y: BarotropicState, t: float, dt: float, forcing_coeffs=None) -> BarotropicState:
