@@ -2,9 +2,10 @@
 
 **A GPU-resident spectral laboratory for two-dimensional flow on a sphere.**
 
-Aeolus advances the non-divergent barotropic vorticity equation (BVE) with
-spherical harmonics, and can run the same model and operators on either an
-icosahedral geodesic point set or a Gauss–Legendre latitude–longitude grid. It
+Aeolus advances the non-divergent barotropic vorticity equation (BVE) and
+the rotating shallow-water equations with spherical harmonics, and can run
+the same models and operators on either an icosahedral geodesic point set or
+a Gauss–Legendre latitude–longitude grid. It
 is research software for people interested in spherical spectral methods,
 backend parity, conservation diagnostics, and reproducible numerical
 experiments — **not** a general circulation model.
@@ -22,6 +23,10 @@ and the full 40-character configuration is in the tracked
 
 - A rotating-sphere **barotropic-vorticity solver** with RK4 and optional
   Laplacian viscosity, prognostic in relative vorticity.
+- A flat-bottom, inviscid **rotating shallow-water solver** prognostic in
+  vorticity, divergence, and perturbation geopotential, verified against the
+  linear gravity-wave dispersion relation and Williamson test case 2
+  (see [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md)).
 - GPU spherical-harmonic analysis/synthesis in `float64`/`complex128` using
   CuPy, custom CUDA basis kernels, and dense GPU matrix products.
 - **Two interchangeable grid backends** — icosahedral geodesic and
@@ -33,11 +38,12 @@ and the full 40-character configuration is in the tracked
 
 ## What Aeolus is not
 
-Aeolus does **not** solve the shallow-water equations, primitive equations, or
-any GCM / weather model. It has no vertical structure, divergence,
-height/free-surface equation, topographic forcing, moisture, or thermodynamics.
-Terrain generated elsewhere in the package is decorative and does not enter the
-BVE. See [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
+Aeolus does **not** solve the primitive equations or any GCM / weather
+model. It has no vertical structure, topography entering the dynamics,
+forcing, moisture, or thermodynamics; the shallow-water core is flat-bottom
+and inviscid. Terrain generated elsewhere in the package is decorative and
+does not enter the dynamics. See
+[docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
 ## Quick start
 
@@ -109,6 +115,19 @@ source of truth for options; `aeolus list presets` and
 `aeolus list scenarios` enumerate the available presets and initial
 conditions, and `aeolus inspect runs` summarizes the latest run capsule.
 
+One-day shallow-water run of Williamson test case 2 (steady nonlinear zonal
+geostrophic flow) with default settings, and the same on the Gauss backend:
+
+```powershell
+aeolus run swe
+aeolus run swe --backend gauss-latlon --nlat 32 --nlon 64 --l-max 15
+```
+
+`aeolus run swe --help` lists the (deliberately minimal) shallow-water
+options — gravity, mean depth, rotation, radius, resolution, duration, and
+the snapshot schedule; the model and its verification are documented in
+[docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md).
+
 ### Snapshots and plots
 
 Field-state storage and image generation are controlled independently:
@@ -179,6 +198,8 @@ and orientation/rotation-equivalence tests are in
 - [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) — BVE-only status,
   CUDA/CuPy assumptions, quadrature limits, path to shallow water.
 - [docs/MATHEMATICAL_MODEL.md](docs/MATHEMATICAL_MODEL.md) — equations and conventions.
+- [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md) — the rotating shallow-water
+  core: prognostics, discretization, CFL, scenarios, verification status.
 - Deeper audit records: [docs/KNOWN_RISKS.md](docs/KNOWN_RISKS.md),
   [docs/VALIDATION_PLAN.md](docs/VALIDATION_PLAN.md),
   [docs/validation/](docs/validation/), and the current mermaid
@@ -186,7 +207,8 @@ and orientation/rotation-equivalence tests are in
 
 ## Current limitations
 
-- BVE only: no shallow-water or primitive-equation dynamics.
+- Single-layer dynamics only (BVE and flat-bottom shallow water): no
+  topography, forcing, or primitive-equation dynamics.
 - GPU/CuPy only: no production CPU fallback or CPU CI path.
 - The advective CFL ceiling is recomputed from every accepted state (genuine
   state-adaptive advective stepping), but explicit-viscosity (`ν∇²`) stability

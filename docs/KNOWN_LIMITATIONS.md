@@ -9,14 +9,15 @@ risks — see [KNOWN_RISKS.md](KNOWN_RISKS.md); for the forward program see
 prefer their dated fix logs and the current asserting tests when an older status
 paragraph conflicts with the implementation.
 
-## BVE-only status
+## Single-layer status
 
-Aeolus currently solves the **non-divergent barotropic vorticity equation
-only**. It does **not** solve the shallow-water equations, the primitive
-equations, or any general-circulation / weather model, and it has no vertical
-structure, divergence, height/free-surface equation, topographic forcing,
-moisture, or thermodynamics. Terrain generated elsewhere in the package is
-decorative and does not enter the BVE.
+Aeolus solves the **non-divergent barotropic vorticity equation** and, since
+the `feat/shallow-water` milestone, the **flat-bottom inviscid rotating
+shallow-water equations** ([SHALLOW_WATER.md](SHALLOW_WATER.md)). It does
+**not** solve the primitive equations or any general-circulation / weather
+model, and it has no vertical structure, dynamically active topography,
+forcing, moisture, or thermodynamics. Terrain generated elsewhere in the
+package is decorative and does not enter the dynamics.
 
 ## CUDA / CuPy assumptions
 
@@ -60,9 +61,11 @@ decorative and does not enter the BVE.
 - `random_low_l` lacks recorded RNG seed provenance, and `step_leapfrog` is
   legacy/dead rather than a supported integration option.
 
-## Before shallow water or primitive equations
+## Before primitive equations (and remaining shallow-water gaps)
 
-Moving beyond the BVE requires, at minimum:
+The shallow-water core is minimal: flat bottom, inviscid, explicit RK4 (no
+semi-implicit gravity-wave treatment), and only Williamson case 2 among the
+analytic benchmarks. Moving further requires, at minimum:
 
 - A mathematically controlled reference on the geodesic backend, or a decision
   to build the next core on the Gauss lat–lon backend where quadrature is exact.
