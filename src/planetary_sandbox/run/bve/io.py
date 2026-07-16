@@ -254,6 +254,35 @@ class RunDirectory:
         except ValueError:
             return str(self.path)
 
+    def _validate_completed_manifest(self) -> None:
+        """Require this run's manifest to exist and be durably completed."""
+        manifest_path = self.path / "manifest.json"
+        try:
+            raw = manifest_path.read_text(encoding="utf-8")
+        except OSError as err:
+            raise RunProvenanceError(
+                f"cannot publish latest pointer: manifest.json is missing or "
+                f"unreadable at {manifest_path}: {err}") from err
+        try:
+            manifest = json.loads(raw)
+        except json.JSONDecodeError as err:
+            raise RunProvenanceError(
+                f"cannot publish latest pointer: manifest.json is malformed "
+                f"at {manifest_path}: {err}") from err
+        if not isinstance(manifest, dict):
+            raise RunProvenanceError(
+                f"cannot publish latest pointer: manifest.json at "
+                f"{manifest_path} is not a JSON object")
+        if manifest.get("status") != RUN_STATUS_COMPLETED:
+            raise RunProvenanceError(
+                f"cannot publish latest pointer: run {self.run_id} has "
+                f"manifest status {manifest.get('status')!r}, expected "
+                f"{RUN_STATUS_COMPLETED!r}")
+        if manifest.get("run_id") != self.run_id:
+            raise RunProvenanceError(
+                f"cannot publish latest pointer: manifest run_id "
+                f"{manifest.get('run_id')!r} does not match {self.run_id!r}")
+
     def update_latest_pointer(self) -> pathlib.Path:
         """Write/refresh ``{base}/latest_run.txt`` -> path of this run.
 
@@ -262,8 +291,13 @@ class RunDirectory:
         a crashed publish never leaves a truncated pointer, and only ever
         called after the run's status has been durably marked completed.
         """
+        self._validate_completed_manifest()
         pointer = self._pointer_path()
-        atomic_write_text(pointer, self._pointer_content() + "\n")
+        try:
+            atomic_write_text(pointer, self._pointer_content() + "\n")
+        except OSError as err:
+            raise RunProvenanceError(
+                f"could not publish latest pointer at {pointer}: {err}") from err
         return pointer
 
     def clear_latest_pointer_if_matches(self) -> bool:
@@ -277,23 +311,34 @@ class RunDirectory:
         incomplete capsule. Returns True if the pointer was cleared.
         """
         pointer = self._pointer_path()
-        if not pointer.exists():
+        try:
+            pointer.lstat()
+        except FileNotFoundError:
             return False
+        except OSError as err:
+            raise RunProvenanceError(
+                f"could not inspect latest pointer at {pointer}: {err}") from err
         try:
             content = pointer.read_text(encoding="utf-8").strip()
-        except OSError:
-            return False
+        except OSError as err:
+            raise RunProvenanceError(
+                f"could not read latest pointer at {pointer}: {err}") from err
         if not content:
-            return False
+            raise RunProvenanceError(
+                f"latest pointer at {pointer} is empty; refusing overwrite")
         pointed = pathlib.Path(content)
         resolved = pointed if pointed.is_absolute() else self.base / pointed
         try:
             same = resolved.resolve() == self.path.resolve()
-        except OSError:
-            same = False
+        except OSError as err:
+            raise RunProvenanceError(
+                f"could not resolve latest pointer at {pointer}: {err}") from err
         if same:
-            with contextlib.suppress(OSError):
+            try:
                 pointer.unlink()
+            except OSError as err:
+                raise RunProvenanceError(
+                    f"could not clear latest pointer at {pointer}: {err}") from err
             return True
         return False
 

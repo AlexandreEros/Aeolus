@@ -74,10 +74,12 @@ passed at its boundary (never inferred from whether a schedule was supplied):
 - **Count mode** (`--n-snapshots`, canonical) consumes the authoritative
   `snapshot_times` with **exact target-time** semantics. Every scheduled time,
   including `t_end` for `N >= 1`, is landed on exactly by clipping the final
-  step and snapping off floating-point drift; a positive pre-target residual is
-  always integrated, never absorbed by a tolerance. So the stored snapshot
-  times and the final diagnostic time equal the requested targets exactly —
-  guaranteed even for deliberately non-aligned durations such as
+  step and snapping off floating-point drift; every representably positive
+  pre-target residual is integrated, never absorbed by a tolerance. If a
+  positive CFL-limited step is too small to advance the floating-point clock,
+  the run aborts rather than enlarging the step past the CFL ceiling. Thus the
+  stored snapshot times and final diagnostic time equal the requested targets
+  exactly, including deliberately non-aligned durations such as
   `t_end = 600.0000003 s`.
 - **Interval mode** (`--snapshot-interval-seconds` / legacy `psx-bve`)
   reproduces the historical countdown bit-for-bit: it stores `t = 0` and each

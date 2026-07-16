@@ -41,6 +41,8 @@ def _install_reused_run_dir(monkeypatch, base, run_id="RID"):
     path.mkdir(parents=True, exist_ok=True)
     rd = RunDirectory(path=path, run_id=run_id, base=base,
                       experiment=None, commit="deadbeef", reused=True)
+    write_run_manifest(path, {"x": 1}, run_id=run_id,
+                       status=RUN_STATUS_COMPLETED)
 
     def fake_create_run_dir(base_dir, config, *, experiment=None,
                             overwrite=False, now=None, commit=None):
@@ -92,6 +94,29 @@ def test_update_manifest_status_writes_atomically(tmp_path):
     assert m["status"] == RUN_STATUS_COMPLETED
     assert "updated_utc" in m
     assert list(tmp_path.glob(".manifest.json.tmp*")) == []
+
+
+@pytest.mark.parametrize("manifest_case", [
+    "missing", "malformed", "failed", "mismatched-run-id",
+])
+def test_latest_pointer_publish_requires_matching_completed_manifest(
+        tmp_path, manifest_case):
+    base = tmp_path / "runs"
+    path = base / "RID"
+    path.mkdir(parents=True)
+    rd = RunDirectory(path=path, run_id="RID", base=base)
+
+    if manifest_case == "malformed":
+        (path / "manifest.json").write_text("{oops", encoding="utf-8")
+    elif manifest_case == "failed":
+        write_run_manifest(path, {}, run_id="RID", status=RUN_STATUS_FAILED)
+    elif manifest_case == "mismatched-run-id":
+        write_run_manifest(path, {}, run_id="OTHER",
+                           status=RUN_STATUS_COMPLETED)
+
+    with pytest.raises(RunProvenanceError, match="cannot publish latest pointer"):
+        rd.update_latest_pointer()
+    assert not (base / "latest_run.txt").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +206,48 @@ def test_overwrite_of_latest_then_failure_clears_pointer(monkeypatch, tmp_path):
     # and never republished.
     assert not pointer.exists()
     assert _read_status(rd.path) == RUN_STATUS_FAILED
+
+
+@pytest.mark.parametrize("failure_at", ["read", "unlink"])
+def test_overwrite_pointer_clear_io_failure_aborts_before_invalidation(
+        monkeypatch, tmp_path, failure_at):
+    base = tmp_path / "runs"
+    rd = _install_reused_run_dir(monkeypatch, base)
+    write_run_manifest(rd.path, {"x": 1}, run_id=rd.run_id,
+                       status=RUN_STATUS_COMPLETED)
+    rd.update_latest_pointer()
+    pointer = base.resolve() / "latest_run.txt"
+
+    path_cls = type(pointer)
+    real_read_text = path_cls.read_text
+    real_unlink = path_cls.unlink
+
+    def guarded_read_text(self, *args, **kwargs):
+        if failure_at == "read" and self == pointer:
+            raise PermissionError("locked pointer read")
+        return real_read_text(self, *args, **kwargs)
+
+    def guarded_unlink(self, *args, **kwargs):
+        if failure_at == "unlink" and self == pointer:
+            raise PermissionError("locked pointer unlink")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(path_cls, "read_text", guarded_read_text)
+    monkeypatch.setattr(path_cls, "unlink", guarded_unlink)
+    solver_called = False
+
+    def solver_must_not_run(cfg, run_dir, run_config):
+        nonlocal solver_called
+        solver_called = True
+
+    monkeypatch.setattr(bve, "_execute_solver", solver_must_not_run)
+
+    with pytest.raises(RunProvenanceError, match="latest pointer"):
+        bve.execute_run(_cfg(tmp_path, overwrite=True))
+
+    assert solver_called is False
+    assert pointer.exists()
+    assert _read_status(rd.path) == RUN_STATUS_COMPLETED
 
 
 def test_overwrite_success_pointer_references_completed_manifest(
@@ -367,6 +434,11 @@ def test_overwrite_cleanup_failure_aborts_before_completion(
     with pytest.raises(bve.OverwriteCleanupError):
         bve.execute_run(cfg)
 
-    # Pointer was cleared up-front and not republished; no completed capsule
-    # is claimed by a half-cleaned directory.
+    # Pointer was cleared up-front and not republished. The capsule was
+    # transitioned away from completed before cleanup and records the cleanup
+    # failure even though some generated outputs were already removed.
     assert not (base.resolve() / "latest_run.txt").exists()
+    manifest = json.loads(
+        (rd.path / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == RUN_STATUS_FAILED
+    assert manifest["error"]["type"] == "OverwriteCleanupError"

@@ -7,9 +7,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from planetary_sandbox.run.bve.io import (
+    RUN_STATUS_COMPLETED,
     RunDirectory,
     create_run_dir,
     make_run_id,
+    write_run_manifest,
 )
 
 BASE_CONFIG = {
@@ -21,6 +23,12 @@ BASE_CONFIG = {
 }
 
 T0 = datetime(2026, 7, 11, 21, 36, 34, tzinfo=timezone.utc)
+
+
+def _mark_completed(rd: RunDirectory) -> None:
+    write_run_manifest(
+        rd.path, BASE_CONFIG, run_id=rd.run_id,
+        experiment=rd.experiment, status=RUN_STATUS_COMPLETED)
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +144,7 @@ def test_two_consecutive_runs_preserve_outputs(tmp_path):
     (rd1.path / "diagnostics").mkdir()
     (rd1.path / "diagnostics" / "timeseries.csv").write_text("run 1 data\n",
                                                              encoding="utf-8")
+    _mark_completed(rd1)
     rd1.update_latest_pointer()
 
     rd2 = create_run_dir(tmp_path, BASE_CONFIG,
@@ -143,6 +152,7 @@ def test_two_consecutive_runs_preserve_outputs(tmp_path):
     (rd2.path / "diagnostics").mkdir()
     (rd2.path / "diagnostics" / "timeseries.csv").write_text("run 2 data\n",
                                                              encoding="utf-8")
+    _mark_completed(rd2)
     rd2.update_latest_pointer()
 
     # both directories present and distinct
@@ -166,6 +176,7 @@ def test_latest_pointer_survives_experiment_grouping(tmp_path):
     """`latest_run.txt` still lives at the base and stores a relative path."""
     rd = create_run_dir(tmp_path, BASE_CONFIG, experiment="baseline",
                         now=T0, commit="a724f60")
+    _mark_completed(rd)
     rd.update_latest_pointer()
     pointer = tmp_path / "latest_run.txt"
     assert pointer.exists()

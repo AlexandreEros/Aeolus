@@ -247,20 +247,31 @@ def execute_run(cfg: "BVERunConfig") -> int:
     )
     out_dir = run_dir.path
     print(f"Run directory: {out_dir}")
+    run_config["run_id"] = run_dir.run_id
+    run_config["experiment"] = cfg.experiment
     if run_dir.reused:
         print("  (reused via --overwrite; stale generated artifacts will be removed)")
         # Invalidate the pointer first: if latest_run.txt references this
         # directory, a failure of the overwritten run must not leave the
         # pointer aimed at an incomplete capsule.
         run_dir.clear_latest_pointer_if_matches()
-        # Then remove stale generated results. A removal failure raises here,
-        # aborting before any new outputs are reported.
-        _clean_overwrite_artifacts(out_dir)
+        # Transition the existing capsule away from 'completed' before any
+        # destructive cleanup. If cleanup fails after partially removing
+        # results, persist 'failed' + the cleanup error so the damaged capsule
+        # can never continue to claim successful completion.
+        try:
+            update_manifest_status(out_dir, RUN_STATUS_RUNNING)
+            _clean_overwrite_artifacts(out_dir)
+        except BaseException as exc:
+            try:
+                update_manifest_status(out_dir, RUN_STATUS_FAILED,
+                                       error=failure_record(exc))
+            except RunProvenanceError as prov_err:
+                raise prov_err from exc
+            raise
 
     # Write initial provenance so an interrupted or failing run leaves a
     # traceable capsule marked 'running' / 'failed', not a silent hole.
-    run_config["run_id"] = run_dir.run_id
-    run_config["experiment"] = cfg.experiment
     atomic_write_text(out_dir / "config.json", json.dumps(run_config, indent=2))
     write_run_manifest(out_dir, run_config,
                        run_id=run_dir.run_id, experiment=cfg.experiment,

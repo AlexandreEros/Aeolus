@@ -260,13 +260,15 @@ per evaluation, eight per RK4 step.
   from 25.4 to 37.5 m/s while dt stayed fixed will erode the CFL margin (R-4). The mesh edge
   length is also not the natural CFL length for a spectral method (the resolved wavelength
   `2πR/l_max` is).
-- **Output-time clipping**: individual steps may be *shortened* to
-  `min(dt_cfl, next_scheduled_time − t, t_end − t)` so the integrator lands exactly on every
-  requested output time and on `t_end`; nothing lengthens a step past `dt_cfl`. The
-  scheduler tolerance is scale/gap-aware and, for legacy interval-mode invocations, preserves
-  the historical `1e-6 · dt_snapshots` end tolerance so the misaligned-final-time behavior
-  is bit-for-bit unchanged. Snapshot requests therefore perturb the step sequence around
-  output boundaries but not the fixed CFL ceiling.
+- **Output-time clipping**: canonical count mode shortens individual steps to
+  `min(dt_cfl, next_scheduled_time − t, t_end − t)` and integrates every positive residual,
+  so it lands exactly on every requested output time and on `t_end`; a step that cannot
+  advance representable time aborts rather than being enlarged past `dt_cfl`. Legacy
+  interval mode intentionally follows the historical countdown instead and may stop within
+  `1e-6 · dt_snapshots` of a misaligned `t_end`; that path preserves main's storage boundaries
+  and accepted-step sequence rather than adopting count mode's exact-final-time contract.
+  Snapshot requests perturb the step sequence around output boundaries but not the fixed CFL
+  ceiling.
 - **Leapfrog**: `step_leapfrog` exists but is dead code and would crash if called
   (it passes raw arrays where a `BarotropicState` is asserted) (R-6).
 - The l = 0 row of every tendency is hard-zeroed ("mass conservation"), which pins the

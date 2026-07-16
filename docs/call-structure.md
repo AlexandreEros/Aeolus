@@ -108,8 +108,8 @@ flowchart TD
     refresh --> run["run_bve(snapshot_times, plots)"]
     initialLM --> run
     runDir -. "path + figure metadata" .-> run
-    run -- "success" --> ok["status='completed'<br/>update_latest_pointer()"]
-    run -- "exception" --> fail["status='failed' + error record<br/>latest pointer untouched"]
+    run -- "success" --> ok["persist status='completed'<br/>validate manifest + publish latest pointer"]
+    run -- "exception" --> fail["status='failed' + error record<br/>no new latest pointer"]
 ```
 
 If the requested output base cannot be created *or* is not writable
@@ -118,11 +118,13 @@ the run beneath a system temporary directory before creating its
 immutable run folder — so neither an unwritable target nor a missing
 parent escapes as an unhandled exception. The manifest records the
 actual backend, grid, transform, product sampling, `l_max`, environment,
-GPU, command, and Git provenance. A `running` capsule that never
-transitions to `completed` (interrupted or failed run) is left as a
-diagnosable trace, and `latest_run.txt` is only updated after the runner
-returns cleanly so shell scripts polling that pointer never see an empty
-capsule.
+GPU, command, and Git provenance. A fresh failed run never publishes
+`latest_run.txt`. Before overwriting the run currently referenced by that
+pointer, Aeolus strictly clears the pointer and transitions the capsule away
+from `completed`; cleanup or execution failure then persists `failed` and
+leaves the pointer absent. Successful publication validates a matching
+`status='completed'` manifest and atomically replaces `latest_run.txt`, so
+shell scripts never receive a missing, malformed, running, or failed capsule.
 
 ## BVE integration loop
 

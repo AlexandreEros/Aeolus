@@ -1,12 +1,15 @@
 """Snapshot schedule construction and count/interval mode contracts."""
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from planetary_sandbox.cli.main import build_parser
 from planetary_sandbox.run.bve.config import (
     SECONDS_PER_DAY,
     BVERunConfig,
+    _count_step,
     count_snapshot_times,
     integration_plan,
     interval_snapshot_times,
@@ -112,13 +115,36 @@ def test_count_multistep_lands_on_targets_exactly():
 
 
 def test_count_never_treats_positive_residual_as_reached():
-    """Directly exercise the anti-early-stop contract at a tiny residual."""
-    t_end = 1000.0
-    # dt_cfl overshoots the target grossly; the planner must still land on it.
+    """A one-ULP intermediate residual gets a step before its store event."""
+    target = math.nextafter(1.0, math.inf)
     plan = integration_plan(
-        t_end, 999.9999, mode="count", snapshot_times=[t_end])
-    assert _plan_stores(plan) == [t_end]
+        2.0, 1.0, mode="count", snapshot_times=[target, 2.0])
+    assert plan[:3] == [
+        ("step", 1.0, 1.0),
+        ("step", target - 1.0, target),
+        ("store", 0.0, target),
+    ]
+    assert _plan_final_time(plan) == 2.0
+
+
+@pytest.mark.parametrize("n_snapshots", [0, 1])
+def test_count_tiny_positive_duration_is_integrated(n_snapshots):
+    """No absolute ULP floor may consume an entire short simulation."""
+    t_end = 1e-16
+    schedule = count_snapshot_times(n_snapshots, t_end)
+    plan = integration_plan(
+        t_end, 1.0, mode="count", snapshot_times=schedule)
+    assert ("step", t_end, t_end) in plan
     assert _plan_final_time(plan) == t_end
+    assert _plan_stores(plan) == ([] if n_snapshots == 0 else [t_end])
+
+
+def test_count_step_stagnation_aborts_instead_of_violating_cfl():
+    """A sub-ULP CFL step must not be replaced by the whole target gap."""
+    t = 1.0
+    dt_cfl = math.ulp(t) / 2.0
+    with pytest.raises(FloatingPointError, match="stagnated"):
+        _count_step(t, 2.0, dt_cfl)
 
 
 @pytest.mark.parametrize("t_end,dt,cfl", [

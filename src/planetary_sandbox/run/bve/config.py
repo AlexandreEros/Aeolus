@@ -180,17 +180,33 @@ def scientific_config_subset(config: Mapping) -> dict:
     return {k: v for k, v in dict(config).items() if k not in HASH_EXCLUDED_KEYS}
 
 
-def _landing_tol(value: float, t_end: float) -> float:
-    """Floating-point clamp tolerance for landing exactly on a target time.
+def _count_step(t: float, next_stop: float,
+                dt_cfl: float) -> tuple[float, float]:
+    """Return ``(dt, t_after)`` for one exact-count planner step.
 
-    Deliberately *only* a few ULPs wide: it absorbs 1-ULP overshoot and
-    values numerically indistinguishable from the target after stepping, but
-    is far below any real (positive) pre-target residual. This is what keeps
-    a sub-microsecond gap from being mistaken for "already reached" in count
-    mode (contrast with :func:`scheduler_tolerance`, a coarse scale-aware
-    matching tolerance retained only for legacy interval behavior).
+    Every representably positive residual is integrated. If a CFL-limited
+    step is too small to advance the floating-point clock, abort explicitly
+    rather than silently replacing it with the (potentially much larger)
+    remaining gap and violating the CFL ceiling.
     """
-    return 4.0 * math.ulp(max(abs(value), abs(t_end), 1.0))
+    gap = next_stop - t
+    if gap <= 0.0:
+        raise RuntimeError(
+            f"count planner expected a positive residual, got {gap} "
+            f"at t={t} for target={next_stop}")
+    dt = min(dt_cfl, gap)
+    if dt == gap:
+        return dt, next_stop
+    t_after = t + dt
+    if t_after <= t:
+        raise FloatingPointError(
+            f"count planner step stagnated at t={t}: dt_cfl={dt_cfl} "
+            f"cannot advance time toward target={next_stop}")
+    if t_after > next_stop:
+        raise FloatingPointError(
+            f"count planner step overshot target={next_stop}: "
+            f"t={t}, dt={dt}, t_after={t_after}")
+    return dt, t_after
 
 
 def _plan_count(t_end: float, targets: Sequence[float],
@@ -203,7 +219,7 @@ def _plan_count(t_end: float, targets: Sequence[float],
 
     Contract:
 
-    * A target with a *positive* residual (``target - t`` above float noise)
+    * A target with a representably *positive* residual (``target - t > 0``)
       is never treated as reached; its residual is integrated, however small.
     * Steps toward a target are clipped to land exactly on it; the resulting
       ``t`` is snapped to the target to kill accumulated float drift, so the
@@ -218,33 +234,19 @@ def _plan_count(t_end: float, targets: Sequence[float],
     i = 0
     n = len(targets)
     while True:
-        # Store every target we have actually reached. After a landing step
-        # ``t`` equals the target exactly, so this fires with a zero residual;
-        # the tolerance only absorbs a stray 1-ULP overshoot.
+        # Store only targets actually reached. There is deliberately no
+        # pre-target tolerance: even a one-ULP positive residual gets its own
+        # positive integration step before the snapshot is recorded.
         while i < n:
             target = float(targets[i])
-            if target - t > _landing_tol(target, t_end):
-                break  # positive residual beyond float noise: not yet reached
+            if target > t:
+                break
             events.append(("store", 0.0, target))
             i += 1
-        if i >= n and (t_end - t) <= _landing_tol(t_end, t_end):
+        if i >= n and t >= t_end:
             break
         next_stop = float(targets[i]) if i < n else t_end
-        gap = next_stop - t
-        if gap <= 0.0:
-            # Numerically indistinguishable from next_stop: jump exactly.
-            t = next_stop
-            continue
-        if dt_cfl < gap:
-            dt = dt_cfl
-            t_new = t + dt
-            if t_new <= t:  # step below ULP of t: clamp forward, never stall
-                dt = gap
-                t_new = next_stop
-            t = t_new
-        else:
-            dt = gap
-            t = next_stop  # exact clamp kills accumulated float drift
+        dt, t = _count_step(t, next_stop, dt_cfl)
         events.append(("step", dt, t))
     return events
 
