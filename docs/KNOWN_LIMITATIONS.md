@@ -48,9 +48,10 @@ decorative and does not enter the BVE.
   while each nonlinear tendency is cut at `l=14`. That is not a consistent
   Galerkin truncation of either band, so energy/enstrophy conservation is not
   guaranteed when nonlinear transfer reaches modes 15–21.
-- The timestep is fixed from the initial condition, and explicit diffusion has
-  no separate stability check; long or accelerating runs can erode their initial
-  CFL margin.
+- The advective CFL ceiling is recomputed from every accepted state, so an
+  accelerating flow tightens the step instead of eroding its advective margin
+  (R-4). However, explicit diffusion (`ν∇²`) still has no separate stability
+  check, so that margin remains uncontrolled.
 
 ## Reproducibility / hygiene gaps
 

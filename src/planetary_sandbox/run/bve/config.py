@@ -162,6 +162,51 @@ def count_snapshot_times(n_snapshots: int, t_end: float) -> list[float]:
     return times
 
 
+#: Frozen CFL safety factor for the advective condition (dt = C * L / |u|).
+#: Deliberately not a CLI/config field: this feature controls only the
+#: advective CFL number, and exposing it would widen the run-identity schema.
+CFL_NUMBER = 0.5
+
+#: Fallback advective timestep (seconds) when the CFL condition cannot be
+#: formed (no geometry length scale, or an exactly motionless state).
+DEFAULT_CFL_FALLBACK_SECONDS = 600.0
+
+
+def advective_cfl_timestep(length_scale: Optional[float], max_speed: float, *,
+                           cfl_number: float = CFL_NUMBER,
+                           fallback: float = DEFAULT_CFL_FALLBACK_SECONDS
+                           ) -> float:
+    """State-independent advective CFL ceiling ``cfl_number * L / max_speed``.
+
+    This is the *only* place the advective ceiling is computed. The runner
+    feeds it a fresh ``max_speed`` after every accepted step, so the ceiling
+    tracks the evolving flow — genuine state-adaptive advective CFL stepping
+    (see docs/KNOWN_RISKS.md R-4). It controls *only* the advective condition:
+    RK4 stability for an explicit ``ν∇²`` (diffusion) term is deliberately not
+    governed here.
+
+    * A positive finite ``length_scale`` and positive finite ``max_speed``
+      return ``cfl_number * length_scale / max_speed``.
+    * A missing/zero ``length_scale`` or an exactly zero ``max_speed`` returns
+      ``fallback`` (the historical 600 s ceiling).
+    * NaN, infinity, a negative speed, a negative length scale, or a resulting
+      non-finite / non-positive timestep are rejected with a clear exception.
+    """
+    speed = _require_finite_nonneg("max_speed", max_speed)
+    if length_scale is None:
+        return fallback
+    scale = _require_finite_nonneg("length_scale", length_scale)
+    if scale == 0.0 or speed == 0.0:
+        return fallback
+    dt = cfl_number * scale / speed
+    if not math.isfinite(dt) or dt <= 0.0:
+        raise ValueError(
+            f"advective CFL timestep is not finite and positive "
+            f"(got {dt} from length_scale={scale}, max_speed={speed}, "
+            f"cfl_number={cfl_number})")
+    return dt
+
+
 #: Config keys excluded from the run-id hash: purely locational/control
 #: values and derived artifacts. Single source of truth shared by
 #: :meth:`BVERunConfig.scientific_config_dict` and ``io._config_hash`` so the
@@ -209,30 +254,34 @@ def _count_step(t: float, next_stop: float,
     return dt, t_after
 
 
-def _plan_count(t_end: float, targets: Sequence[float],
-                dt_cfl: float) -> list[tuple]:
-    """Exact-target step/store plan for count (explicit) schedules.
+def _count_events(t_end: float, targets: Sequence[float]):
+    """Incremental generator of the exact-target count-mode step/store events.
 
-    ``dt_cfl`` is a fixed ceiling (computed once from the initial state), so
-    the whole step sequence is deterministic and physics-free — which is what
-    lets the exact-target contract be unit-tested on CPU.
+    A coroutine: each ``yield`` emits one event and receives (via ``send``) the
+    ``dt_cfl`` ceiling to use for the *next* step it computes. The ceiling for
+    a step is therefore whatever the driver supplies on the call that returns
+    that step — which is how the runner makes the flow speed of the newly
+    accepted state govern the next accepted step (state-adaptive advective
+    CFL). A store event ignores the ceiling supplied with it.
 
-    Contract:
+    Contract (unchanged from the historical fixed-plan version):
 
-    * A target with a representably *positive* residual (``target - t > 0``)
-      is never treated as reached; its residual is integrated, however small.
+    * A target with a representably *positive* residual (``target - t > 0``) is
+      never treated as reached; its residual is integrated, however small.
     * Steps toward a target are clipped to land exactly on it; the resulting
       ``t`` is snapped to the target to kill accumulated float drift, so the
       stored snapshot time and the final diagnostic time equal the requested
       target exactly.
-    * No zero-length steps, no infinite loops.
+    * No zero-length steps; a sub-ULP ceiling that cannot advance the clock
+      raises ``FloatingPointError`` (via :func:`_count_step`) rather than
+      silently violating the ceiling.
 
     Each event is ``("store", 0.0, time)`` or ``("step", dt, t_after)``.
     """
-    events: list[tuple] = []
     t = 0.0
     i = 0
     n = len(targets)
+    dt_cfl = yield  # prime: the first send supplies the ceiling for event #1
     while True:
         # Store only targets actually reached. There is deliberately no
         # pre-target tolerance: even a one-ULP positive residual gets its own
@@ -241,34 +290,37 @@ def _plan_count(t_end: float, targets: Sequence[float],
             target = float(targets[i])
             if target > t:
                 break
-            events.append(("store", 0.0, target))
+            dt_cfl = yield ("store", 0.0, target)
             i += 1
         if i >= n and t >= t_end:
-            break
+            return
         next_stop = float(targets[i]) if i < n else t_end
         dt, t = _count_step(t, next_stop, dt_cfl)
-        events.append(("step", dt, t))
-    return events
+        dt_cfl = yield ("step", dt, t)
 
 
-def _plan_interval(t_end: float, dt_snapshots: float,
-                   dt_cfl: float) -> list[tuple]:
-    """Historical interval-mode step/store plan, preserved bit-for-bit.
+def _interval_events(t_end: float, dt_snapshots: float):
+    """Incremental generator of the historical interval-mode events.
 
     Mirrors the original psx-bve countdown exactly: store at t=0 and every
     interval boundary, decrement a ``time_to_snapshot`` countdown, and stop
     once the remaining time falls within ``1e-6 * dt_snapshots``. The final
-    state is stored only when the duration is a multiple of the interval —
-    the intentional legacy stopping behavior. Stored times are the actual
+    state is stored only when the duration is a multiple of the interval — the
+    intentional legacy stopping behavior. Stored times are the actual
     accumulated ``t`` values (with their historical float drift).
+
+    Like :func:`_count_events` it is a coroutine: each accepted step uses the
+    ``dt_cfl`` sent on the call that returns it, so the accepted-step sequence
+    now varies with the evolving flow speed while the snapshot/stopping
+    semantics stay bit-for-bit identical.
     """
-    events: list[tuple] = []
     t = 0.0
     snapshot_tol = 1e-6 * dt_snapshots
     time_to_snapshot = 0.0
+    dt_cfl = yield  # prime
     while t <= t_end + snapshot_tol:
         if time_to_snapshot <= snapshot_tol:
-            events.append(("store", 0.0, t))
+            dt_cfl = yield ("store", 0.0, t)
             time_to_snapshot = dt_snapshots
         remaining = t_end - t
         if remaining <= snapshot_tol:
@@ -278,30 +330,93 @@ def _plan_interval(t_end: float, dt_snapshots: float,
             break
         t += dt_step
         time_to_snapshot = max(0.0, time_to_snapshot - dt_step)
-        events.append(("step", dt_step, t))
-    return events
+        dt_cfl = yield ("step", dt_step, t)
+
+
+class IntegrationScheduler:
+    """Stateful step/store scheduler that owns only time + snapshot bookkeeping.
+
+    The runner requests one event at a time, supplying the *current* advective
+    CFL ceiling each call::
+
+        scheduler = IntegrationScheduler(t_end, mode=snapshot_mode,
+                                         snapshot_times=snapshot_times,
+                                         dt_snapshots=dt_snapshots)
+        while True:
+            event = scheduler.next_event(dt_cfl)
+            if event is None:
+                break
+            ...
+
+    This is the seam that makes state-adaptive stepping possible: because the
+    ceiling is consumed one event at a time (rather than baked into a
+    precomputed plan), a ceiling recomputed from each newly accepted state
+    governs the very next accepted step. The scheduler is independent of CuPy
+    and model physics, so the exact-count and legacy-interval contracts remain
+    CPU-testable.
+
+    ``mode`` is explicit ("count" or "interval"); the runner never infers the
+    legacy path from ``snapshot_times is None``.
+    """
+
+    def __init__(self, t_end: float, *, mode: str,
+                 snapshot_times: Optional[Sequence[float]] = None,
+                 dt_snapshots: Optional[float] = None):
+        self.mode = mode
+        if mode == "count":
+            self._gen = _count_events(t_end, list(snapshot_times or []))
+        elif mode == "interval":
+            if dt_snapshots is None:
+                raise ValueError("interval mode requires dt_snapshots")
+            self._gen = _interval_events(t_end, float(dt_snapshots))
+        else:
+            raise ValueError(f"unknown integration mode: {mode!r}")
+        next(self._gen)  # advance to the priming yield
+        self._done = False
+
+    def next_event(self, dt_cfl: float) -> Optional[tuple]:
+        """Return the next ``("store"/"step", ...)`` event, or ``None`` at end.
+
+        ``dt_cfl`` is the current positive finite advective ceiling; a returned
+        ``step`` event is sized against it (clipped shorter only to land on the
+        next snapshot target or ``t_end``). A returned ``store`` event does not
+        consume the ceiling.
+        """
+        if dt_cfl <= 0 or not math.isfinite(dt_cfl):
+            raise ValueError(f"dt_cfl must be finite and positive, got {dt_cfl}")
+        if self._done:
+            return None
+        try:
+            return self._gen.send(dt_cfl)
+        except StopIteration:
+            self._done = True
+            return None
 
 
 def integration_plan(t_end: float, dt_cfl: float, *, mode: str,
                      snapshot_times: Optional[Sequence[float]] = None,
                      dt_snapshots: Optional[float] = None) -> list[tuple]:
-    """Deterministic step/store plan the runner executes.
+    """Materialize the whole step/store sequence for a *constant* ceiling.
 
-    ``mode`` is explicit ("count" or "interval") — the runner never infers
-    the legacy path from ``snapshot_times is None``. Count mode consumes the
-    authoritative ``snapshot_times`` with exact target-time semantics;
-    interval mode reconstructs the historical schedule from ``dt_snapshots``
-    with the legacy stopping tolerance.
+    Compatibility / test helper: it drives :class:`IntegrationScheduler` with a
+    single fixed ``dt_cfl`` and collects every event, reproducing the historical
+    fixed-ceiling plan exactly. The live runner no longer builds a full plan —
+    it steps the scheduler one event at a time with a ceiling recomputed from
+    each accepted state — but this helper keeps the deterministic, physics-free
+    contract unit-testable on CPU.
     """
     if dt_cfl <= 0 or not math.isfinite(dt_cfl):
         raise ValueError(f"dt_cfl must be finite and positive, got {dt_cfl}")
-    if mode == "count":
-        return _plan_count(t_end, list(snapshot_times or []), dt_cfl)
-    if mode == "interval":
-        if dt_snapshots is None:
-            raise ValueError("interval mode requires dt_snapshots")
-        return _plan_interval(t_end, float(dt_snapshots), dt_cfl)
-    raise ValueError(f"unknown integration mode: {mode!r}")
+    scheduler = IntegrationScheduler(
+        t_end, mode=mode, snapshot_times=snapshot_times,
+        dt_snapshots=dt_snapshots)
+    events: list[tuple] = []
+    while True:
+        event = scheduler.next_event(dt_cfl)
+        if event is None:
+            break
+        events.append(event)
+    return events
 
 
 def scheduler_tolerance(t_end: float, times: Sequence[float]) -> float:

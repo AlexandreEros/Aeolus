@@ -210,7 +210,8 @@ def _plot_backend_comparison(geodesic: pathlib.Path, latlon: pathlib.Path,
         ax.set(xlabel="longitude (deg)", ylabel="latitude (deg)",
                xlim=(0, 360), ylim=(-90, 90))
     fig.colorbar(im, ax=axes, label="relative vorticity (s⁻¹)")
-    fig.suptitle("RH4 backend comparison — identical physics, backend-native fixed timesteps")
+    fig.suptitle("RH4 backend comparison — identical physics, "
+                 "backend-native state-adaptive advective CFL timesteps")
     fig.savefig(target, dpi=180, metadata={"Software": "planetary-sandbox"})
     plt.close(fig)
 

@@ -7,7 +7,8 @@ from typing import Sequence
 
 from planetary_sandbox.planet import Planet
 from .barotropic_vorticity import BarotropicVorticity, BarotropicState
-from .config import (PLOT_TYPES, integration_plan, validate_snapshot_schedule)
+from .config import (PLOT_TYPES, IntegrationScheduler, advective_cfl_timestep,
+                     validate_snapshot_schedule)
 from .diagnostics import DiagnosticsRecorder, plot_diagnostics
 from ...viz.vorticity_viewer import VorticityViewer
 
@@ -75,31 +76,16 @@ def run_bve(planet: Planet,
             raise ValueError("interval mode requires dt_snapshots")
     plots = tuple(PLOT_TYPES) if plots is None else tuple(plots)
 
-    # CFL-based timestep from initial max speed and the geometry-owned
-    # length scale (geodesic: min edge length; lat-lon: min meridional
-    # spacing — see the geometry's cfl_length_scale docstring). This is
-    # a CEILING on individual steps; the integrator may shorten a step
-    # further to land exactly on an output time or on t_end.
-    C = 0.5 # CFL safety factor
-    # GridGeometry guarantees cfl_length_scale (base returns None; geodesic
-    # routes min_edge_length through it). None/0 falls through to the fixed
-    # default below.
+    # Geometry-owned CFL length scale (geodesic: min edge length; lat-lon: min
+    # meridional spacing — see the geometry's cfl_length_scale docstring).
+    # GridGeometry guarantees the attribute (base returns None; geodesic routes
+    # min_edge_length through it). None/0 -> the fixed fallback in the helper.
     length_scale = getattr(planet.grid, "cfl_length_scale", None)
-    psi0_lm = planet.so.inv_laplacian(zeta0_lm)
-    u0, v0 = planet.so.velocity_from_streamfunction(psi0_lm)
-    max_speed = float(cp.max(cp.sqrt(u0**2 + v0**2)).item())
-    if length_scale and max_speed > 0:
-        dt_cfl = C * length_scale / max_speed
-    else:
-        dt_cfl = 600 # idk
 
     # Grid-space initial vorticity — captured for provenance so the
     # summary plot can compare against the genuine initial field even
     # when only the final state is stored (N=1 case).
     zeta_initial_grid = planet.sh.inv_transform(state.coeffs)
-
-    t = 0.0
-    step = 0
 
     # Scalar diagnostics recorded every accepted step, straight from the
     # spectral state (not the plotting fields). Cheap; append-only.
@@ -110,41 +96,52 @@ def run_bve(planet: Planet,
         omega=planet.params.angular_velocity,
         out_dir=out_dir,
     )
-    recorder.record(t, state.coeffs, dt=0.0, step=0)
+    # The initial diagnostics row already reconstructs velocity and reports
+    # max_speed_ms; reuse it for the *first* advective CFL ceiling instead of
+    # inverting the streamfunction a second time here.
+    initial_row = recorder.record(0.0, state.coeffs, dt=0.0, step=0)
+    dt_cfl = advective_cfl_timestep(length_scale, initial_row["max_speed_ms"])
 
+    step = 0
     all_zeta_lm: list[cp.ndarray] = []
     vorticity_grid_snapshot_list: list[cp.ndarray] = []
     stored_times_hours: list[float] = []
 
-    # The step/store plan is fully determined by (t_end, schedule, dt_cfl,
-    # mode): dt_cfl is a fixed ceiling computed once above, so the entire
-    # sequence of accepted steps and stored snapshot times is physics-free
-    # and deterministic. Building it here (rather than inlining the loop)
-    # keeps the exact-target (count) and legacy-interval contracts in one
-    # CPU-testable seam that the runner merely replays. Each event is
-    # ('store', 0.0, time) or ('step', dt, t_after).
-    plan = integration_plan(
-        t_end, dt_cfl, mode=snapshot_mode,
-        snapshot_times=snapshot_times, dt_snapshots=dt_snapshots)
+    def on_store(event_time: float) -> None:
+        all_zeta_lm.append(cp.copy(state.coeffs))
+        print(f"Time: {event_time/3600.0:8.2f} hrs | Step: {step} ")
+        # Record the scheduled time (exact target in count mode), not a drifted
+        # accumulator, so the stored snapshot time is authoritative.
+        stored_times_hours.append(event_time / 3600.0)
+        # Dump ζ on grid for plotting.
+        zeta_grid = planet.sh.inv_transform(state.coeffs)
+        vorticity_grid_snapshot_list.append(cp.copy(zeta_grid))
 
-    for kind, dt_step, event_time in plan:
-        if kind == "store":
-            all_zeta_lm.append(cp.copy(state.coeffs))
-            print(f"Time: {event_time/3600.0:8.2f} hrs | Step: {step} ")
-            # Record the scheduled time (exact target in count mode), not a
-            # drifted accumulator, so the stored snapshot time is authoritative.
-            stored_times_hours.append(event_time / 3600.0)
-            # Dump ζ on grid for plotting
-            zeta_grid = planet.sh.inv_transform(state.coeffs)
-            vorticity_grid_snapshot_list.append(cp.copy(zeta_grid))
-        else:  # step
-            state = rk4_step(model, state, t, dt_step)
-            # event_time is the planner's exact post-step time; in count mode
-            # a landing step snaps it to the target, so the final diagnostic
-            # time equals t_end exactly rather than a drifted value.
-            t = event_time
-            step += 1
-            recorder.record(t, state.coeffs, dt=dt_step, step=step)
+    def on_step(t_before: float, t_after: float, dt_step: float,
+                step_index: int) -> float:
+        nonlocal state, step
+        state = rk4_step(model, state, t_before, dt_step)
+        # t_after is the scheduler's exact post-step time; in count mode a
+        # landing step snaps it to the target, so the final diagnostic time
+        # equals t_end exactly rather than a drifted value.
+        step = step_index
+        # record() performs the ONE velocity reconstruction of the step: it
+        # both writes the diagnostic row and returns max_speed_ms, which drives
+        # the next advective CFL ceiling. No second reconstruction is done.
+        row = recorder.record(t_after, state.coeffs, dt=dt_step,
+                              step=step_index)
+        return row["max_speed_ms"]
+
+    # State-adaptive advective CFL stepping: the scheduler is stepped one event
+    # at a time with the *current* ceiling, and after every accepted RK4 step
+    # the ceiling is recomputed from that state's max speed. The exact-target
+    # (count) and legacy-interval snapshot/stopping contracts live in the
+    # scheduler, keeping them CPU-testable.
+    scheduler = IntegrationScheduler(
+        t_end, mode=snapshot_mode,
+        snapshot_times=snapshot_times, dt_snapshots=dt_snapshots)
+    _integrate(scheduler, dt_cfl, length_scale,
+               on_step=on_step, on_store=on_store)
 
     recorder.close()
 
@@ -197,6 +194,38 @@ def run_bve(planet: Planet,
 
     return 0
 
+
+
+def _integrate(scheduler: IntegrationScheduler, dt_cfl: float,
+               length_scale: float | None, *, on_step, on_store) -> tuple:
+    """Drive an IntegrationScheduler with state-adaptive advective-CFL stepping.
+
+    Physics-agnostic control seam (kept separate so it is CPU-testable with
+    stubbed callbacks): the scheduler is asked for one event at a time using
+    the *current* ceiling ``dt_cfl``; after each accepted step the ceiling is
+    recomputed from that step's max speed, so the flow speed of the newly
+    accepted state governs the next accepted step.
+
+    ``on_step(t_before, t_after, dt_step, step)`` advances one accepted RK step
+    and returns the post-step max speed (m/s); ``on_store(event_time)``
+    persists a snapshot (and does not affect the ceiling). Returns the final
+    ``(t, step)`` reached.
+    """
+    t = 0.0
+    step = 0
+    while True:
+        event = scheduler.next_event(dt_cfl)
+        if event is None:
+            break
+        kind, dt_step, event_time = event
+        if kind == "store":
+            on_store(event_time)
+        else:  # step
+            step += 1
+            max_speed = on_step(t, event_time, dt_step, step)
+            t = event_time
+            dt_cfl = advective_cfl_timestep(length_scale, max_speed)
+    return t, step
 
 
 def rk4_step(model: BarotropicVorticity, y: BarotropicState, t: float, dt: float, forcing_coeffs=None) -> BarotropicState:

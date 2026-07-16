@@ -134,23 +134,19 @@ flowchart TD
     run --> model["BarotropicVorticity(planet)"]
     model --> coriolis["construct grid f and exact spectral f_lm"]
 
-    run --> psi0["SpectralOperators.inv_laplacian(zeta0_lm)"]
-    psi0 --> velocity0["velocity_from_streamfunction()"]
-    velocity0 --> cfl["CFL timestep from max speed<br/>and grid.cfl_length_scale"]
-
     run --> recorder["DiagnosticsRecorder()"]
-    recorder --> record0["record initial state"]
+    recorder --> record0["record initial state<br/>(returns max_speed_ms)"]
+    record0 --> cfl0["advective_cfl_timestep()<br/>initial ceiling dt_cfl"]
 
     run --> schedule["explicit snapshot schedule<br/>(resolved by BVERunConfig)"]
+    schedule --> sched["IntegrationScheduler.next_event(dt_cfl)"]
+    cfl0 --> sched
 
-    cfl --> loop{"t &lt; t_end?"}
-    schedule --> snapshot
-    loop -- "yes" --> snapshot{"schedule time reached?"}
-    snapshot -- "yes" --> synth["planet.sh.inv_transform(state.coeffs)"]
+    sched --> ev{"event kind?"}
+    ev -- "store" --> synth["planet.sh.inv_transform(state.coeffs)"]
     synth --> memory["append vorticity grid + time"]
-    snapshot --> dt["dt_step = min(CFL, next schedule time, t_end)"]
-    memory --> dt
-    dt --> rk4["rk4_step(model, state, t, dt_step)"]
+    memory --> sched
+    ev -- "step<br/>dt_step ≤ dt_cfl,<br/>clipped to land on target" --> rk4["rk4_step(model, state, t, dt_step)"]
 
     rk4 --> k1["model.tendency(y)"]
     rk4 --> k2["model.tendency(y + dt*k1/2)"]
@@ -161,10 +157,11 @@ flowchart TD
     k3 --> combine
     k4 --> combine
     combine --> accepted["accepted BarotropicState"]
-    accepted --> record["DiagnosticsRecorder.record()"]
-    record --> loop
+    accepted --> record["DiagnosticsRecorder.record()<br/>(returns max_speed_ms)"]
+    record --> cfln["advective_cfl_timestep()<br/>recompute ceiling from new state"]
+    cfln --> sched
 
-    loop -- "no" --> close["DiagnosticsRecorder.close()"]
+    ev -- "none (done)" --> close["DiagnosticsRecorder.close()"]
     close --> save["save coefficient/grid snapshots<br/>(always, independent of plots)"]
     save --> plotsel{"plot selection"}
     plotsel -- "diagnostics" --> diagPlot["plot_diagnostics()"]

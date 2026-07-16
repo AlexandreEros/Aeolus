@@ -156,8 +156,9 @@ comparison rather than a conservation benchmark; exact manifests are in
   tendency is cut at `l=14`. That is not a consistent Galerkin truncation of
   either band, so energy/enstrophy conservation is not guaranteed when
   nonlinear transfer reaches modes 15–21.
-- The timestep is fixed from the initial condition; long or accelerating runs
-  can erode their initial CFL margin.
+- The advective CFL ceiling is recomputed from every accepted state (R-4), so
+  an accelerating flow tightens the step rather than eroding its advective
+  margin; explicit-viscosity (`ν∇²`) stability is still not controlled.
 - There is no independent CPU dynamical core, and the present tests require a
   working CUDA GPU.
 

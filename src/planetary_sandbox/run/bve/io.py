@@ -458,7 +458,7 @@ def write_run_manifest(
         "gpu": gpu,
         "notes": {
             "equations": "barotropic vorticity equation on a rotating sphere (see docs/MATHEMATICAL_MODEL.md)",
-            "timestep_policy": "fixed dt ceiling from initial CFL; individual steps may be shortened to land exactly on output times and t_end (docs/KNOWN_RISKS.md R-4)",
+            "timestep_policy": "state-adaptive advective CFL ceiling (0.5*cfl_length_scale/max|u|) recomputed from every accepted state; individual steps may be shortened to land exactly on output times and t_end; controls only the advective condition, not explicit-viscosity stability (docs/KNOWN_RISKS.md R-4)",
             "diagnostics": "see diagnostics.py module docstring for definitions",
         },
     }

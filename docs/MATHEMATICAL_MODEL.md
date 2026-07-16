@@ -254,21 +254,31 @@ per evaluation, eight per RK4 step.
 - **Scheme**: classical explicit **RK4** on the spectral vorticity coefficients
   ([runner.py](../src/planetary_sandbox/run/bve/runner.py) `rk4_step`), diffusion included
   explicitly (no integrating factor / implicit treatment).
-- **Step-size policy**: a **CFL ceiling** is computed *once* from the initial condition,
-  `dt_cfl = 0.5 · cfl_length_scale / max|u₀|` (falls back to 600 s if degenerate), and stays
-  constant for the run — dt never adapts, so a smoke run in which the maximum speed grew
-  from 25.4 to 37.5 m/s while dt stayed fixed will erode the CFL margin (R-4). The mesh edge
-  length is also not the natural CFL length for a spectral method (the resolved wavelength
-  `2πR/l_max` is).
+- **Step-size policy**: a **state-adaptive advective CFL ceiling**. The ceiling
+  `dt_cfl = 0.5 · cfl_length_scale / max|u|` (falls back to 600 s if degenerate; the sole
+  implementation is `advective_cfl_timestep` in
+  [config.py](../src/planetary_sandbox/run/bve/config.py)) is formed from the *initial*
+  state for the first step and then **recomputed from every accepted state** — the runner
+  drives it with the `max_speed_ms` already produced by the per-step diagnostics record, so
+  no extra velocity reconstruction is added. A run in which the maximum speed grows (a smoke
+  run went 25.4 → 37.5 m/s) therefore tightens `dt` as the flow accelerates instead of
+  eroding the margin (R-4, now the advective condition is controlled). This is *only* the
+  advective CFL condition: it is **not** embedded-error (RK45) adaptivity, and it does **not**
+  bound RK4 stability for the explicit `ν∇²` diffusion term. The mesh edge length is also not
+  the natural CFL length for a spectral method (the resolved wavelength `2πR/l_max` is) — a
+  separate open item.
 - **Output-time clipping**: canonical count mode shortens individual steps to
   `min(dt_cfl, next_scheduled_time − t, t_end − t)` and integrates every positive residual,
   so it lands exactly on every requested output time and on `t_end`; a step that cannot
   advance representable time aborts rather than being enlarged past `dt_cfl`. Legacy
   interval mode intentionally follows the historical countdown instead and may stop within
   `1e-6 · dt_snapshots` of a misaligned `t_end`; that path preserves main's storage boundaries
-  and accepted-step sequence rather than adopting count mode's exact-final-time contract.
-  Snapshot requests perturb the step sequence around output boundaries but not the fixed CFL
-  ceiling.
+  and stopping semantics rather than adopting count mode's exact-final-time contract. The
+  accepted-step sequence now varies with the evolving flow speed in both modes; the snapshot
+  and stopping contracts are what "legacy preservation" refers to, not a frozen step sequence.
+  The scheduling seam is the incremental `IntegrationScheduler` (one `next_event(dt_cfl)`
+  per accepted step); `integration_plan` remains as a constant-ceiling compatibility/test
+  helper.
 - **Leapfrog**: `step_leapfrog` exists but is dead code and would crash if called
   (it passes raw arrays where a `BarotropicState` is asserted) (R-6).
 - The l = 0 row of every tendency is hard-zeroed ("mass conservation"), which pins the
@@ -353,7 +363,8 @@ Demonstrably wrong or unquantified (details in [KNOWN_RISKS.md](KNOWN_RISKS.md))
 
 - the Jacobian actually used by the tendency (R-1);
 - the default resolution/truncation pairing (R-2);
-- the dealiasing claim (R-3); fixed-dt "CFL" (R-4); invariant drift (R-5);
+- the dealiasing claim (R-3); the advective CFL is now state-adaptive (R-4 fixed for the
+  advective condition; explicit-viscosity stability still uncontrolled); invariant drift (R-5);
 - the legacy lat–lon transform's quadrature (R-7);
 - everything downstream of these (all published imagery in `out/` was produced with R-1
   active and therefore does not depict solutions of the BVE).

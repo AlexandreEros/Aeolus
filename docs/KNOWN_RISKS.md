@@ -174,13 +174,46 @@ decision, out of R-3 scope. Memory note: `"fine"` builds a res-(r+1) grid at ini
 co-grid ≈ 160 MB at l_max 21; res 6 co-grid for a res-5 state ≈ 1.3 GB — set `"coarse"`
 there).
 
-### R-4. Time step is fixed from the initial state; "adaptive time-stepping" claim is wrong
+### R-4. Advective CFL step was fixed from the initial state — ✅ FIXED for the advective condition (state-adaptive)
 
-`run_bve` computes `dt = 0.5·min_edge/max|u₀|` once (commit 8666138 claims adaptivity).
+**Original defect:** `run_bve` computed `dt = 0.5·min_edge/max|u₀|` *once* and reused that
+ceiling for the whole run (commit 8666138 called this "adaptive time-stepping"; it was not).
 **[measured]** max speed grew 25.4 → 37.5 m/s in a 12 h default run with dt unchanged.
-Also the CFL length scale should follow the spectral resolution (2πR/l_max), not the mesh
-edge, and RK4 stability for the ν∇² term is never checked. No instability was observed in
-short audit runs, but the margin is uncontrolled.
+
+**Fix applied:** the advective CFL ceiling is now recomputed from **every accepted state**.
+The runner forms the first ceiling from the initial diagnostics row, advances one accepted
+RK4 step, reads that state's `max_speed_ms` from the diagnostics record it already writes,
+and recomputes the ceiling for the next step — genuine state-dependent advective CFL
+stepping. Structure:
+
+- `advective_cfl_timestep(length_scale, max_speed, *, cfl_number=0.5, fallback=600.0)` in
+  [config.py](../src/planetary_sandbox/run/bve/config.py) is the sole ceiling arithmetic
+  (validates NaN/inf/negative inputs and non-finite/non-positive results; 600 s fallback
+  for a missing length scale or a motionless state).
+- `IntegrationScheduler.next_event(dt_cfl)` replaces the precomputed fixed-ceiling plan: it
+  emits one `store`/`step` event at a time using the *current* ceiling, so the recomputed
+  ceiling reaches the very next step. `integration_plan(...)` remains as a constant-ceiling
+  compatibility/test helper. Snapshot- and `t_end`-landing clips are unchanged; the explicit
+  floating-point stagnation abort is retained.
+- The diagnostics velocity reconstruction is *reused*, not duplicated: the runner performs
+  no second streamfunction inversion (locked by
+  `tests/integration/test_bve_runner.py::test_runner_reuses_diagnostics_velocity_no_duplicate_reconstruction`).
+
+Covered by `tests/cli/test_schedules.py` (incremental count/interval scheduling, constant-
+ceiling compatibility, CFL-helper validation) and
+`tests/integration/test_bve_controller.py` (the speed after accepted step *n* sets the
+ceiling for step *n+1*).
+
+**Still open (explicitly out of this fix's scope):**
+
+- This controls **only the advective CFL condition**. RK4 stability for the explicit `ν∇²`
+  diffusion term is still not checked. No instability was observed in short audit runs, but
+  that margin remains uncontrolled.
+- The CFL length scale still follows the mesh edge, not the spectral resolution
+  `2πR/l_max` that is the natural length for a spectral method.
+- This is not embedded-error (RK45) adaptivity and no timestep-growth limiter was added
+  (none was shown to be needed). No conservation/stability improvement is claimed here — only
+  the ceiling policy changed; no reproducible numerical comparison was run for this change.
 
 ### R-5. Inviscid invariants drift at O(1 %)/day; state round-trips through a lossy transform every tendency call  — ✅ FIXED (branch `fix/r5-spectral-absolute-vorticity`)
 
@@ -222,8 +255,9 @@ prediction "~0.01 % rotating drift after R-5" is **refuted** — the remaining �
 is not the η construction (instantaneous dE/dt is a null for both constructions since
 ∮ψJ(ψ,η)dA = 0 for any η; the damage was trajectory-level). Leading suspects for the
 remainder: truncation-only dealiasing (R-3) acting on the β-driven cascade, product-
-analysis quadrature error, and time-step size (R-4) — attribution is the next
-fixed-dt/resolution sweep, not yet established.
+analysis quadrature error, and time-truncation error (the advective step is now
+state-adaptive per R-4, but RK4 temporal error and the uncontrolled `ν∇²` stability margin
+remain) — attribution is the next resolution/step sweep, not yet established.
 
 ### R-6. `step_leapfrog` is dead code that crashes if called
 

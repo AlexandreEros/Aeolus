@@ -188,8 +188,10 @@ and orientation/rotation-equivalence tests are in
 
 - BVE only: no shallow-water or primitive-equation dynamics.
 - GPU/CuPy only: no production CPU fallback or CPU CI path.
-- The timestep is fixed from initial conditions; the state band extends above
-  the nonlinear tendency cut, so conservation is measured, not guaranteed.
+- The advective CFL ceiling is recomputed from every accepted state (genuine
+  state-adaptive advective stepping), but explicit-viscosity (`ν∇²`) stability
+  is not controlled, and the state band extends above the nonlinear tendency
+  cut, so conservation is measured, not guaranteed.
 - The geodesic transform and product quadrature remain approximate; the Gauss
   backend is the stronger quadrature reference.
 

@@ -9,7 +9,9 @@ from planetary_sandbox.cli.main import build_parser
 from planetary_sandbox.run.bve.config import (
     SECONDS_PER_DAY,
     BVERunConfig,
+    IntegrationScheduler,
     _count_step,
+    advective_cfl_timestep,
     count_snapshot_times,
     integration_plan,
     interval_snapshot_times,
@@ -19,8 +21,11 @@ from .conftest import run_aeolus_stubbed
 
 
 # ---------------------------------------------------------------------------
-# integration_plan: the physics-free step/store seam the runner replays.
-# dt_cfl is a fixed ceiling, so the whole plan is deterministic on CPU.
+# integration_plan: the constant-ceiling compatibility/test helper. The live
+# runner steps IntegrationScheduler one event at a time with a ceiling
+# recomputed from each accepted state (see the scheduler tests below); this
+# helper drives the scheduler with a single fixed dt_cfl, so its whole plan is
+# deterministic and physics-free on CPU — preserving the historical contract.
 # ---------------------------------------------------------------------------
 
 def _plan_stores(plan):
@@ -173,6 +178,183 @@ def test_interval_misaligned_omits_final_state():
         t_end, 600.0, mode="count",
         snapshot_times=count_snapshot_times(5, t_end))
     assert _plan_final_time(count_plan) == t_end
+
+
+# ---------------------------------------------------------------------------
+# advective_cfl_timestep: the state-independent CFL arithmetic. This is the
+# only place the ceiling is computed; the runner feeds it a fresh max speed
+# after every accepted step (state-adaptive advective CFL), so its validation
+# and fallback contract is exercised directly here.
+# ---------------------------------------------------------------------------
+
+def test_cfl_ordinary_positive_speed():
+    # 0.5 * 1000 / 20 = 25.0
+    assert advective_cfl_timestep(1000.0, 20.0) == 25.0
+
+
+def test_cfl_faster_speed_gives_smaller_timestep():
+    slow = advective_cfl_timestep(1000.0, 10.0)
+    fast = advective_cfl_timestep(1000.0, 40.0)
+    assert fast < slow
+    assert fast == pytest.approx(0.5 * 1000.0 / 40.0)
+
+
+def test_cfl_slower_speed_gives_larger_timestep():
+    base = advective_cfl_timestep(1000.0, 20.0)
+    slower = advective_cfl_timestep(1000.0, 5.0)
+    assert slower > base
+
+
+def test_cfl_zero_speed_uses_fallback():
+    assert advective_cfl_timestep(1000.0, 0.0) == 600.0
+    assert advective_cfl_timestep(1000.0, 0.0, fallback=42.0) == 42.0
+
+
+def test_cfl_missing_or_zero_length_scale_uses_fallback():
+    assert advective_cfl_timestep(None, 20.0) == 600.0
+    assert advective_cfl_timestep(0.0, 20.0) == 600.0
+
+
+def test_cfl_number_defaults_to_half():
+    # The frozen CFL safety factor: 0.5 * L / speed.
+    assert advective_cfl_timestep(800.0, 20.0) == 0.5 * 800.0 / 20.0
+
+
+@pytest.mark.parametrize("bad_speed", [
+    float("nan"), float("inf"), -1.0, -0.0001])
+def test_cfl_rejects_invalid_speed(bad_speed):
+    with pytest.raises((ValueError, ArithmeticError)):
+        advective_cfl_timestep(1000.0, bad_speed)
+
+
+@pytest.mark.parametrize("bad_length", [
+    float("nan"), float("inf"), -1.0])
+def test_cfl_rejects_invalid_length_scale(bad_length):
+    with pytest.raises((ValueError, ArithmeticError)):
+        advective_cfl_timestep(bad_length, 20.0)
+
+
+def test_cfl_rejects_nonfinite_result_from_overflow():
+    # A finite length scale over a tiny speed that overflows to +inf must be
+    # rejected, not returned as an infinite timestep.
+    tiny = 5e-324  # smallest positive subnormal
+    with pytest.raises((ValueError, ArithmeticError)):
+        advective_cfl_timestep(1e308, tiny)
+
+
+# ---------------------------------------------------------------------------
+# IntegrationScheduler: the *incremental* seam. Unlike integration_plan (which
+# freezes one ceiling for the whole run), the scheduler is handed the current
+# dt_cfl on every next_event call, so a ceiling recomputed from the evolving
+# flow speed governs the very next accepted step. These tests fail against a
+# fixed-plan implementation.
+# ---------------------------------------------------------------------------
+
+def test_scheduler_count_uses_current_ceiling_for_next_step():
+    """Consecutive next_event calls with different ceilings size each step."""
+    t_end = 1000.0
+    scheduler = IntegrationScheduler(
+        t_end, mode="count", snapshot_times=[0.0, t_end])
+
+    assert scheduler.next_event(100.0) == ("store", 0.0, 0.0)   # ceiling unused
+    assert scheduler.next_event(300.0) == ("step", 300.0, 300.0)   # uses 300
+    assert scheduler.next_event(400.0) == ("step", 400.0, 700.0)   # uses 400
+    # The final step is clipped to land exactly on t_end (< the 1000 ceiling).
+    assert scheduler.next_event(1000.0) == ("step", 300.0, 1000.0)
+    assert scheduler.next_event(500.0) == ("store", 0.0, 1000.0)
+    assert scheduler.next_event(500.0) is None
+
+
+def test_scheduler_count_snapshot_times_stay_exact():
+    """Varying the ceiling must not perturb the stored (exact) snapshot times."""
+    t_end = _MISALIGNED_T_END
+    schedule = count_snapshot_times(4, t_end)  # [0, t/3, 2t/3, t]
+    scheduler = IntegrationScheduler(
+        t_end, mode="count", snapshot_times=schedule)
+    stores = []
+    final_t = 0.0
+    ceilings = iter([50.0, 71.0, 123.0, 40.0, 200.0, 99.0])
+    while True:
+        event = scheduler.next_event(next(ceilings, 250.0))
+        if event is None:
+            break
+        kind, _dt, t = event
+        if kind == "store":
+            stores.append(t)
+        else:
+            final_t = t
+    assert stores == schedule           # exact targets despite varying ceilings
+    assert final_t == t_end             # diagnostics end exactly at t_end
+
+
+def test_scheduler_interval_step_sizes_respond_to_ceiling():
+    """Interval steps track the supplied ceiling; stores stay on boundaries."""
+    t_end = 10000.0
+    dt_snapshots = 4000.0               # 10000 is NOT a multiple: final omitted
+    scheduler = IntegrationScheduler(
+        t_end, mode="interval", dt_snapshots=dt_snapshots)
+
+    ceilings = [500.0, 1000.0, 1500.0, 2000.0]
+    stores, steps = [], []
+    i = 0
+    while True:
+        cfl = ceilings[i] if i < len(ceilings) else 2000.0
+        i += 1
+        event = scheduler.next_event(cfl)
+        if event is None:
+            break
+        kind, dt, t = event
+        if kind == "store":
+            stores.append(t)
+        else:
+            steps.append(dt)
+
+    # Store at t=0 and each interval boundary; the misaligned final NOT stored.
+    assert 0.0 in stores
+    assert 4000.0 in stores
+    assert 8000.0 in stores
+    assert all(abs(s - t_end) > 1e-6 for s in stores)
+    # The first two steps are ceiling-limited (below the snapshot countdown),
+    # so they equal exactly the ceilings supplied for those calls.
+    assert steps[0] == 1000.0          # second call's ceiling (first was store)
+    assert steps[1] == 1500.0          # third call's ceiling
+
+
+def test_scheduler_matches_integration_plan_for_constant_ceiling():
+    """Driving the scheduler with a constant ceiling reproduces the plan."""
+    for t_end, cfl, schedule in [
+        (_MISALIGNED_T_END, 71.0, count_snapshot_times(4, _MISALIGNED_T_END)),
+        (600.0, 137.0, count_snapshot_times(3, 600.0)),
+    ]:
+        scheduler = IntegrationScheduler(
+            t_end, mode="count", snapshot_times=schedule)
+        events = []
+        while True:
+            event = scheduler.next_event(cfl)
+            if event is None:
+                break
+            events.append(event)
+        assert events == integration_plan(
+            t_end, cfl, mode="count", snapshot_times=schedule)
+
+
+def test_scheduler_rejects_nonpositive_ceiling():
+    scheduler = IntegrationScheduler(
+        100.0, mode="count", snapshot_times=[100.0])
+    with pytest.raises(ValueError, match="dt_cfl"):
+        scheduler.next_event(0.0)
+    with pytest.raises(ValueError, match="dt_cfl"):
+        scheduler.next_event(float("inf"))
+
+
+def test_scheduler_stagnation_still_aborts():
+    """A sub-ULP ceiling that cannot advance time still fails explicitly."""
+    scheduler = IntegrationScheduler(2.0, mode="count", snapshot_times=[2.0])
+    # First step from t=1 would need to advance, but a sub-ULP ceiling at the
+    # relevant magnitude stagnates. Drive to t=1 first with a real step.
+    assert scheduler.next_event(1.0) == ("step", 1.0, 1.0)
+    with pytest.raises(FloatingPointError, match="stagnated"):
+        scheduler.next_event(math.ulp(1.0) / 2.0)
 
 
 def test_integration_plan_rejects_unknown_mode():

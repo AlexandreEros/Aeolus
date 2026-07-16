@@ -156,3 +156,55 @@ def test_legacy_interval_vs_count_stopping_semantics(tmp_path):
     count_coeffs = np.load(count_dir / "vorticity_coeffs.npy")
     assert count_coeffs.shape[0] == 3
     assert _final_diag_time(count_dir) == t_end_s      # exact final landing
+
+
+@pytest.mark.skipif(not _has_cuda(), reason="CUDA/CuPy not available")
+def test_runner_reuses_diagnostics_velocity_no_duplicate_reconstruction(tmp_path):
+    """R-4: velocity is reconstructed once per record, never a second time.
+
+    The state-adaptive ceiling is driven from the diagnostics row's
+    max_speed_ms; the runner must not invert the streamfunction again. Counting
+    velocity_from_streamfunction calls proves it: exactly one per recorded row
+    (the initial row + one per accepted step).
+    """
+    import csv
+
+    import numpy as np
+    from planetary_sandbox.planet import Planet, PlanetaryParameters
+    from planetary_sandbox.run.bve.config import count_snapshot_times
+    from planetary_sandbox.run.bve.initial_conditions import make_ic
+    from planetary_sandbox.run.bve.runner import run_bve
+
+    planet = Planet.generate(
+        params=PlanetaryParameters.from_earth_like(day_hours=24.0),
+        grid_type="latlon", nlat=16, nlon=32, l_max=7)
+    zeta0_lm = planet.sh.transform(make_ic("rh4", planet))
+
+    calls = {"n": 0}
+    original = planet.so.velocity_from_streamfunction
+
+    def counting(psi_lm):
+        calls["n"] += 1
+        return original(psi_lm)
+
+    planet.so.velocity_from_streamfunction = counting
+    try:
+        t_end_days = 0.02
+        run_bve(planet=planet, zeta0_lm=zeta0_lm, dt_snapshots=None,
+                t_end_days=t_end_days, out_dir=tmp_path, viscosity=0.0,
+                scenario="rh4",
+                snapshot_times=count_snapshot_times(3, t_end_days * 86400.0),
+                plots=(), snapshot_mode="count")
+    finally:
+        planet.so.velocity_from_streamfunction = original
+
+    with open(tmp_path / "diagnostics" / "timeseries.csv", newline="",
+              encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+
+    # One velocity reconstruction per diagnostics row, and no more: the initial
+    # ceiling and every subsequent ceiling reuse record()'s reconstruction.
+    assert calls["n"] == len(rows)
+    assert len(rows) >= 2                        # initial row + at least one step
+    # Sanity: max_speed_ms is populated (it is what drives the ceiling).
+    assert all(np.isfinite(float(r["max_speed_ms"])) for r in rows)

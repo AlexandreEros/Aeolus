@@ -295,7 +295,7 @@ def plot_diagnostics(out_dir: pathlib.Path,
     ax2 = ax1.twinx()
     ax2.plot(t_days, data["cfl"], "C1-", label="CFL")
     ax2.set_ylabel("CFL number", color="C1")
-    ax1.set_title("Flow speed and CFL (dt is fixed: R-4)")
+    ax1.set_title("Flow speed and CFL (dt is state-adaptive advective CFL: R-4)")
     p = fig_dir / "cfl_history.png"
     _save(fig, p, source="diagnostics/timeseries.csv")
     plt.close(fig)

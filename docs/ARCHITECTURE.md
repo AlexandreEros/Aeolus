@@ -65,6 +65,10 @@ Runner / Diagnostics
 - `run/bve/config.py` (`BVERunConfig`) owns configuration resolution for the
   CLI: preset layering (explicit flag > preset > ordinary default), snapshot
   scheduling, and plot selection — all validated before CUDA initialization.
+  It also owns the two CPU-testable time-stepping seams: `advective_cfl_timestep`
+  (the sole advective-CFL arithmetic) and `IntegrationScheduler` (time + snapshot
+  bookkeeping, independent of CuPy/physics), which the runner steps one event at
+  a time so a ceiling recomputed from each accepted state governs the next step.
   The runner consumes the resolved explicit snapshot schedule and clips
   integration steps to land exactly on the requested output times.
 
@@ -99,13 +103,16 @@ u = k × ∇ψ
 ```
 
 The CLI uses classical explicit RK4, exact spectral Laplacian eigenvalues,
-and no forcing (`F=0`). The timestep policy is a **fixed CFL ceiling**
-computed once from the initial velocity and the geometry-owned CFL length
-scale; individual steps are shortened only to land exactly on a requested
-snapshot time or on `t_end`, never lengthened. SI units and a perfect
-spherical surface are used throughout. Equation conventions and
-normalizations are detailed in
-[MATHEMATICAL_MODEL.md](MATHEMATICAL_MODEL.md).
+and no forcing (`F=0`). The timestep policy is a **state-adaptive advective
+CFL ceiling** (`0.5 · cfl_length_scale / max|u|`): formed from the initial
+velocity for the first step and recomputed from every accepted state
+thereafter, reusing the max speed the per-step diagnostics record already
+produces. Individual steps are shortened only to land exactly on a requested
+snapshot time or on `t_end`, never lengthened past the ceiling. This governs
+only the advective condition — not explicit-viscosity (`ν∇²`) stability, and
+it is not embedded-error RK adaptivity. SI units and a perfect spherical
+surface are used throughout. Equation conventions and normalizations are
+detailed in [MATHEMATICAL_MODEL.md](MATHEMATICAL_MODEL.md).
 
 User-facing configuration is fully validated *before* CuPy is imported or
 CUDA is initialized: the CLI parses with all defaults set to `None`, and
