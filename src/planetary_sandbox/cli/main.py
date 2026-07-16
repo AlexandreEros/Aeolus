@@ -3,6 +3,7 @@
 Command tree::
 
     aeolus run bve [...]        run the barotropic vorticity solver
+    aeolus run swe [...]        run the rotating shallow-water solver
     aeolus list presets         named run configurations
     aeolus list scenarios       initial-condition scenarios
     aeolus inspect RUN_PATH     summarize a finished run from its manifest
@@ -269,6 +270,108 @@ def _cmd_run_bve(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# run swe: arguments and dispatch
+# ---------------------------------------------------------------------------
+
+_SWE_EXAMPLES = """\
+examples:
+  aeolus run swe                          Williamson-2 steady flow, 1 day, geodesic grid
+  aeolus run swe --backend gauss-latlon --nlat 32 --nlon 64 --l-max 15
+  aeolus run swe --scenario gravity_wave --day-hours inf --mean-depth 1000
+  aeolus run swe --days 5 --n-snapshots 11 --no-plots
+"""
+
+
+def add_swe_arguments(parser: argparse.ArgumentParser) -> None:
+    """All `run swe` options. Every default is None (resolution applies them)."""
+    from planetary_sandbox.run.swe.config import SWE_SCENARIOS  # import-light
+
+    parser.add_argument(
+        "--backend", "--grid", dest="grid", choices=list(BACKEND_CHOICES),
+        default=None,
+        help="Numerical backend / grid family [default: geodesic]. "
+             "'gauss-latlon' is an alias for 'latlon'.")
+    parser.add_argument(
+        "--l-max", "--lmax", dest="lmax", type=int, default=None,
+        help="Maximum spherical harmonic degree [default: 21].")
+    parser.add_argument(
+        "--resolution", type=int, default=None,
+        help="Geodesic grid subdivision level [default: 4].")
+    parser.add_argument(
+        "--nlat", type=int, default=None,
+        help="Lat-lon backend: number of Gauss-Legendre latitudes [default: 128].")
+    parser.add_argument(
+        "--nlon", type=int, default=None,
+        help="Lat-lon backend: number of uniform longitudes [default: 256].")
+    parser.add_argument(
+        "--day-hours", type=float, default=None,
+        help="Sidereal day length in hours; 'inf' = non-rotating "
+             "[default: 23.9345, i.e. Earth's rotation rate].")
+    parser.add_argument(
+        "--radius-earth-units", type=float, default=None,
+        help="Planet radius in Earth radii [default: 1.0].")
+    parser.add_argument(
+        "--gravity", type=float, default=None,
+        help="Surface gravity in m/s^2 [default: 9.80616].")
+    parser.add_argument(
+        "--mean-depth", dest="mean_depth_m", type=float, default=None,
+        help="Mean (resting) fluid depth H in meters [default: 3000]. "
+             "The resting geopotential is Phi0 = gravity * H.")
+    parser.add_argument(
+        "--days", "--duration-days", dest="duration_days", type=float,
+        default=None,
+        help="Simulated duration in days [default: 1.0].")
+
+    snapshots = parser.add_mutually_exclusive_group()
+    snapshots.add_argument(
+        "--n-snapshots", type=int, metavar="N", default=None,
+        help="Store N spectral states evenly spaced over the duration "
+             "[default: 5]. Same semantics as run bve.")
+    snapshots.add_argument(
+        "--snapshot-interval-seconds", "--dt-snapshots",
+        dest="dt_snapshots", type=float, metavar="SECONDS", default=None,
+        help="Store a state every SECONDS of simulated time instead of a count.")
+
+    parser.add_argument(
+        "--scenario", choices=sorted(SWE_SCENARIOS), default=None,
+        help="Initial-condition scenario [default: williamson2].")
+    parser.add_argument(
+        "--no-plots", action="store_true", default=None,
+        help="Generate no image files (spectral snapshots and numerical "
+             "diagnostics are still written).")
+    parser.add_argument(
+        "--out", type=str, default=None,
+        help="Base directory for run outputs [default: runs].")
+    parser.add_argument(
+        "--experiment", type=str, default=None,
+        help="Optional grouping name; runs go to <out>/<experiment>/<run_id>/.")
+    parser.add_argument(
+        "--overwrite", action="store_true", default=None,
+        help="Reuse an existing run directory on a run-id collision.")
+
+
+_SWE_EXPLICIT_KEYS = (
+    "lmax", "grid", "resolution", "nlat", "nlon", "day_hours",
+    "radius_earth_units", "duration_days", "gravity", "mean_depth_m",
+    "scenario", "n_snapshots", "dt_snapshots", "no_plots", "out",
+    "experiment", "overwrite")
+
+
+def _cmd_run_swe(args: argparse.Namespace) -> int:
+    from planetary_sandbox.run.swe.config import SWERunConfig  # import-light
+
+    explicit = {k: getattr(args, k, None) for k in _SWE_EXPLICIT_KEYS}
+    try:
+        cfg = SWERunConfig.resolve(explicit)
+    except ValueError as err:
+        args._parser.error(str(err))
+    print("\n".join(cfg.summary_lines()))
+    # Heavy imports (CuPy, matplotlib) happen inside execute_run.
+    from planetary_sandbox.cli import swe as swe_module
+    return swe_module.execute_run(cfg)
+
+
+# ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
 
@@ -476,7 +579,8 @@ entry points for 'aeolus run bve', 'aeolus gen', and 'aeolus recompile'.
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="aeolus",
-        description="Aeolus - a spectral barotropic vorticity solver on the sphere.",
+        description="Aeolus - spectral dynamical cores on the sphere "
+                    "(barotropic vorticity and rotating shallow water).",
         epilog=_TOP_EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest="command", metavar="COMMAND")
@@ -484,8 +588,8 @@ def build_parser() -> argparse.ArgumentParser:
     # aeolus run <solver>
     run_parser = commands.add_parser(
         "run", help="Run a solver.",
-        description="Run a solver. Currently the barotropic vorticity "
-                    "equation (bve) is the only solver.")
+        description="Run a solver: the barotropic vorticity equation (bve) "
+                    "or the rotating shallow-water equations (swe).")
     solvers = run_parser.add_subparsers(dest="solver", metavar="SOLVER",
                                         required=True)
     bve_parser = solvers.add_parser(
@@ -495,6 +599,16 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     add_bve_arguments(bve_parser)
     bve_parser.set_defaults(_handler=_cmd_run_bve, _parser=bve_parser)
+
+    swe_parser = solvers.add_parser(
+        "swe", help="Rotating shallow-water equations.",
+        description="Run the rotating shallow-water equations on a planet "
+                    "(flat bottom, inviscid; prognostics: vorticity, "
+                    "divergence, perturbation geopotential).",
+        epilog=_SWE_EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_swe_arguments(swe_parser)
+    swe_parser.set_defaults(_handler=_cmd_run_swe, _parser=swe_parser)
 
     # aeolus list <topic>
     list_parser = commands.add_parser(

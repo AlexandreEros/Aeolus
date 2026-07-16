@@ -406,6 +406,14 @@ RUN_STATUS_COMPLETED = "completed"
 RUN_STATUS_FAILED = "failed"
 
 
+#: Historical manifest notes (the BVE defaults, kept when ``notes`` is None).
+_DEFAULT_MANIFEST_NOTES = {
+    "equations": "barotropic vorticity equation on a rotating sphere (see docs/MATHEMATICAL_MODEL.md)",
+    "timestep_policy": "state-adaptive advective CFL ceiling (0.5*cfl_length_scale/max|u|) recomputed from every accepted state; individual steps may be shortened to land exactly on output times and t_end; controls only the advective condition, not explicit-viscosity stability (docs/KNOWN_RISKS.md R-4)",
+    "diagnostics": "see diagnostics.py module docstring for definitions",
+}
+
+
 def write_run_manifest(
     out_dir: pathlib.Path,
     run_config: dict,
@@ -415,13 +423,16 @@ def write_run_manifest(
     numerics: Optional[dict] = None,
     status: str = RUN_STATUS_RUNNING,
     error: Optional[dict] = None,
+    notes: Optional[dict] = None,
 ) -> pathlib.Path:
     """Write a ``manifest.json`` capturing everything needed to reproduce.
 
     ``status`` records the run lifecycle: 'running' is written before
     execution, then 'completed' or 'failed' overwrites the file when the
     run finishes. ``error`` holds ``{type, message}`` for failed runs so
-    an operator can see at a glance why a capsule is incomplete.
+    an operator can see at a glance why a capsule is incomplete. ``notes``
+    replaces the descriptive notes block (None keeps the historical BVE
+    notes, preserving every existing call site).
     """
     versions = {"python": sys.version.split()[0]}
     for mod in ("numpy", "scipy", "cupy", "matplotlib"):
@@ -456,11 +467,7 @@ def write_run_manifest(
         },
         "versions": versions,
         "gpu": gpu,
-        "notes": {
-            "equations": "barotropic vorticity equation on a rotating sphere (see docs/MATHEMATICAL_MODEL.md)",
-            "timestep_policy": "state-adaptive advective CFL ceiling (0.5*cfl_length_scale/max|u|) recomputed from every accepted state; individual steps may be shortened to land exactly on output times and t_end; controls only the advective condition, not explicit-viscosity stability (docs/KNOWN_RISKS.md R-4)",
-            "diagnostics": "see diagnostics.py module docstring for definitions",
-        },
+        "notes": dict(_DEFAULT_MANIFEST_NOTES) if notes is None else dict(notes),
     }
     if error is not None:
         manifest["error"] = error
