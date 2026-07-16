@@ -37,7 +37,7 @@ from typing import Optional, Sequence
 
 from planetary_sandbox.cli import clear_cache, generate_planet
 from planetary_sandbox.run.bve.config import (  # import-light (stdlib only)
-    BASE_DEFAULTS, PLOT_TYPES, BVERunConfig)
+    BASE_DEFAULTS, DEFAULT_SNAPSHOT_INTERVAL_SECONDS, PLOT_TYPES, BVERunConfig)
 
 # ---------------------------------------------------------------------------
 # Choices and presets
@@ -216,8 +216,12 @@ def build_bve_parser(prog: str = "aeolus run bve",
 
     ``apply_defaults=True`` fills in the ordinary defaults directly on the
     parser (kept for the legacy ``planetary_sandbox.cli.bve.build_parser``
-    import surface). Snapshot and plot controls stay None either way —
-    their defaults are applied in configuration resolution.
+    import surface). To match the historical psx-bve parser surface exactly,
+    it also applies the legacy ``dt_snapshots`` default (21600 s) so that
+    ``build_parser().parse_args([]).dt_snapshots == 21600.0``; the plot
+    controls stay None. The canonical aeolus parser (``apply_defaults=False``)
+    leaves *all* snapshot controls None so count mode (N=5) remains the
+    resolved default — defaults are otherwise applied in config resolution.
     """
     parser = argparse.ArgumentParser(
         prog=prog,
@@ -226,7 +230,8 @@ def build_bve_parser(prog: str = "aeolus run bve",
         formatter_class=argparse.RawDescriptionHelpFormatter)
     add_bve_arguments(parser)
     if apply_defaults:
-        parser.set_defaults(**BASE_DEFAULTS)
+        parser.set_defaults(**BASE_DEFAULTS,
+                            dt_snapshots=DEFAULT_SNAPSHOT_INTERVAL_SECONDS)
     return parser
 
 

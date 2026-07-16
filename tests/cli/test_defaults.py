@@ -97,7 +97,20 @@ def test_legacy_build_parser_keeps_defaults():
     assert d["day_hours"] == float("inf")
     assert d["scenario"] == "two_vortices"
     assert d["n_snapshots"] is None
-    assert d["dt_snapshots"] is None
+    # The legacy default-applying parser surface restores the historical
+    # psx-bve dt_snapshots default (21600 s), matching the pre-aeolus parser
+    # byte-for-byte; the canonical aeolus parser leaves it None so count-mode
+    # N=5 remains the resolved default (asserted below).
+    assert d["dt_snapshots"] == DEFAULT_SNAPSHOT_INTERVAL_SECONDS == 21600.0
+
+
+def test_canonical_bve_parser_leaves_dt_snapshots_none():
+    """Canonical aeolus parser must NOT apply the legacy interval default."""
+    from planetary_sandbox.cli.main import build_bve_parser
+
+    args = build_bve_parser().parse_args([])
+    assert args.dt_snapshots is None
+    assert args.n_snapshots is None
 
 
 def test_legacy_build_parser_accepts_historical_flags():

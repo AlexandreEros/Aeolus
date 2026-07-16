@@ -68,6 +68,24 @@ Runner / Diagnostics
   The runner consumes the resolved explicit snapshot schedule and clips
   integration steps to land exactly on the requested output times.
 
+The runner selects its execution semantics from an explicit `snapshot_mode`
+passed at its boundary (never inferred from whether a schedule was supplied):
+
+- **Count mode** (`--n-snapshots`, canonical) consumes the authoritative
+  `snapshot_times` with **exact target-time** semantics. Every scheduled time,
+  including `t_end` for `N >= 1`, is landed on exactly by clipping the final
+  step and snapping off floating-point drift; a positive pre-target residual is
+  always integrated, never absorbed by a tolerance. So the stored snapshot
+  times and the final diagnostic time equal the requested targets exactly —
+  guaranteed even for deliberately non-aligned durations such as
+  `t_end = 600.0000003 s`.
+- **Interval mode** (`--snapshot-interval-seconds` / legacy `psx-bve`)
+  reproduces the historical countdown bit-for-bit: it stores `t = 0` and each
+  interval boundary, and stops within the legacy `1e-6 * dt_snapshots`
+  tolerance — so the final state is stored only when the duration is a multiple
+  of the interval. This historical stopping behavior is preserved intentionally
+  and is *not* replaced by the exact-`t_end` guarantee.
+
 The prognostic variable is relative vorticity, represented by complex
 spherical-harmonic coefficients for `m >= 0`:
 
@@ -200,8 +218,9 @@ scientific configuration (backend, dimensions, duration, viscosity,
 quadrature, snapshot schedule); purely locational fields (`out`,
 `experiment`, `overwrite`) and derived artifacts (`plots`) are excluded
 from the hash. Two runs that differ only in output location share a hash;
-two runs that differ scientifically do not, so wall-clock collisions in
-the same second do not silently coalesce distinct science. Figures embed
+two runs that differ scientifically are strongly disambiguated by it (the
+digest is 32-bit, so a same-second collision between distinct scientific
+configurations is very unlikely, not impossible). Figures embed
 run metadata; `--overwrite` reuses a directory but first removes known
 generated artifacts so a stale plot selection cannot survive alongside a
 new run configuration.

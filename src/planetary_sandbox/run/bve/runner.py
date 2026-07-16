@@ -3,13 +3,11 @@ from __future__ import annotations
 import numpy as np
 import cupy as cp
 import pathlib
-from collections import deque
-from typing import Optional, Sequence
+from typing import Sequence
 
 from planetary_sandbox.planet import Planet
 from .barotropic_vorticity import BarotropicVorticity, BarotropicState
-from .config import (PLOT_TYPES, interval_snapshot_times, scheduler_tolerance,
-                     validate_snapshot_schedule)
+from .config import (PLOT_TYPES, integration_plan, validate_snapshot_schedule)
 from .diagnostics import DiagnosticsRecorder, plot_diagnostics
 from ...viz.vorticity_viewer import VorticityViewer
 
@@ -33,29 +31,48 @@ def run_bve(planet: Planet,
             scenario: str = "two_vortices",
             figure_metadata: dict | None = None,
             snapshot_times: Sequence[float] | None = None,
-            plots: Sequence[str] | None = None) -> int:
+            plots: Sequence[str] | None = None,
+            snapshot_mode: str | None = None) -> int:
     """Integrate the BVE and persist snapshots, diagnostics, and figures.
 
-    ``snapshot_times`` is the authoritative output schedule (seconds). When
-    omitted, it is derived from ``dt_snapshots`` with the historical interval
-    semantics, so legacy callers are unaffected. Explicit schedules are
-    validated (finite, strictly increasing, in [0, t_end]) before any
-    integration begins. ``plots`` selects which image products to render
-    (subset of ``config.PLOT_TYPES``); None keeps the historical behavior
-    of rendering everything. Field-snapshot persistence and per-step
-    numerical diagnostics are independent of ``plots``.
+    ``snapshot_mode`` selects the execution semantics **explicitly** at the
+    runner boundary (the caller states which contract it wants; the runner
+    never infers the legacy path from ``snapshot_times is None``):
+
+    * ``"count"`` — the authoritative ``snapshot_times`` schedule is consumed
+      with **exact target-time** semantics: every scheduled time (including
+      ``t_end`` for N>=1) is landed on exactly, so the stored snapshot times
+      and the final diagnostic time equal the requested targets. Guaranteed
+      even for deliberately non-aligned durations.
+    * ``"interval"`` — historical interval-boundary semantics reconstructed
+      from ``dt_snapshots`` (stored at t=0 and each boundary; the final state
+      only when the duration is a multiple of the interval; legacy
+      ``1e-6 * dt_snapshots`` stopping tolerance). Preserved bit-for-bit.
+
+    When ``snapshot_mode`` is None it is inferred for backward compatibility
+    with direct callers (``"count"`` if an explicit ``snapshot_times`` is
+    given, else ``"interval"``); the installed ``execute_run`` always passes
+    it explicitly. ``plots`` selects which image products to render (subset
+    of ``config.PLOT_TYPES``); None renders everything. Field-snapshot
+    persistence and per-step numerical diagnostics are independent of
+    ``plots``.
     """
     state = BarotropicState(coeffs=zeta0_lm)
     model = BarotropicVorticity(planet, scenario=scenario, viscosity=viscosity)
 
     t_end = t_end_days * 86400.0
-    legacy_interval_mode = snapshot_times is None
-    if snapshot_times is None:
-        if dt_snapshots is None:
-            raise ValueError("provide snapshot_times or dt_snapshots")
-        snapshot_times = interval_snapshot_times(float(dt_snapshots), t_end)
-    else:
+    if snapshot_mode is None:
+        snapshot_mode = "interval" if snapshot_times is None else "count"
+    if snapshot_mode not in ("count", "interval"):
+        raise ValueError(f"unknown snapshot_mode: {snapshot_mode!r}")
+
+    if snapshot_mode == "count":
+        if snapshot_times is None:
+            raise ValueError("count mode requires an explicit snapshot_times schedule")
         snapshot_times = validate_snapshot_schedule(snapshot_times, t_end)
+    else:  # interval
+        if dt_snapshots is None:
+            raise ValueError("interval mode requires dt_snapshots")
     plots = tuple(PLOT_TYPES) if plots is None else tuple(plots)
 
     # CFL-based timestep from initial max speed and the geometry-owned
@@ -99,44 +116,35 @@ def run_bve(planet: Planet,
     vorticity_grid_snapshot_list: list[cp.ndarray] = []
     stored_times_hours: list[float] = []
 
-    # Two tolerances at play. The *matching* tolerance decides when the
-    # integrator is close enough to a scheduled output time to record it
-    # and step past it, and it is scale/gap-aware so short simulations
-    # and dense schedules aren't collapsed. The *end* tolerance decides
-    # when to stop; for legacy interval-mode invocations (snapshot_times
-    # derived from dt_snapshots) it is the historical 1e-6 * dt so the
-    # misaligned-final-state stopping behavior is preserved bit-for-bit.
-    match_tol = scheduler_tolerance(t_end, snapshot_times)
-    if legacy_interval_mode and dt_snapshots is not None:
-        end_tol = 1e-6 * float(dt_snapshots)
-    else:
-        end_tol = match_tol
+    # The step/store plan is fully determined by (t_end, schedule, dt_cfl,
+    # mode): dt_cfl is a fixed ceiling computed once above, so the entire
+    # sequence of accepted steps and stored snapshot times is physics-free
+    # and deterministic. Building it here (rather than inlining the loop)
+    # keeps the exact-target (count) and legacy-interval contracts in one
+    # CPU-testable seam that the runner merely replays. Each event is
+    # ('store', 0.0, time) or ('step', dt, t_after).
+    plan = integration_plan(
+        t_end, dt_cfl, mode=snapshot_mode,
+        snapshot_times=snapshot_times, dt_snapshots=dt_snapshots)
 
-    pending = deque(snapshot_times)
-
-    while True:
-        # Store every schedule entry the integrator has reached. Steps are
-        # clipped to land exactly on schedule times, so this matches exactly
-        # (the tolerance only absorbs float accumulation noise).
-        while pending and t >= pending[0] - match_tol:
-            pending.popleft()
+    for kind, dt_step, event_time in plan:
+        if kind == "store":
             all_zeta_lm.append(cp.copy(state.coeffs))
-            print(f"Time: {t/3600.0:8.2f} hrs | Step: {step} ")
-            stored_times_hours.append(t / 3600.0)
+            print(f"Time: {event_time/3600.0:8.2f} hrs | Step: {step} ")
+            # Record the scheduled time (exact target in count mode), not a
+            # drifted accumulator, so the stored snapshot time is authoritative.
+            stored_times_hours.append(event_time / 3600.0)
             # Dump ζ on grid for plotting
             zeta_grid = planet.sh.inv_transform(state.coeffs)
             vorticity_grid_snapshot_list.append(cp.copy(zeta_grid))
-
-        if t >= t_end - end_tol:
-            break
-        next_stop = pending[0] if pending else t_end
-        dt_step = min(dt_cfl, next_stop - t, t_end - t)
-        if dt_step <= 0:
-            break
-        state = rk4_step(model, state, t, dt_step)
-        t += dt_step
-        step += 1
-        recorder.record(t, state.coeffs, dt=dt_step, step=step)
+        else:  # step
+            state = rk4_step(model, state, t, dt_step)
+            # event_time is the planner's exact post-step time; in count mode
+            # a landing step snaps it to the target, so the final diagnostic
+            # time equals t_end exactly rather than a drifted value.
+            t = event_time
+            step += 1
+            recorder.record(t, state.coeffs, dt=dt_step, step=step)
 
     recorder.close()
 

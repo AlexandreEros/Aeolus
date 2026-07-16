@@ -21,16 +21,57 @@ Public API:
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
+import os
 import pathlib
 import subprocess
 import sys
 import traceback
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+
+from .config import scientific_config_subset
+
+
+class RunProvenanceError(RuntimeError):
+    """A run's provenance (manifest / pointer) could not be persisted.
+
+    Raised rather than swallowed so a run is never reported completed while
+    its status, manifest, or latest-run pointer failed to write durably.
+    """
+
+
+# ---------------------------------------------------------------------------
+# Atomic same-directory writes
+# ---------------------------------------------------------------------------
+
+def atomic_write_text(path: pathlib.Path | str, text: str) -> pathlib.Path:
+    """Write ``text`` to ``path`` atomically: temp sibling + os.replace().
+
+    Writes to a uniquely named temporary file in the *same directory* (so
+    ``os.replace`` is a same-filesystem atomic rename), flushes and fsyncs it,
+    then replaces the destination. A reader of ``path`` therefore always sees
+    either the old complete file or the new complete file, never a partial
+    write. The temporary file is removed if anything fails.
+    """
+    path = pathlib.Path(path)
+    tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -111,13 +152,15 @@ def _snapshot_tag(config: dict) -> str:
 def _config_hash(config: dict) -> str:
     """Short deterministic hash of a run's scientific configuration.
 
-    Purely locational/control values (``out``, ``experiment``,
-    ``overwrite``) and derived-artifact values (``plots``) are excluded so
-    two runs of the same science produce the same hash regardless of
-    output location or plot selection.
+    The scientific subset is selected by
+    :func:`config.scientific_config_subset` — the single shared source of the
+    exclusion set (``out``, ``experiment``, ``overwrite``, ``plots``) — so
+    two runs of the same science produce the same hash regardless of output
+    location or plot selection, and the exclusion logic is never duplicated.
+    The digest is 4 bytes (32 bits), so distinct scientific configurations
+    are strongly disambiguated but not collision-proof.
     """
-    scrubbed = {k: v for k, v in config.items()
-                if k not in ("out", "experiment", "overwrite", "plots")}
+    scrubbed = scientific_config_subset(config)
     blob = json.dumps(scrubbed, sort_keys=True, default=str).encode("utf-8")
     return hashlib.blake2b(blob, digest_size=4).hexdigest()
 
@@ -152,9 +195,11 @@ def make_run_id(
     # Legacy interval-mode runs preserve their historical run-id format
     # exactly (dtNh token, no scientific hash) so downstream tooling that
     # matched on the old shape keeps working. New count-mode / N=0-or-1
-    # runs get a 4-byte hash of the scientific config so distinct
+    # runs get a 4-byte (32-bit) hash of the scientific config so distinct
     # backends, dimensions, duration, viscosity, quadrature, or snapshot
-    # schedule do not collide at the same timestamp.
+    # schedule are strongly disambiguated at the same timestamp (a 32-bit
+    # digest makes an accidental same-second collision very unlikely, not
+    # impossible).
     if config.get("snapshot_mode") == "count":
         parts.append(_config_hash(config))
     if commit:
@@ -200,20 +245,57 @@ class RunDirectory:
             meta["Source"] = source
         return meta
 
+    def _pointer_path(self) -> pathlib.Path:
+        return self.base / "latest_run.txt"
+
+    def _pointer_content(self) -> str:
+        try:
+            return str(self.path.relative_to(self.base))
+        except ValueError:
+            return str(self.path)
+
     def update_latest_pointer(self) -> pathlib.Path:
         """Write/refresh ``{base}/latest_run.txt`` -> path of this run.
 
         The pointer is a plain text file (relative path if possible) so shell
-        scripts can do ``$(cat runs/latest_run.txt)``.
+        scripts can do ``$(cat runs/latest_run.txt)``. Written atomically so
+        a crashed publish never leaves a truncated pointer, and only ever
+        called after the run's status has been durably marked completed.
         """
-        pointer = self.base / "latest_run.txt"
-        try:
-            rel = self.path.relative_to(self.base)
-            content = str(rel)
-        except ValueError:
-            content = str(self.path)
-        pointer.write_text(content + "\n", encoding="utf-8")
+        pointer = self._pointer_path()
+        atomic_write_text(pointer, self._pointer_content() + "\n")
         return pointer
+
+    def clear_latest_pointer_if_matches(self) -> bool:
+        """Remove ``latest_run.txt`` iff it currently points at this run dir.
+
+        Called before an ``--overwrite`` run invalidates/replaces the
+        directory it is reusing: if the pointer references the directory
+        being reused, it is cleared *before* the manifest is replaced or the
+        status is set back to 'running', so a subsequent failure of the
+        overwritten run can never leave ``latest_run.txt`` pointing at an
+        incomplete capsule. Returns True if the pointer was cleared.
+        """
+        pointer = self._pointer_path()
+        if not pointer.exists():
+            return False
+        try:
+            content = pointer.read_text(encoding="utf-8").strip()
+        except OSError:
+            return False
+        if not content:
+            return False
+        pointed = pathlib.Path(content)
+        resolved = pointed if pointed.is_absolute() else self.base / pointed
+        try:
+            same = resolved.resolve() == self.path.resolve()
+        except OSError:
+            same = False
+        if same:
+            with contextlib.suppress(OSError):
+                pointer.unlink()
+            return True
+        return False
 
 
 def create_run_dir(
@@ -339,7 +421,7 @@ def write_run_manifest(
         manifest["error"] = error
 
     path = pathlib.Path(out_dir) / "manifest.json"
-    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(manifest, indent=2))
     return path
 
 
@@ -347,22 +429,39 @@ def update_manifest_status(out_dir: pathlib.Path, status: str,
                            error: Optional[dict] = None) -> None:
     """Rewrite an existing manifest.json's status and optional error block.
 
-    Preserves all other manifest fields (numerics, versions, git). No-op if
-    the manifest is missing or unreadable — the caller has already surfaced
-    the underlying error.
+    Preserves all other manifest fields (numerics, versions, git) and writes
+    atomically. Status persistence is **mandatory**: this raises
+    :class:`RunProvenanceError` if the manifest is missing, unreadable,
+    malformed, or cannot be written, so a run is never reported completed
+    while its status failed to persist durably. Callers that must not mask a
+    primary failure should catch this explicitly.
     """
     path = pathlib.Path(out_dir) / "manifest.json"
     try:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
+        raw = path.read_text(encoding="utf-8")
+    except OSError as err:
+        raise RunProvenanceError(
+            f"manifest.json missing or unreadable at {path}: {err}") from err
+    try:
+        manifest = json.loads(raw)
+    except json.JSONDecodeError as err:
+        raise RunProvenanceError(
+            f"manifest.json is malformed at {path}: {err}") from err
+    if not isinstance(manifest, dict):
+        raise RunProvenanceError(
+            f"manifest.json at {path} is not a JSON object "
+            f"(got {type(manifest).__name__})")
     manifest["status"] = status
     if error is not None:
         manifest["error"] = error
     elif status == RUN_STATUS_COMPLETED and "error" in manifest:
         del manifest["error"]
     manifest["updated_utc"] = datetime.now(timezone.utc).isoformat()
-    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    try:
+        atomic_write_text(path, json.dumps(manifest, indent=2))
+    except OSError as err:
+        raise RunProvenanceError(
+            f"could not write manifest.json at {path}: {err}") from err
 
 
 def failure_record(exc: BaseException) -> dict:

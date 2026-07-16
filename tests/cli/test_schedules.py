@@ -8,10 +8,155 @@ from planetary_sandbox.run.bve.config import (
     SECONDS_PER_DAY,
     BVERunConfig,
     count_snapshot_times,
+    integration_plan,
     interval_snapshot_times,
 )
 
 from .conftest import run_aeolus_stubbed
+
+
+# ---------------------------------------------------------------------------
+# integration_plan: the physics-free step/store seam the runner replays.
+# dt_cfl is a fixed ceiling, so the whole plan is deterministic on CPU.
+# ---------------------------------------------------------------------------
+
+def _plan_stores(plan):
+    return [t for kind, _dt, t in plan if kind == "store"]
+
+
+def _plan_final_time(plan):
+    steps = [t for kind, _dt, t in plan if kind == "step"]
+    return steps[-1] if steps else 0.0
+
+
+def _reference_interval_plan(t_end, dt_snapshots, dt_cfl):
+    """Verbatim transcription of main's runner bookkeeping (no physics).
+
+    Used to prove the installed legacy interval path reproduces the historical
+    accepted-step sequence and stopping tolerance bit-for-bit.
+    """
+    t = 0.0
+    snapshot_tol = 1e-6 * dt_snapshots
+    time_to_snapshot = 0.0
+    stores, steps = [], []
+    while t <= t_end + snapshot_tol:
+        if time_to_snapshot <= snapshot_tol:
+            stores.append(t)
+            time_to_snapshot = dt_snapshots
+        remaining = t_end - t
+        if remaining <= snapshot_tol:
+            break
+        dt_step = min(dt_cfl, time_to_snapshot, remaining)
+        if dt_step <= 0:
+            break
+        t += dt_step
+        time_to_snapshot = max(0.0, time_to_snapshot - dt_step)
+        steps.append(dt_step)
+    return stores, steps, t
+
+
+# A deliberately non-aligned duration: not a multiple of any snapshot spacing,
+# and with a sub-microsecond fractional part that a coarse tolerance would eat.
+_MISALIGNED_T_END = 600.0000003
+
+
+def test_count_n1_stores_final_state_at_exact_t_end():
+    plan = integration_plan(
+        _MISALIGNED_T_END, 250.0, mode="count",
+        snapshot_times=count_snapshot_times(1, _MISALIGNED_T_END))
+    assert _plan_stores(plan) == [_MISALIGNED_T_END]        # exact, not 600.0
+    assert _plan_final_time(plan) == _MISALIGNED_T_END      # diagnostics exact
+
+
+def test_count_n0_diagnostics_end_at_exact_t_end():
+    plan = integration_plan(
+        _MISALIGNED_T_END, 250.0, mode="count",
+        snapshot_times=count_snapshot_times(0, _MISALIGNED_T_END))
+    assert _plan_stores(plan) == []
+    assert _plan_final_time(plan) == _MISALIGNED_T_END
+
+
+def test_count_explicit_intermediate_not_stored_early():
+    """A sub-microsecond pre-target residual must be integrated, not eaten."""
+    residual = 1e-7
+    target = 300.0 + residual
+    schedule = [0.0, target, _MISALIGNED_T_END]
+    plan = integration_plan(
+        _MISALIGNED_T_END, 250.0, mode="count", snapshot_times=schedule)
+    stores = _plan_stores(plan)
+    assert stores == schedule                    # every target hit exactly
+    assert target in stores                       # not clamped to 300.0
+    assert _plan_final_time(plan) == _MISALIGNED_T_END
+
+
+def test_count_large_duration_no_early_termination():
+    """A huge valid duration must not grow a tolerance that ends the run early."""
+    t_end = 8.64e8  # 10,000 days in seconds
+    plan = integration_plan(
+        t_end, t_end, mode="count",  # single CFL step spanning the run
+        snapshot_times=count_snapshot_times(1, t_end))
+    assert _plan_stores(plan) == [t_end]
+    assert _plan_final_time(plan) == t_end
+
+
+def test_count_multistep_lands_on_targets_exactly():
+    t_end = _MISALIGNED_T_END
+    schedule = count_snapshot_times(4, t_end)  # [0, t/3, 2t/3, t]
+    plan = integration_plan(t_end, 71.0, mode="count", snapshot_times=schedule)
+    # Stored times equal the requested schedule exactly, and the diagnostics
+    # end exactly at t_end despite the odd CFL step and misaligned duration.
+    assert _plan_stores(plan) == schedule
+    assert _plan_final_time(plan) == t_end
+    # No zero-length steps.
+    assert all(dt > 0 for kind, dt, _ in plan if kind == "step")
+
+
+def test_count_never_treats_positive_residual_as_reached():
+    """Directly exercise the anti-early-stop contract at a tiny residual."""
+    t_end = 1000.0
+    # dt_cfl overshoots the target grossly; the planner must still land on it.
+    plan = integration_plan(
+        t_end, 999.9999, mode="count", snapshot_times=[t_end])
+    assert _plan_stores(plan) == [t_end]
+    assert _plan_final_time(plan) == t_end
+
+
+@pytest.mark.parametrize("t_end,dt,cfl", [
+    (86400.0, 21600.0, 600.0),        # aligned: final state stored
+    (1.1 * SECONDS_PER_DAY, 21600.0, 600.0),   # misaligned: final NOT stored
+    (0.02 * SECONDS_PER_DAY, 864.0, 137.0),    # quickstart-ish, odd cfl
+    (_MISALIGNED_T_END, 200.0, 250.0),         # sub-us misaligned
+    (5 * SECONDS_PER_DAY, 21600.0, 611.7),
+])
+def test_interval_plan_matches_main_bit_for_bit(t_end, dt, cfl):
+    plan = integration_plan(t_end, cfl, mode="interval", dt_snapshots=dt)
+    ref_stores, ref_steps, ref_final = _reference_interval_plan(t_end, dt, cfl)
+    assert _plan_stores(plan) == ref_stores
+    assert [d for kind, d, _ in plan if kind == "step"] == ref_steps
+    assert _plan_final_time(plan) == ref_final
+
+
+def test_interval_misaligned_omits_final_state():
+    """Legacy stopping tolerance: duration not a multiple => final state absent."""
+    t_end = 1.1 * SECONDS_PER_DAY
+    plan = integration_plan(t_end, 600.0, mode="interval", dt_snapshots=21600.0)
+    stores = _plan_stores(plan)
+    assert all(abs(s - t_end) > 1e-6 for s in stores)  # t_end not stored
+    # ...whereas count mode over the same duration ends exactly at t_end.
+    count_plan = integration_plan(
+        t_end, 600.0, mode="count",
+        snapshot_times=count_snapshot_times(5, t_end))
+    assert _plan_final_time(count_plan) == t_end
+
+
+def test_integration_plan_rejects_unknown_mode():
+    with pytest.raises(ValueError, match="unknown integration mode"):
+        integration_plan(100.0, 10.0, mode="bogus")
+
+
+def test_integration_plan_interval_requires_dt():
+    with pytest.raises(ValueError, match="interval mode requires dt_snapshots"):
+        integration_plan(100.0, 10.0, mode="interval")
 
 
 def test_snapshot_controls_parse_to_none():

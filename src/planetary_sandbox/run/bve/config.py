@@ -162,6 +162,146 @@ def count_snapshot_times(n_snapshots: int, t_end: float) -> list[float]:
     return times
 
 
+#: Config keys excluded from the run-id hash: purely locational/control
+#: values and derived artifacts. Single source of truth shared by
+#: :meth:`BVERunConfig.scientific_config_dict` and ``io._config_hash`` so the
+#: hash exclusion logic is never duplicated (and can never drift).
+HASH_EXCLUDED_KEYS: tuple[str, ...] = ("out", "experiment", "overwrite", "plots")
+
+
+def scientific_config_subset(config: Mapping) -> dict:
+    """Config subset that defines a run's *scientific* identity.
+
+    Drops purely locational/control values (``out``, ``experiment``,
+    ``overwrite``) and derived artifacts (``plots``) so two runs of the same
+    science hash identically regardless of output location or plot selection.
+    Shared by the config object and the run-id hash in ``io.py``.
+    """
+    return {k: v for k, v in dict(config).items() if k not in HASH_EXCLUDED_KEYS}
+
+
+def _landing_tol(value: float, t_end: float) -> float:
+    """Floating-point clamp tolerance for landing exactly on a target time.
+
+    Deliberately *only* a few ULPs wide: it absorbs 1-ULP overshoot and
+    values numerically indistinguishable from the target after stepping, but
+    is far below any real (positive) pre-target residual. This is what keeps
+    a sub-microsecond gap from being mistaken for "already reached" in count
+    mode (contrast with :func:`scheduler_tolerance`, a coarse scale-aware
+    matching tolerance retained only for legacy interval behavior).
+    """
+    return 4.0 * math.ulp(max(abs(value), abs(t_end), 1.0))
+
+
+def _plan_count(t_end: float, targets: Sequence[float],
+                dt_cfl: float) -> list[tuple]:
+    """Exact-target step/store plan for count (explicit) schedules.
+
+    ``dt_cfl`` is a fixed ceiling (computed once from the initial state), so
+    the whole step sequence is deterministic and physics-free — which is what
+    lets the exact-target contract be unit-tested on CPU.
+
+    Contract:
+
+    * A target with a *positive* residual (``target - t`` above float noise)
+      is never treated as reached; its residual is integrated, however small.
+    * Steps toward a target are clipped to land exactly on it; the resulting
+      ``t`` is snapped to the target to kill accumulated float drift, so the
+      stored snapshot time and the final diagnostic time equal the requested
+      target exactly.
+    * No zero-length steps, no infinite loops.
+
+    Each event is ``("store", 0.0, time)`` or ``("step", dt, t_after)``.
+    """
+    events: list[tuple] = []
+    t = 0.0
+    i = 0
+    n = len(targets)
+    while True:
+        # Store every target we have actually reached. After a landing step
+        # ``t`` equals the target exactly, so this fires with a zero residual;
+        # the tolerance only absorbs a stray 1-ULP overshoot.
+        while i < n:
+            target = float(targets[i])
+            if target - t > _landing_tol(target, t_end):
+                break  # positive residual beyond float noise: not yet reached
+            events.append(("store", 0.0, target))
+            i += 1
+        if i >= n and (t_end - t) <= _landing_tol(t_end, t_end):
+            break
+        next_stop = float(targets[i]) if i < n else t_end
+        gap = next_stop - t
+        if gap <= 0.0:
+            # Numerically indistinguishable from next_stop: jump exactly.
+            t = next_stop
+            continue
+        if dt_cfl < gap:
+            dt = dt_cfl
+            t_new = t + dt
+            if t_new <= t:  # step below ULP of t: clamp forward, never stall
+                dt = gap
+                t_new = next_stop
+            t = t_new
+        else:
+            dt = gap
+            t = next_stop  # exact clamp kills accumulated float drift
+        events.append(("step", dt, t))
+    return events
+
+
+def _plan_interval(t_end: float, dt_snapshots: float,
+                   dt_cfl: float) -> list[tuple]:
+    """Historical interval-mode step/store plan, preserved bit-for-bit.
+
+    Mirrors the original psx-bve countdown exactly: store at t=0 and every
+    interval boundary, decrement a ``time_to_snapshot`` countdown, and stop
+    once the remaining time falls within ``1e-6 * dt_snapshots``. The final
+    state is stored only when the duration is a multiple of the interval —
+    the intentional legacy stopping behavior. Stored times are the actual
+    accumulated ``t`` values (with their historical float drift).
+    """
+    events: list[tuple] = []
+    t = 0.0
+    snapshot_tol = 1e-6 * dt_snapshots
+    time_to_snapshot = 0.0
+    while t <= t_end + snapshot_tol:
+        if time_to_snapshot <= snapshot_tol:
+            events.append(("store", 0.0, t))
+            time_to_snapshot = dt_snapshots
+        remaining = t_end - t
+        if remaining <= snapshot_tol:
+            break
+        dt_step = min(dt_cfl, time_to_snapshot, remaining)
+        if dt_step <= 0:
+            break
+        t += dt_step
+        time_to_snapshot = max(0.0, time_to_snapshot - dt_step)
+        events.append(("step", dt_step, t))
+    return events
+
+
+def integration_plan(t_end: float, dt_cfl: float, *, mode: str,
+                     snapshot_times: Optional[Sequence[float]] = None,
+                     dt_snapshots: Optional[float] = None) -> list[tuple]:
+    """Deterministic step/store plan the runner executes.
+
+    ``mode`` is explicit ("count" or "interval") — the runner never infers
+    the legacy path from ``snapshot_times is None``. Count mode consumes the
+    authoritative ``snapshot_times`` with exact target-time semantics;
+    interval mode reconstructs the historical schedule from ``dt_snapshots``
+    with the legacy stopping tolerance.
+    """
+    if dt_cfl <= 0 or not math.isfinite(dt_cfl):
+        raise ValueError(f"dt_cfl must be finite and positive, got {dt_cfl}")
+    if mode == "count":
+        return _plan_count(t_end, list(snapshot_times or []), dt_cfl)
+    if mode == "interval":
+        if dt_snapshots is None:
+            raise ValueError("interval mode requires dt_snapshots")
+        return _plan_interval(t_end, float(dt_snapshots), dt_cfl)
+    raise ValueError(f"unknown integration mode: {mode!r}")
+
+
 def scheduler_tolerance(t_end: float, times: Sequence[float]) -> float:
     """Scale/gap-aware tolerance for matching schedule entries at runtime.
 
@@ -462,11 +602,11 @@ class BVERunConfig:
         gets the same hash regardless of where it is written or whether
         it is being re-run. Plot selection also stays out — figures are
         derived artifacts, not part of the scientific state.
+
+        Delegates to :func:`scientific_config_subset` so the exclusion set is
+        defined once and shared with the run-id hash in ``io.py``.
         """
-        d = self.to_run_config_dict()
-        for key in ("out", "experiment", "overwrite", "plots"):
-            d.pop(key, None)
-        return d
+        return scientific_config_subset(self.to_run_config_dict())
 
     def to_run_config_dict(self) -> dict:
         """Config dict for make_run_id, config.json, and manifest.json.
