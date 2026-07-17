@@ -71,19 +71,30 @@ def run_swe(model: ShallowWaterModel,
                                     initial_row["max_char_speed_ms"])
 
     step = 0
-    snapshots: list[cp.ndarray] = []
+    snapshots: list[np.ndarray] = []
     stored_times: list[float] = []
 
     def on_store(event_time: float) -> None:
-        snapshots.append(cp.copy(state.coeffs))
+        # Transfer to host immediately: stacking many separate device arrays
+        # at the end of the run (cp.stack) hits a pathologically slow CuPy
+        # path on small GPUs, stalling final persistence for minutes.
+        snapshots.append(cp.asnumpy(state.coeffs))
         stored_times.append(event_time)
         print(f"Time: {event_time/3600.0:8.2f} hrs | Step: {step} ")
+
+    def validate_stage(y_stage: cp.ndarray) -> None:
+        # RK4 intermediate stages must be physically valid too: an invalid
+        # stage would otherwise feed the next tendency and could launder
+        # itself back into an apparently valid accepted state.
+        model.validate_state(ShallowWaterState(y_stage),
+                             context=f"in an RK4 stage after step {step}")
 
     def on_step(t_before: float, t_after: float, dt_step: float,
                 step_index: int) -> float:
         nonlocal state, step
         state = ShallowWaterState(
-            rk4_step_array(model.tendency, state.coeffs, t_before, dt_step))
+            rk4_step_array(model.tendency, state.coeffs, t_before, dt_step,
+                           stage_validator=validate_stage))
         step = step_index
         # Hard validation after every accepted step: NaN/Inf, monopole
         # conservation, and positive fluid depth fail loudly, not silently.
@@ -102,7 +113,7 @@ def run_swe(model: ShallowWaterModel,
         recorder.close()
 
     if snapshots:
-        coeffs_stack = cp.asnumpy(cp.stack(snapshots))
+        coeffs_stack = np.stack(snapshots)
     else:
         coeffs_stack = np.empty((0, *state.coeffs.shape),
                                 dtype=state.coeffs.dtype)

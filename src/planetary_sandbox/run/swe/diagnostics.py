@@ -5,14 +5,21 @@ written during the run, straight from the dynamical state) is decoupled from
 plotting (which reads the CSV afterwards). Definitions:
 
 * ``max_wind_ms``        max |u| over the state grid (m/s)
-* ``max_char_speed_ms``  max(|u| + sqrt(Phi0 + phi)) — the model's
+* ``max_char_speed_ms``  max|u| + sqrt(max(Phi0 + phi)) with the total-
+                         geopotential maximum taken over every model
+                         sampling (state and product grids) — the model's
                          characteristic speed; this (not sqrt(phi)) drives
                          the adaptive CFL ceiling
 * ``cfl``                max_char_speed * dt / cfl_length_scale
-* ``phi_total_min/max``  extrema of the total geopotential Phi0 + phi
+* ``phi_total_min/max``  extrema of the total geopotential Phi0 + phi over
+                         every model sampling (state and product grids)
 * ``total_mass``         integral of (Phi0 + phi) dA — proportional to layer
-                         mass (rho/g factor omitted); conserved exactly
-                         because the phi monopole is pinned
+                         mass (rho/g factor omitted); computed SPECTRALLY as
+                         R^2*(4*pi*Phi0 + sqrt(4*pi)*Re(phi_00)) so the
+                         reported value reflects the conserved quantity
+                         itself (a grid quadrature on the geodesic backend
+                         would leak higher modes into the integral and show
+                         spurious drift)
 * ``total_energy``       integral of [Phi*|u|^2/2 + Phi^2/2] dA with
                          Phi = Phi0 + phi (g factor omitted) — the shallow-
                          water total energy, monitored for drift
@@ -84,12 +91,22 @@ class SWEDiagnosticsRecorder:
         w = self._area_weights
 
         max_wind = float(fields["wind_speed"].max())
-        max_char = float(fields["char_speed"].max())
+        phi_min, phi_max = fields["phi_total_extrema"]
+        # Same envelope/definition as the model's CFL estimate: max wind plus
+        # the gravity-wave speed of the total-geopotential maximum over every
+        # model sampling (state and product grids).
+        max_char = max_wind + float(np.sqrt(max(phi_max, 0.0)))
         cfl = (max_char * dt / self.length_scale
                if (self.length_scale and dt > 0) else np.nan)
 
         kinetic = 0.5 * phi_total * (fields["u"] ** 2 + fields["v"] ** 2)
         potential = 0.5 * phi_total**2
+
+        # Spectral mass: the conserved quantity itself, exact by monopole
+        # pinning (see module docstring).
+        total_mass = self.R**2 * (
+            4.0 * np.pi * self.model.phi0
+            + np.sqrt(4.0 * np.pi) * float(state.coeffs[2][0, 0].real))
 
         row = {
             "time_s": t,
@@ -98,9 +115,9 @@ class SWEDiagnosticsRecorder:
             "max_wind_ms": max_wind,
             "max_char_speed_ms": max_char,
             "cfl": cfl,
-            "phi_total_min": float(phi_total.min()),
-            "phi_total_max": float(phi_total.max()),
-            "total_mass": float(cp.sum(w * phi_total)),
+            "phi_total_min": phi_min,
+            "phi_total_max": phi_max,
+            "total_mass": total_mass,
             "total_energy": float(cp.sum(w * (kinetic + potential))),
             "zeta_l2": _l2_norm(state.coeffs[0], self.R),
             "delta_l2": _l2_norm(state.coeffs[1], self.R),

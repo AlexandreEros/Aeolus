@@ -192,15 +192,17 @@ def make_run_id(
         f"l{int(config['lmax'])}",
         _snapshot_tag(config),
     ]
-    # Legacy interval-mode runs preserve their historical run-id format
+    # Legacy interval-mode BVE runs preserve their historical run-id format
     # exactly (dtNh token, no scientific hash) so downstream tooling that
-    # matched on the old shape keeps working. New count-mode / N=0-or-1
-    # runs get a 4-byte (32-bit) hash of the scientific config so distinct
-    # backends, dimensions, duration, viscosity, quadrature, or snapshot
-    # schedule are strongly disambiguated at the same timestamp (a 32-bit
-    # digest makes an accidental same-second collision very unlikely, not
-    # impossible).
-    if config.get("snapshot_mode") == "count":
+    # matched on the old shape keeps working. Everything else — count-mode /
+    # N=0-or-1 runs, and EVERY run of a non-BVE solver (the hashless token
+    # set omits gravity, mean depth, backend dimensions, duration, ...) —
+    # gets a 4-byte (32-bit) hash of the scientific config so distinct
+    # configurations are strongly disambiguated at the same timestamp (a
+    # 32-bit digest makes an accidental same-second collision very
+    # unlikely, not impossible).
+    if (config.get("snapshot_mode") == "count"
+            or config.get("solver", "bve") != "bve"):
         parts.append(_config_hash(config))
     if commit:
         parts.append(_sanitize(commit))

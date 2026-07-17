@@ -109,10 +109,19 @@ After every accepted step the state is validated; violations raise
 
 - any NaN/Inf coefficient;
 - a nonzero ζ, δ, or φ monopole (relative tolerance 1e−10);
-- non-positive total geopotential `min(Φ₀ + φ) ≤ 0` (collapsed fluid depth).
+- non-positive total geopotential `min(Φ₀ + φ) ≤ 0` (collapsed fluid depth),
+  where the minimum is taken over **every sampling the model evaluates on**
+  — the state grid *and* the product grid, since a high-degree φ mode can be
+  positive at every state point yet negative where the nonlinear products
+  are actually formed.
 
-Floating-point time stagnation (a CFL step too small to advance the clock)
-raises `FloatingPointError` from the shared scheduler.
+The runner also validates the **RK4 intermediate stages** (`y + Δt/2·k₁`,
+`y + Δt/2·k₂`, `y + Δt·k₃`) before evaluating their tendencies, so a stage
+that passes through an invalid region (e.g. negative depth at a too-large
+timestep) fails explicitly instead of laundering itself back into an
+apparently valid accepted state. Floating-point time stagnation (a CFL step
+too small to advance the clock) raises `FloatingPointError` from the shared
+scheduler.
 
 ## Adaptive timestep (CFL)
 
@@ -122,11 +131,13 @@ geometry-owned length scale `L`); only the characteristic-speed estimate is
 model-specific. The shallow-water model supplies
 
 ```
-s_max = max( |u| + sqrt(Φ₀ + φ) )
+s_max = max|u| + sqrt( max(Φ₀ + φ) )
 ```
 
 — the advective speed plus the **total-geopotential** gravity-wave speed
-(never `sqrt(φ)` of the perturbation). The ceiling is recomputed from every
+(never `sqrt(φ)` of the perturbation), with the geopotential maximum taken
+over the same state+product-grid envelope the validator checks (the
+sum-of-maxima form is conservative). The ceiling is recomputed from every
 accepted state, exactly as for the BVE.
 
 ## Initial conditions
@@ -164,9 +175,11 @@ runs (`config.json`, `manifest.json` with status lifecycle,
 ## Diagnostics
 
 Per accepted step (`diagnostics/timeseries.csv`): time, dt, step, max wind
-speed, max characteristic speed, CFL number, min/max total geopotential,
-total mass `∮(Φ₀+φ) dA`, total energy `∮[Φ|u|²/2 + Φ²/2] dA`, and spectral
-L2 norms of ζ, δ, φ.
+speed, max characteristic speed, CFL number, min/max total geopotential
+(over the state+product-grid envelope), total mass `∮(Φ₀+φ) dA` (computed
+**spectrally** as `a²[4πΦ₀ + √(4π)·Re φ₀₀]`, i.e. the conserved quantity
+itself, exact by monopole pinning), total energy `∮[Φ|u|²/2 + Φ²/2] dA`
+(grid quadrature), and spectral L2 norms of ζ, δ, φ.
 
 ## Verification status (tests)
 

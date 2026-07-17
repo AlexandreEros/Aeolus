@@ -321,31 +321,58 @@ class ShallowWaterModel:
     # CFL characteristic speed
     # ------------------------------------------------------------------
 
+    def total_geopotential_extrema(self, state: ShallowWaterState
+                                   ) -> tuple[float, float]:
+        """(min, max) of Phi0 + phi over EVERY sampling the model evaluates on.
+
+        The tendencies form nonlinear products on the (finer) product grid,
+        so positivity on the coarser state grid alone is not sufficient: a
+        high-degree phi mode can be positive at every state point yet dip
+        negative at product points. The envelope therefore scans both the
+        state transform and the product-space transform (which coincide in
+        'coarse' product mode).
+        """
+        phi_c = state.coeffs[PHI]
+        samplings = [self.sh]
+        if self._ps.sh is not self.sh:
+            samplings.append(self._ps.sh)
+        lo = math.inf
+        hi = -math.inf
+        for sh in samplings:
+            g = sh.inv_transform(phi_c).real
+            lo = min(lo, float(g.min()))
+            hi = max(hi, float(g.max()))
+        return self.phi0 + lo, self.phi0 + hi
+
     def characteristic_fields(self, state: ShallowWaterState) -> dict:
         """State-grid fields shared by the CFL estimate and diagnostics.
 
-        Returns u, v (m/s), wind speed, total geopotential Phi0 + phi
-        (m^2/s^2), and the characteristic speed |u| + sqrt(Phi0 + phi) used
-        by the advective+gravity-wave CFL condition. The square root is
-        evaluated on the clamped total geopotential purely to keep the
-        estimate NaN-free; a genuinely non-positive total geopotential is a
-        hard failure raised by validate_state().
+        Returns u, v (m/s), wind speed, the state-grid total geopotential
+        Phi0 + phi (m^2/s^2, used for the energy quadrature), and the
+        total-geopotential extrema over every model sampling
+        (``phi_total_extrema``, see :meth:`total_geopotential_extrema`).
         """
         u, v = self.wind_on_state_grid(state)
         wind = cp.sqrt(u * u + v * v)
         phi_total = self.phi0 + self.sh.inv_transform(state.coeffs[PHI]).real
-        char_speed = wind + cp.sqrt(cp.maximum(phi_total, 0.0))
-        return {"u": u, "v": v, "wind_speed": wind,
-                "phi_total": phi_total, "char_speed": char_speed}
+        return {"u": u, "v": v, "wind_speed": wind, "phi_total": phi_total,
+                "phi_total_extrema": self.total_geopotential_extrema(state)}
 
     def max_characteristic_speed(self, state: ShallowWaterState) -> float:
-        """max(|u| + sqrt(Phi0 + phi)) over the state grid (m/s).
+        """max|u| + sqrt(max(Phi0 + phi)) over all model samplings (m/s).
 
         This — not sqrt(phi) of the perturbation — is the model's
         characteristic-speed estimate handed to the model-independent
         adaptive-timestep controller (run.engine.advective_cfl_timestep).
+        The gravity-wave term uses the total-geopotential maximum over the
+        state AND product samplings (the same envelope validate_state
+        checks), and the sum-of-maxima form is conservative. The maximum is
+        clamped at zero purely to keep the estimate NaN-free; a non-positive
+        total geopotential is a hard failure raised by validate_state().
         """
-        return float(cp.max(self.characteristic_fields(state)["char_speed"]))
+        fields = self.characteristic_fields(state)
+        _, phi_max = fields["phi_total_extrema"]
+        return float(fields["wind_speed"].max()) + math.sqrt(max(phi_max, 0.0))
 
     # ------------------------------------------------------------------
     # Validation
@@ -362,8 +389,10 @@ class ShallowWaterModel:
         Checks, in order: finiteness of every coefficient (NaN/Inf), the
         three conserved monopoles (zeta, delta, phi must have zero global
         mean), and strict positivity of the total geopotential
-        ``Phi0 + phi`` (equivalently, positive fluid depth). Floating-point
-        time stagnation is detected independently by the integration engine
+        ``Phi0 + phi`` (equivalently, positive fluid depth) over EVERY
+        sampling the model evaluates on — the state grid and the product
+        grid (see :meth:`total_geopotential_extrema`). Floating-point time
+        stagnation is detected independently by the integration engine
         (FloatingPointError from the scheduler).
         """
         where = f" {context}" if context else ""
@@ -384,10 +413,10 @@ class ShallowWaterModel:
                     + (" (the mean geopotential is represented by Phi0, not "
                        "the prognostic phi)" if name == "phi" else ""))
 
-        phi_total_min = self.phi0 + float(
-            cp.min(self.sh.inv_transform(coeffs[PHI]).real))
+        phi_total_min, _ = self.total_geopotential_extrema(state)
         if not (phi_total_min > 0.0):
             raise ShallowWaterStateError(
                 f"total geopotential is not strictly positive{where}: "
-                f"min(Phi0 + phi) = {phi_total_min:g} m^2/s^2 "
-                f"(Phi0 = {self.phi0:g}); the fluid depth has collapsed")
+                f"min(Phi0 + phi) = {phi_total_min:g} m^2/s^2 over the "
+                f"state/product samplings (Phi0 = {self.phi0:g}); the fluid "
+                "depth has collapsed")

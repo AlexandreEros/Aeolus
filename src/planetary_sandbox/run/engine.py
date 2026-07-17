@@ -403,16 +403,29 @@ def integrate(scheduler: IntegrationScheduler, dt_cfl: float,
     return t, step
 
 
-def rk4_step_array(tendency, y, t: float, dt: float):
+def rk4_step_array(tendency, y, t: float, dt: float, *,
+                   stage_validator=None):
     """Classical RK4 step for a state stored as one array of coefficients.
 
     ``tendency(y)`` must return an array of the same shape. Used by the
     shallow-water core (state = stacked (3, l_max+1, l_max+1) coefficients);
     the BVE keeps its historical ``rk4_step`` in ``run/bve/runner.py`` so its
     numerics are guaranteed byte-identical.
+
+    ``stage_validator(y_stage)``, when given, is called on each INTERMEDIATE
+    stage state (y + dt/2*k1, y + dt/2*k2, y + dt*k3) before its tendency is
+    evaluated, and should raise on a physically invalid state. Without it, a
+    stage can pass through an invalid region (e.g. negative fluid depth) and
+    still return an apparently valid final state — the failure must be
+    explicit, not laundered through the final linear combination.
     """
+    def _stage(y_stage):
+        if stage_validator is not None:
+            stage_validator(y_stage)
+        return y_stage
+
     k1 = tendency(y)
-    k2 = tendency(y + 0.5 * dt * k1)
-    k3 = tendency(y + 0.5 * dt * k2)
-    k4 = tendency(y + dt * k3)
+    k2 = tendency(_stage(y + 0.5 * dt * k1))
+    k3 = tendency(_stage(y + 0.5 * dt * k2))
+    k4 = tendency(_stage(y + dt * k3))
     return y + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)

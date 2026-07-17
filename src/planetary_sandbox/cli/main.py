@@ -386,9 +386,13 @@ def _cmd_list_presets(args: argparse.Namespace) -> int:
 
 
 def _cmd_list_scenarios(args: argparse.Namespace) -> int:
-    width = max(len(name) for name in SCENARIOS)
-    for name in sorted(SCENARIOS):
-        print(f"{name:<{width}}  {SCENARIOS[name]}")
+    from planetary_sandbox.run.swe.config import SWE_SCENARIOS  # import-light
+
+    for title, catalog in (("bve", SCENARIOS), ("swe", SWE_SCENARIOS)):
+        print(f"{title} scenarios:")
+        width = max(len(name) for name in catalog)
+        for name in sorted(catalog):
+            print(f"  {name:<{width}}  {catalog[name]}")
     return 0
 
 

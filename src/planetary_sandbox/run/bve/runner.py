@@ -111,14 +111,17 @@ def run_bve(planet: Planet,
     stored_times_hours: list[float] = []
 
     def on_store(event_time: float) -> None:
-        all_zeta_lm.append(cp.copy(state.coeffs))
+        # Transfer to host immediately: stacking many separate device arrays
+        # at the end of the run (cp.stack) hits a pathologically slow CuPy
+        # path on small GPUs, stalling final persistence for minutes.
+        all_zeta_lm.append(cp.asnumpy(state.coeffs))
         print(f"Time: {event_time/3600.0:8.2f} hrs | Step: {step} ")
         # Record the scheduled time (exact target in count mode), not a drifted
         # accumulator, so the stored snapshot time is authoritative.
         stored_times_hours.append(event_time / 3600.0)
         # Dump ζ on grid for plotting.
         zeta_grid = planet.sh.inv_transform(state.coeffs)
-        vorticity_grid_snapshot_list.append(cp.copy(zeta_grid))
+        vorticity_grid_snapshot_list.append(cp.asnumpy(zeta_grid))
 
     def on_step(t_before: float, t_after: float, dt_step: float,
                 step_index: int) -> float:
@@ -153,8 +156,8 @@ def run_bve(planet: Planet,
     # (leading time axis, matching per-snapshot shape and dtype) so a
     # downstream `np.load(...)[i]` continues to work.
     if all_zeta_lm:
-        coeffs_stack = cp.asnumpy(cp.stack(all_zeta_lm))
-        grid_stack = cp.asnumpy(cp.stack(vorticity_grid_snapshot_list))
+        coeffs_stack = np.stack(all_zeta_lm)
+        grid_stack = np.stack(vorticity_grid_snapshot_list)
     else:
         coeffs_stack = _empty_coeffs_stack(zeta0_lm)
         grid_stack = _empty_grid_stack(zeta_initial_grid)

@@ -93,6 +93,33 @@ def test_swe_cli_help_and_parse_errors(capsys):
     assert exc.value.code == 2
 
 
+def test_swe_interval_run_ids_disambiguate_physics():
+    """Audit finding 4: interval-mode SWE runs must not share the hashless
+    legacy BVE id format — configs differing only in physics (e.g. gravity)
+    must get distinct ids."""
+    from datetime import datetime, timezone
+    from planetary_sandbox.run.bve.io import make_run_id
+    from planetary_sandbox.run.swe.config import SWERunConfig
+
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ids = []
+    for gravity in (9.80616, 3.71):
+        cfg = SWERunConfig.resolve({"gravity": gravity,
+                                    "dt_snapshots": 3600.0})
+        assert cfg.snapshot_mode == "interval"
+        ids.append(make_run_id(cfg.to_run_config_dict(), now=now,
+                               commit="deadbeef"))
+    assert ids[0] != ids[1]
+
+    # The legacy BVE interval id format is preserved exactly (no hash token).
+    bve_interval = {"scenario": "rh4", "day_hours": 24.0, "resolution": 4,
+                    "lmax": 21, "dt_snapshots": 21600.0,
+                    "snapshot_mode": "interval"}
+    parts = make_run_id(bve_interval, now=now, commit="deadbeef").split("_")
+    assert parts == ["20260101T000000Z", "rh4", "rot24h", "r4", "l21",
+                     "dt6h", "deadbeef"]
+
+
 # ---------------------------------------------------------------------------
 # Runner integration (GPU)
 # ---------------------------------------------------------------------------
@@ -112,8 +139,11 @@ def test_swe_runner_end_to_end(tmp_path):
     model = ShallowWaterModel(planet, mean_depth=2500.0)
     state0 = make_swe_ic("williamson2", model)
 
+    # N=11 deliberately: >10 stored states previously stalled final
+    # persistence for minutes via cp.stack on small GPUs (audit finding 3);
+    # snapshots are now transferred to host individually.
     t_end_days = 0.02
-    schedule = count_snapshot_times(3, t_end_days * 86400.0)
+    schedule = count_snapshot_times(11, t_end_days * 86400.0)
     rc = run_swe(model=model, state0=state0, dt_snapshots=None,
                  t_end_days=t_end_days, out_dir=tmp_path,
                  snapshot_times=schedule, plots=(), snapshot_mode="count")
@@ -121,7 +151,7 @@ def test_swe_runner_end_to_end(tmp_path):
 
     coeffs = np.load(tmp_path / "swe_coeffs.npy")
     times = np.load(tmp_path / "swe_snapshot_times.npy")
-    assert coeffs.shape == (3, 3, 8, 8)
+    assert coeffs.shape == (11, 3, 8, 8)
     assert np.isfinite(coeffs).all()
     assert times.tolist() == schedule
     assert not list(tmp_path.glob("*.png")) and not (tmp_path / "figures").exists()
@@ -139,6 +169,37 @@ def test_swe_runner_end_to_end(tmp_path):
     # so it must exceed sqrt(Phi0)*0.9 even though the wind is ~40 m/s.
     assert float(rows[0]["max_char_speed_ms"]) > 0.9 * math.sqrt(model.phi0)
     assert float(rows[0]["phi_total_min"]) > 0.0
+
+
+@pytest.mark.skipif(not _has_cuda(), reason="CUDA/CuPy not available")
+def test_swe_geodesic_mass_diagnostic_exactly_conserved(tmp_path):
+    """Audit finding 5: total_mass is the spectrally computed conserved
+    quantity, so it must be exactly constant even on the geodesic backend
+    (whose grid quadrature would show spurious ~1e-7 drift)."""
+    from planetary_sandbox.planet import Planet, PlanetaryParameters
+    from planetary_sandbox.physics.shallow_water import ShallowWaterModel
+    from planetary_sandbox.run.engine import count_snapshot_times
+    from planetary_sandbox.run.swe.initial_conditions import make_swe_ic
+    from planetary_sandbox.run.swe.runner import run_swe
+
+    planet = Planet.generate(
+        params=PlanetaryParameters.from_earth_like(day_hours=23.9345),
+        grid_type="geodesic", grid_resolution=3, l_max=10)
+    model = ShallowWaterModel(planet, mean_depth=2500.0)
+    state0 = make_swe_ic("williamson2", model)
+
+    t_end_days = 0.01
+    rc = run_swe(model=model, state0=state0, dt_snapshots=None,
+                 t_end_days=t_end_days, out_dir=tmp_path,
+                 snapshot_times=count_snapshot_times(2, t_end_days * 86400.0),
+                 plots=(), snapshot_mode="count")
+    assert rc == 0
+    with open(tmp_path / "diagnostics" / "timeseries.csv", newline="",
+              encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len(rows) >= 2
+    masses = {r["total_mass"] for r in rows}
+    assert len(masses) == 1  # bit-identical CSV values, not merely close
 
 
 @pytest.mark.skipif(not _has_cuda(), reason="CUDA/CuPy not available")

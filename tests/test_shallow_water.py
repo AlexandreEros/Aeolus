@@ -385,6 +385,88 @@ def test_validate_state_rejects_negative_fluid_depth(latlon_planet):
         model.validate_state(state)
 
 
+def test_validate_state_checks_positivity_on_product_sampling():
+    """Audit finding 1: depth can collapse on the (finer) product grid while
+    every state-grid point stays positive; validation must scan both."""
+    import cupy as cp
+    from planetary_sandbox.physics.shallow_water import (
+        ShallowWaterModel, ShallowWaterState, ShallowWaterStateError)
+
+    planet = _make_planet(grid_type="geodesic", resolution=3, l_max=10)
+    model = ShallowWaterModel(planet, mean_depth=1000.0)
+    fine_sh = planet.so.product_sh
+    assert fine_sh is not None and fine_sh is not planet.sh
+
+    # Find a high-degree mode whose minimum is sampled noticeably deeper on
+    # the fine product grid than on the coarse state grid.
+    l_max = planet.sh.l_max
+    best = None
+    for l, m in [(10, 1), (10, 2), (9, 1), (9, 2), (10, 3)]:
+        mode = cp.zeros((l_max + 1, l_max + 1), dtype=cp.complex128)
+        mode[l, m] = 1.0
+        min_state = float(planet.sh.inv_transform(mode).real.min())
+        min_prod = float(fine_sh.inv_transform(mode).real.min())
+        ratio = min_prod / min_state  # both negative; > 1 means deeper on fine
+        if best is None or ratio > best[0]:
+            best = (ratio, l, m, min_state, min_prod)
+    ratio, l, m, min_state, min_prod = best
+    assert ratio > 1.02, (
+        f"no mode found with a deeper product-grid minimum (best {best})")
+
+    # Amplitude between the two collapse thresholds: positive everywhere on
+    # the state grid, negative somewhere on the product grid.
+    amp = model.phi0 / (0.5 * (abs(min_state) + abs(min_prod)))
+    state = ShallowWaterState.zeros(l_max)
+    state.coeffs[2, l, m] = amp
+    assert model.phi0 + amp * min_state > 0.0   # state grid alone looks fine
+    assert model.phi0 + amp * min_prod < 0.0    # but the products see collapse
+
+    with pytest.raises(ShallowWaterStateError, match="strictly positive"):
+        model.validate_state(state)
+
+    # The extrema helper reports the envelope the validator (and the CFL
+    # characteristic speed) use.
+    lo, hi = model.total_geopotential_extrema(state)
+    assert lo < 0.0 < hi
+
+
+def test_rk4_stage_validation_catches_transient_depth_collapse(
+        nonrotating_planet):
+    """Audit finding 2: a too-large gravity-wave step drives intermediate RK4
+    stages through negative depth while the accepted state looks valid; the
+    stage validator must fail explicitly."""
+    import cupy as cp
+    from planetary_sandbox.physics.shallow_water import (
+        ShallowWaterModel, ShallowWaterState, ShallowWaterStateError)
+    from planetary_sandbox.run.engine import rk4_step_array
+
+    planet = nonrotating_planet
+    model = ShallowWaterModel(planet, mean_depth=1000.0)
+    l, m = 4, 2
+    l_max = planet.sh.l_max
+
+    # Amplitude: field minimum at -0.5*Phi0 (valid initial state), stepped
+    # with dt*omega = 3.2 so the y + dt*k3 stage state scales the mode by
+    # ~(1 - (omega*dt)^2) = -9.24: far past depth collapse.
+    unit = cp.zeros((l_max + 1, l_max + 1), dtype=cp.complex128)
+    unit[l, m] = 1.0
+    unit_min = float(planet.sh.inv_transform(unit).real.min())
+    amp = 0.5 * model.phi0 / abs(unit_min)
+    state = ShallowWaterState.zeros(l_max)
+    state.coeffs[2, l, m] = amp
+    model.validate_state(state)  # the initial state itself is valid
+
+    omega = (model.phi0 * l * (l + 1)) ** 0.5 / planet.params.radius
+    dt = 3.2 / omega
+
+    def validator(y_stage):
+        model.validate_state(ShallowWaterState(y_stage), context="RK4 stage")
+
+    with pytest.raises(ShallowWaterStateError, match="strictly positive"):
+        rk4_step_array(model.tendency, state.coeffs, 0.0, dt,
+                       stage_validator=validator)
+
+
 def test_model_rejects_bad_parameters(latlon_planet):
     from planetary_sandbox.physics.shallow_water import ShallowWaterModel
 
