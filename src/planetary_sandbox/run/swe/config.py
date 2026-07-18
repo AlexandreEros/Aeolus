@@ -20,8 +20,10 @@ from ..engine import (SECONDS_PER_DAY, _require_finite_positive,
 from ..bve.config import (GRID_TYPES, MIN_NLAT, MIN_NLON,
                           scientific_config_subset)
 
-#: Only image product the SWE runner renders (no snapshot viewer yet).
-SWE_PLOT_TYPES = ("diagnostics",)
+#: Image products in deterministic execution order.  The summary requires at
+#: least one persisted state; diagnostics remain available for N=0 runs.
+SWE_PLOT_TYPES = ("diagnostics", "summary")
+_SWE_PLOTS_REQUIRING_SNAPSHOTS = ("summary",)
 
 #: Default sidereal day (hours): 2*pi / 7.292e-5 s^-1, i.e. Earth's rotation
 #: rate. Unlike the BVE (whose historical default is non-rotating), the
@@ -153,6 +155,11 @@ class SWERunConfig:
         unknown_plots = set(self.plots) - set(SWE_PLOT_TYPES)
         if unknown_plots:
             raise ValueError(f"unknown plot types: {sorted(unknown_plots)}")
+        if list(self.plots) != [p for p in SWE_PLOT_TYPES if p in self.plots]:
+            raise ValueError("plots must be deduplicated and in canonical order")
+        if self.n_snapshots == 0 and any(
+                plot in _SWE_PLOTS_REQUIRING_SNAPSHOTS for plot in self.plots):
+            raise ValueError("SWE summary visualization requires a stored snapshot")
 
     # ------------------------------------------------------------------
 
@@ -200,7 +207,12 @@ class SWERunConfig:
             snapshot_mode = "interval"
             dt = interval
 
-        plots = () if explicit.get("no_plots") else SWE_PLOT_TYPES
+        if explicit.get("no_plots"):
+            plots = ()
+        elif snapshot_mode == "count" and n == 0:
+            plots = ("diagnostics",)
+        else:
+            plots = SWE_PLOT_TYPES
 
         return cls(dt_snapshots=dt, snapshot_mode=snapshot_mode,
                    n_snapshots=n, plots=plots, **settings)

@@ -155,7 +155,7 @@ monopole-free and band-limited.
 
 ```powershell
 # Default: Williamson-2 steady flow, geodesic res 4, l_max 21, 1 day,
-# 5 stored states, diagnostics figures.
+# 5 stored states, diagnostics figures, and a final-state summary.
 aeolus run swe
 
 # Gauss lat-lon backend, gravity-wave test on a non-rotating planet:
@@ -170,7 +170,11 @@ Options: `--gravity`, `--mean-depth`, `--day-hours`, `--radius-earth-units`,
 runs (`config.json`, `manifest.json` with status lifecycle,
 `latest_run.txt`); stored artifacts are `swe_coeffs.npy`
 (`(N, 3, l_max+1, l_max+1)` spectral snapshots), `swe_snapshot_times.npy`,
-`diagnostics/timeseries.csv`, and `figures/`.
+`diagnostics/timeseries.csv`, `figures/`, and `swe_summary.png`. The summary
+is reconstructed from the persisted final coefficient state and shows layer
+thickness anomaly relative to the configured mean depth, relative vorticity,
+and horizontal divergence. A summary-rendering failure marks the capsule
+failed and prevents publication through `latest_run.txt`.
 
 ## Diagnostics
 

@@ -166,6 +166,15 @@ state grid is under-resolved.
 
 ## Output capsules and provenance
 
+Visualization data and rendering are separated under `viz/`: `fields.py`
+represents latitude-longitude scalar fields and unpacked triangular
+spherical-harmonic fields; `normalization.py` and `specs.py` describe numeric
+scaling and requested views without plotting objects; `renderers.py` is the
+small backend protocol; and `matplotlib_renderer.py` is the initial backend.
+BVE and SWE modules choose their own physical fields, labels, panels, and
+layouts. Summary PNGs are written to same-directory temporary siblings and
+atomically replaced, so only a complete image can become a run artifact.
+
 A current run capsule looks like this:
 
 ```text
@@ -187,6 +196,11 @@ runs/
     ├── bve_summary.png
     └── <scenario>_t<times>.png
 ```
+
+An SWE capsule uses `swe_coeffs.npy` (shape `(N, 3, L+1, L+1)`, ordered as
+relative vorticity, horizontal divergence, and perturbation geopotential),
+`swe_snapshot_times.npy`, and `swe_summary.png` in place of the BVE state and
+viewer products. The SWE summary is regenerated from those persisted arrays.
 
 The intended semantic categories are:
 

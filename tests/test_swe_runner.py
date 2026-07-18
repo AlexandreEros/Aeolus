@@ -34,7 +34,8 @@ def test_swe_config_defaults():
     assert cfg.gravity == pytest.approx(9.80616)
     assert cfg.mean_depth_m == 3000.0
     assert cfg.day_hours == pytest.approx(23.9345)
-    assert cfg.plots == ("diagnostics",)
+    assert cfg.plots == ("diagnostics", "summary")
+    assert SWERunConfig.resolve({"n_snapshots": 0}).plots == ("diagnostics",)
     times = cfg.snapshot_times_seconds()
     assert len(times) == 5 and times[0] == 0.0 and times[-1] == 86400.0
 
@@ -169,6 +170,34 @@ def test_swe_runner_end_to_end(tmp_path):
     # so it must exceed sqrt(Phi0)*0.9 even though the wind is ~40 m/s.
     assert float(rows[0]["max_char_speed_ms"]) > 0.9 * math.sqrt(model.phi0)
     assert float(rows[0]["phi_total_min"]) > 0.0
+
+
+@pytest.mark.skipif(not _has_cuda(), reason="CUDA/CuPy not available")
+def test_swe_runner_generates_final_summary_from_persisted_state(tmp_path):
+    import matplotlib.image as mpimg
+    from planetary_sandbox.planet import Planet, PlanetaryParameters
+    from planetary_sandbox.physics.shallow_water import ShallowWaterModel
+    from planetary_sandbox.run.engine import count_snapshot_times
+    from planetary_sandbox.run.swe.initial_conditions import make_swe_ic
+    from planetary_sandbox.run.swe.runner import run_swe
+
+    planet = Planet.generate(
+        params=PlanetaryParameters.from_earth_like(day_hours=23.9345),
+        grid_type="latlon", nlat=16, nlon=32, l_max=7)
+    model = ShallowWaterModel(planet, mean_depth=2500.0)
+    state0 = make_swe_ic("rest", model)
+    duration_days = 1.0e-6
+
+    rc = run_swe(
+        model=model, state0=state0, dt_snapshots=None,
+        t_end_days=duration_days, out_dir=tmp_path,
+        snapshot_times=count_snapshot_times(1, duration_days * 86400.0),
+        plots=("summary",), snapshot_mode="count")
+
+    assert rc == 0
+    output = tmp_path / "swe_summary.png"
+    assert output.stat().st_size > 0
+    assert mpimg.imread(output).shape[:2] == (1200, 3600)
 
 
 @pytest.mark.skipif(not _has_cuda(), reason="CUDA/CuPy not available")

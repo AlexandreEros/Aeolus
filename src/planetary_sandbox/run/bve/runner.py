@@ -14,6 +14,7 @@ from .config import (PLOT_TYPES, IntegrationScheduler, advective_cfl_timestep,
 from ..engine import integrate as _integrate
 from .diagnostics import DiagnosticsRecorder, plot_diagnostics
 from ...viz.vorticity_viewer import VorticityViewer
+from ...viz.renderers import get_default_renderer
 
 
 def _empty_coeffs_stack(zeta0_lm: cp.ndarray) -> np.ndarray:
@@ -194,9 +195,12 @@ def run_bve(planet: Planet,
                                       metadata=figure_metadata)
 
         if "summary" in plots:
-            fig = viewer.plot_summary()
-            fig.savefig(out_dir / "bve_summary.png", dpi=200,
-                        metadata=figure_metadata)
+            summary, stats = viewer.summary_spec()
+            get_default_renderer().render_figure(
+                summary, out_dir / "bve_summary.png",
+                metadata=figure_metadata)
+            print("VorticityViewer: Summary plot generated.")
+            print(stats)
 
     return 0
 

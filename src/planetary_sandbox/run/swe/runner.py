@@ -23,6 +23,7 @@ from ..engine import (IntegrationScheduler, advective_cfl_timestep,
                       integrate, rk4_step_array, validate_snapshot_schedule)
 from .config import SWE_PLOT_TYPES
 from .diagnostics import SWEDiagnosticsRecorder, plot_swe_diagnostics
+from .visualization import render_swe_summary
 
 
 def run_swe(model: ShallowWaterModel,
@@ -44,6 +45,7 @@ def run_swe(model: ShallowWaterModel,
     * ``swe_snapshot_times.npy``  stored times in seconds
     * ``diagnostics/timeseries.csv``  per-step scalar diagnostics
     * ``figures/``                rendered when 'diagnostics' in ``plots``
+    * ``swe_summary.png``         rendered when 'summary' in ``plots``
     """
     planet = model.planet
     t_end = t_end_days * 86400.0
@@ -127,5 +129,12 @@ def run_swe(model: ShallowWaterModel,
         except Exception as err:
             # Plotting must never take down a finished run; the CSV survives.
             print(f"Diagnostics plotting failed (data preserved): {err}")
+
+    if "summary" in plots:
+        # This image is part of the selected run product.  Unlike optional
+        # diagnostic convenience plots, a failure propagates so the shared
+        # lifecycle marks the run failed and never publishes it as complete.
+        render_swe_summary(
+            model, out_dir, time_index=-1, metadata=figure_metadata)
 
     return 0

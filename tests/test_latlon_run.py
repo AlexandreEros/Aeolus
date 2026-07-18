@@ -34,6 +34,8 @@ def test_run_bve_completes_on_latlon(tmp_path):
     assert (tmp_path / "vorticity_grid.npy").exists()
     assert (tmp_path / "diagnostics" / "timeseries.csv").exists()
     assert (tmp_path / "bve_summary.png").exists()
+    import matplotlib.image as mpimg
+    assert mpimg.imread(tmp_path / "bve_summary.png").shape[:2] == (3600, 4000)
     # coefficients stay finite
     coeffs = np.load(tmp_path / "vorticity_coeffs.npy")
     assert np.isfinite(coeffs).all()

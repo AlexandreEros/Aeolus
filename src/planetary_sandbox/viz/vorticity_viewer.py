@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import numpy as np
 import cupy as cp
-import matplotlib.pyplot as plt
 
 from ..viz.maps import plot_velocity_streamlines
 from ..planet import Planet
@@ -72,7 +71,7 @@ class VorticityViewer:
         self._view_grid = None
         if not isinstance(self.grid, LatLonGridGeometry):
             # Non-equiangular grids (geodesic, Gauss-Legendre lat-lon) render
-            # via interpolation onto a uniform view grid — imshow/streamplot
+            # via interpolation onto a uniform view grid â€” imshow/streamplot
             # need equally spaced axes. Fields stay flat (n_points,).
             self._view_grid = LatLonGridGeometry.create((91, 181))
 
@@ -164,6 +163,7 @@ class VorticityViewer:
             Directory to save snapshot plots. If None, uses current directory.
         """
         import pathlib
+        import matplotlib.pyplot as plt
         if out_dir is None:
             out_dir = pathlib.Path(".")
 
@@ -284,167 +284,7 @@ class VorticityViewer:
 
         print("All snapshot plots generated.\n")
 
-
-
-    def plot_summary(self):
-        """
-        Visual summary of the Barotropic Vorticity simulation.
-        """
-        # Handle Cupy inputs
-        if isinstance(self.zeta_init, cp.ndarray): zeta_init = cp.asnumpy(self.zeta_init)
-        else: zeta_init = self.zeta_init
-        if isinstance(self.zeta_final, cp.ndarray): zeta_final = cp.asnumpy(self.zeta_final)
-        else: zeta_final = self.zeta_final
-        if isinstance(self.psi_init, cp.ndarray): psi_init = cp.asnumpy(self.psi_init)
-        else: psi_init = self.psi_init
-        if isinstance(self.psi_final, cp.ndarray): psi_final = cp.asnumpy(self.psi_final)
-        else: psi_final = self.psi_final
-
-        view_grid, zeta_init_plot = self._map_scalar_to_view(zeta_init)
-        _, zeta_final_plot = self._map_scalar_to_view(zeta_final)
-        _, psi_init_plot = self._map_scalar_to_view(psi_init)
-        _, psi_final_plot = self._map_scalar_to_view(psi_final)
-
-        u0, v0 = self.vel_init
-        u1, v1 = self.vel_final
-        if hasattr(u0, 'get'): u0, v0 = u0.get(), v0.get()
-        if hasattr(u1, 'get'): u1, v1 = u1.get(), v1.get()
-
-        _, (u0_plot, v0_plot) = self._map_vector_to_view(u0, v0)
-        _, (u1_plot, v1_plot) = self._map_vector_to_view(u1, v1)
-
-        fig = plt.figure(figsize=(20, 18))
-
-        # Grid for plots (3 rows, 3 columns)
-        gs = fig.add_gridspec(3, 3, width_ratios=[1, 0.6, 1])
-
-        # --- 1. Initial Vorticity (Top Left) ---
-        ax1 = fig.add_subplot(gs[0, 0])
-        im1 = ax1.imshow(np.flip(zeta_init_plot, axis=0),
-                         extent=(0, 360, -89, 89),
-                         cmap='RdBu_r',
-                         aspect='equal',
-                         origin='lower')
-        ax1.set_title("Initial Vorticity")
-        ax1.set_xlabel("Longitude (deg)")
-        ax1.set_ylabel("Latitude (deg)")
-        plt.colorbar(im1, ax=ax1, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='s^-1')
-
-        # --- 2. Final Vorticity (Top Right) ---
-        ax2 = fig.add_subplot(gs[0, 2])
-        im2 = ax2.imshow(np.flip(zeta_final_plot, axis=0),
-                         extent=(0, 360, -89, 89),
-                         cmap='RdBu_r',
-                         aspect='equal',
-                         origin='lower')
-        ax2.set_title("Final Vorticity")
-        ax2.set_xlabel("Longitude (deg)")
-        ax2.set_ylabel("Latitude (deg)")
-        plt.colorbar(im2, ax=ax2, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='s^-1')
-
-        # --- 3. Initial Flow (Middle Left) ---
-        ax3 = fig.add_subplot(gs[1, 0])
-        plot_velocity_streamlines((u0_plot, v0_plot), self.planet, ax=ax3, title="Initial Flow", grid=view_grid)
-
-        # --- 4. Final Flow (Middle Right) ---
-        ax4 = fig.add_subplot(gs[1, 2])
-        plot_velocity_streamlines((u1_plot, v1_plot), self.planet, ax=ax4, title="Final Flow", grid=view_grid)
-
-        # --- 5. Initial Streamfunction (Bottom Left) ---
-        ax5 = fig.add_subplot(gs[2, 0])
-        im5 = ax5.imshow(np.flip(psi_init_plot, axis=0),
-                         extent=(0, 360, -89, 89),
-                         cmap='viridis',
-                         aspect='equal',
-                         origin='lower')
-        ax5.set_title("Initial Streamfunction")
-        ax5.set_xlabel("Longitude (deg)")
-        ax5.set_ylabel("Latitude (deg)")
-        plt.colorbar(im5, ax=ax5, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='m^2/s')
-
-        # --- 6. Final Streamfunction (Bottom Right) ---
-        ax6 = fig.add_subplot(gs[2, 2])
-        im6 = ax6.imshow(np.flip(psi_final_plot, axis=0),
-                         extent=(0, 360, -89, 89),
-                         cmap='viridis',
-                         aspect='equal',
-                         origin='lower')
-        ax6.set_title("Final Streamfunction")
-        ax6.set_xlabel("Longitude (deg)")
-        ax6.set_ylabel("Latitude (deg)")
-        plt.colorbar(im6, ax=ax6, orientation='horizontal', pad=0.1, fraction=0.05, aspect=30, label='m^2/s')
-
-        # --- 7. Stats (Top Middle) ---
-        ax_text = fig.add_subplot(gs[0, 1])
-        ax_text.axis('off')
-
-        R = self.planet.params.equatorial_radius
-        if zeta_init.ndim == 2 and hasattr(self.planet.grid, "lat_grid"):
-            lats = self.planet.grid.latitudes
-            d_lat = np.abs(self.planet.grid.latitudes[1] - self.planet.grid.latitudes[0])
-            d_lon = np.abs(self.planet.grid.longitudes[1] - self.planet.grid.longitudes[0])
-            weights = np.cos(lats) * d_lat * d_lon * R**2
-        elif zeta_init.ndim == 1 and hasattr(self.planet.grid, "cell_areas"):
-            weights = cp.asnumpy(self.planet.grid.cell_areas)
-        else:
-            raise ValueError("Grid shapes do not match.")
-
-        circ0 = np.sum(zeta_init * weights)
-        circ1 = np.sum(zeta_final * weights)
-        ke0 = 0.5 * np.sum((u0**2 + v0**2) * weights)
-        ke1 = 0.5 * np.sum((u1**2 + v1**2) * weights)
-
-        max_z0 = np.max(np.abs(zeta_init))
-        max_z1 = np.max(np.abs(zeta_final))
-        rms_z0 = np.sqrt(np.mean(zeta_init**2))
-        rms_z1 = np.sqrt(np.mean(zeta_final**2))
-        max_speed0 = np.max(np.sqrt(u0**2 + v0**2))
-        max_speed1 = np.max(np.sqrt(u1**2 + v1**2))
-
-        duration_str = f"{self.times[-1]:.1f} hours" if self.times is not None and len(self.times) > 0 else "N/A"
-        steps_str = f"{len(self.times)}" if self.times is not None else "N/A"
-
-        stats_str = self._build_summary_text(
-            duration_str=duration_str,
-            steps_str=steps_str,
-            circ0=circ0,
-            circ1=circ1,
-            ke0=ke0,
-            ke1=ke1,
-            max_z0=max_z0,
-            max_z1=max_z1,
-            rms_z0=rms_z0,
-            rms_z1=rms_z1,
-            max_speed0=max_speed0,
-            max_speed1=max_speed1,
-        )
-        ax_text.text(0.5, 0.5, stats_str, ha='center', va='center',
-                     fontfamily='monospace', fontsize=11)
-
-        # --- 8. Time Series Plot (Middle Middle) ---
-        if self.snapshots is not None and self.times is not None:
-            ax_plot = fig.add_subplot(gs[1, 1])
-            snapshots = self.snapshots
-            if isinstance(snapshots, cp.ndarray):
-                snapshots = cp.asnumpy(snapshots)
-            if snapshots.ndim == 3:
-                enstrophy = np.sqrt(np.mean(snapshots**2, axis=(1, 2)))
-            else:
-                enstrophy = np.sqrt(np.mean(snapshots**2, axis=1))
-            enstrophy_norm = enstrophy / enstrophy[0]
-
-            ax_plot.plot(self.times, enstrophy_norm, 'k-', linewidth=1.5, label='RMS zeta (norm)')
-            ax_plot.set_xlabel('Time (hours)')
-            ax_plot.set_ylabel('Normalized Magnitude')
-            ax_plot.set_title('Conservation Check')
-            ax_plot.grid(True, alpha=0.3, linestyle='--')
-            ax_plot.legend(loc='best', fontsize='small')
-            y_margin = max(0.001, np.max(np.abs(enstrophy_norm - 1.0)) * 1.2)
-            ax_plot.set_ylim(1.0 - y_margin, 1.0 + y_margin)
-
-        plt.tight_layout()
-
-        print("VorticityViewer: Summary plot generated.")
-        print(stats_str)
-
-        return fig
+    def summary_spec(self):
+        """Return the backend-neutral specification for the BVE summary."""
+        from ..run.bve.visualization import build_bve_summary_spec
+        return build_bve_summary_spec(self)

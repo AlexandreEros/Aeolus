@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 _GENERATED_RESULT_FILES: tuple[str, ...] = (
     "swe_coeffs.npy",
     "swe_snapshot_times.npy",
+    "swe_summary.png",
 )
 
 _GENERATED_RESULT_DIRS: tuple[str, ...] = (
