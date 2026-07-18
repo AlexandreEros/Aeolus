@@ -2,12 +2,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
+import math
 from typing import TypeAlias
 
 import numpy as np
 
 from .fields import ScalarGridField, SphericalHarmonicField
 from .normalization import NormalizationPolicy
+
+
+class SpectralEncoding(str, Enum):
+    """Supported visual encodings for complex spectral coefficients."""
+
+    PHASE_MAGNITUDE = "phase-magnitude"
+    MAGNITUDE = "magnitude"
 
 
 @dataclass(frozen=True)
@@ -46,6 +55,13 @@ class ScalarMapSpec:
 
 @dataclass(frozen=True)
 class SpectralCoefficientMapSpec:
+    """A fixed-range triangular coefficient map with explicit complex encoding.
+
+    The canonical phase-magnitude encoding uses the argument of the stored
+    coefficient with no implicit sign flip. Hue spans the fixed ``[-pi, pi)``
+    phase domain; timeline-relative amplitude dB controls saturation.
+    """
+
     field: SphericalHarmonicField
     title: str
     time_index: int = 0
@@ -54,19 +70,58 @@ class SpectralCoefficientMapSpec:
         default_factory=NormalizationPolicy.logarithmic_magnitude)
     color_policy: str = "viridis"
     normalization_group: str | None = None
+    encoding: SpectralEncoding | str = SpectralEncoding.PHASE_MAGNITUDE
+    phase_offset_radians: float = 0.0
+    magnitude_floor_db: float = -60.0
 
     def __post_init__(self) -> None:
         self.field.coefficients_at(self.time_index)
         if not self.title:
             raise ValueError("coefficient-map title must be nonempty")
+        try:
+            encoding = SpectralEncoding(self.encoding)
+        except (TypeError, ValueError) as err:
+            raise ValueError(
+                f"unsupported spectral encoding {self.encoding!r}") from err
+        if not math.isfinite(self.phase_offset_radians):
+            raise ValueError("spectral phase offset must be finite")
+        if (not math.isfinite(self.magnitude_floor_db) or
+                self.magnitude_floor_db >= 0.0):
+            raise ValueError("spectral magnitude dB floor must be finite and negative")
         if (self.normalization_group is not None and
                 (not isinstance(self.normalization_group, str) or
                  not self.normalization_group.strip())):
             raise ValueError("normalization group must be a nonempty string")
+        object.__setattr__(self, "encoding", encoding)
 
     @property
     def display_units(self) -> str:
         return self.field.units if self.units is None else self.units
+
+    @property
+    def encoding_label(self) -> str:
+        if self.encoding is SpectralEncoding.PHASE_MAGNITUDE:
+            return (
+                "Hue = phase; saturation = relative magnitude "
+                f"[{self.magnitude_floor_db:g}, 0] dB")
+        return "Color = |C_lm|"
+
+    @property
+    def convention_metadata(self) -> dict[str, object]:
+        """Basis and palette conventions needed to interpret coefficient color."""
+        return {
+            "encoding": self.encoding.value,
+            "phase_definition": "arg(C_lm)",
+            "phase_domain": "[-pi, pi)",
+            "phase_offset_radians": float(self.phase_offset_radians),
+            "magnitude_floor_db": float(self.magnitude_floor_db),
+            "coefficient_normalization": self.field.normalization,
+            "coefficient_layout": self.field.layout,
+            "longitude_origin_radians": float(
+                self.field.longitude_origin_radians),
+            "magnitude_mapping": (
+                "amplitude dB relative to timeline maximum, mapped to saturation"),
+        }
 
 
 @dataclass(frozen=True)

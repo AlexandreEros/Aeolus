@@ -189,6 +189,19 @@ divergence, and `h' = Phi'/g` in the prognostic group and derives velocity
 streamlines instantaneously. History-dependent diagnostics remain in the
 diagnostic time-series products rather than snapshot frames.
 
+Complex spectral panels use the shared `SpectralCoefficientMapSpec` with an
+explicit encoding. The default `phase-magnitude` encoding maps the fixed
+coefficient phase interval `[-pi, pi)` to cyclic hue and maps amplitude dB
+relative to the timeline-wide valid-coefficient maximum onto saturation at
+value 1 (default floor `-60 dB`), so weak coefficients fade
+toward white without losing phase information in strong coefficients. The
+optional `magnitude` encoding retains the scalar magnitude view. Both use the
+complete persisted `0 <= l,m <= l_max` array extent in every frame; no
+cumulative-power crop is applied, and the invalid `m > l` triangle is neutral
+gray rather than an ordinary zero. `FigureTimeline` freezes one magnitude
+normalization from the complete sequence before rendering either individual
+frames or the representative overview.
+
 A current run capsule looks like this:
 
 ```text

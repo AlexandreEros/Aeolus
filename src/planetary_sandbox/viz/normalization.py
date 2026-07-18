@@ -91,8 +91,14 @@ class NormalizationPolicy:
                 return ResolvedNormalization(self.kind, 1.0e-12, 1.0)
             lo = float(np.min(finite_positive))
             hi = float(np.max(finite_positive))
-            if _nearly_equal(lo, hi):
-                return ResolvedNormalization(self.kind, lo / 10.0, lo * 10.0)
+            if lo == hi or _nearly_equal_logarithmically(lo, hi):
+                lower = lo / 10.0
+                upper = hi
+                if lower <= 0.0:
+                    lower = lo
+                if not lower < upper:
+                    upper = float(np.nextafter(lower, np.inf))
+                return ResolvedNormalization(self.kind, lower, upper)
             return ResolvedNormalization(self.kind, lo, hi)
 
         real = np.real(data)
@@ -118,3 +124,11 @@ class NormalizationPolicy:
 def _nearly_equal(lo: float, hi: float) -> bool:
     scale = max(1.0, abs(lo), abs(hi))
     return abs(hi - lo) <= 1.0e-12 * scale
+
+
+def _nearly_equal_logarithmically(lo: float, hi: float) -> bool:
+    """Detect a numerically degenerate positive interval in log space."""
+    log_lo = float(np.log(lo))
+    log_hi = float(np.log(hi))
+    scale = max(1.0, abs(log_lo), abs(log_hi))
+    return abs(log_hi - log_lo) <= np.finfo(np.float64).eps * scale

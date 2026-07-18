@@ -8,9 +8,11 @@ import uuid
 
 import numpy as np
 
+from .complex_encoding import phase_magnitude_hsv
 from .normalization import NormalizationKind
 from .specs import (FigureSpec, LinePanelSpec, PanelPlacement, ScalarMapSpec,
-                    SpectralCoefficientMapSpec, StreamlineMapSpec,
+                    SpectralCoefficientMapSpec, SpectralEncoding,
+                    StreamlineMapSpec,
                     TextPanelSpec)
 
 
@@ -95,6 +97,7 @@ class MatplotlibRenderer:
                 rendered_groups.append((group, axes))
 
             rendered_panels = []
+            phase_panels = []
             for placement in specification.panels:
                 first_row = placement.row + sum(
                     candidate <= placement.row for candidate in header_rows)
@@ -106,10 +109,20 @@ class MatplotlibRenderer:
                     placement.column:placement.column + placement.column_span])
                 self._render_panel(figure, axes, placement.panel)
                 rendered_panels.append((placement, axes))
+                if (isinstance(placement.panel, SpectralCoefficientMapSpec) and
+                        placement.panel.encoding is
+                        SpectralEncoding.PHASE_MAGNITUDE):
+                    phase_panels.append(placement.panel)
             if specification.tight_layout:
-                figure.tight_layout()
+                phase_margin = min(
+                    0.14, 0.7 / figure.get_figheight()) if phase_panels else 0.0
+                figure.tight_layout(
+                    rect=(0.0, phase_margin, 1.0, 1.0)
+                    if phase_panels else None)
             self._render_panel_groups(
                 figure, specification, rendered_panels, rendered_groups)
+            if phase_panels:
+                self._render_phase_legend(figure, phase_panels)
             self._save_atomic(
                 figure, output, dpi=specification.dpi, metadata=metadata)
         finally:
@@ -231,6 +244,25 @@ class MatplotlibRenderer:
         coefficients = spec.field.coefficients_at(spec.time_index)
         magnitude = np.abs(coefficients)
         valid = spec.field.valid_mask
+
+        if spec.encoding is SpectralEncoding.PHASE_MAGNITUDE:
+            from matplotlib.colors import hsv_to_rgb
+
+            hsv = phase_magnitude_hsv(
+                coefficients, spec.normalization, valid_mask=valid,
+                phase_offset_radians=spec.phase_offset_radians,
+                magnitude_floor_db=spec.magnitude_floor_db)
+            display = hsv_to_rgb(hsv)
+            display[~valid] = (0.85, 0.85, 0.85)
+            axes.imshow(
+                display, origin="lower", interpolation="nearest",
+                aspect="auto",
+                extent=(-0.5, spec.field.l_max + 0.5,
+                        -0.5, spec.field.l_max + 0.5))
+            axes.set_facecolor("#f2f2f2")
+            self._label_spectral_axes(axes, spec)
+            return
+
         resolved, norm = self._mpl_normalization(
             spec.normalization, magnitude[valid])
         display = np.where(valid, np.maximum(magnitude, resolved.vmin), np.nan)
@@ -242,13 +274,51 @@ class MatplotlibRenderer:
             extent=(-0.5, spec.field.l_max + 0.5,
                     -0.5, spec.field.l_max + 0.5),
             cmap=cmap, norm=norm)
-        axes.set_title(spec.title)
-        axes.set_xlabel("Spherical-harmonic order m")
-        axes.set_ylabel("Spherical-harmonic degree l")
+        self._label_spectral_axes(axes, spec)
         unit_suffix = f" [{spec.display_units}]" if spec.display_units else ""
         figure.colorbar(
             image, ax=axes, orientation="vertical",
             label=f"Coefficient magnitude{unit_suffix}")
+
+    @staticmethod
+    def _label_spectral_axes(axes, spec: SpectralCoefficientMapSpec) -> None:
+        axes.set_title(spec.title)
+        axes.set_xlabel("Spherical-harmonic order m")
+        axes.set_ylabel("Spherical-harmonic degree l")
+
+    @staticmethod
+    def _render_phase_legend(figure, panels) -> None:
+        """Add one compact fixed-domain cyclic phase legend per figure."""
+        from matplotlib.colors import hsv_to_rgb
+
+        offsets = {panel.phase_offset_radians for panel in panels}
+        if len(offsets) != 1:
+            raise ValueError(
+                "phase-magnitude panels in one figure must share a phase offset")
+        offset = offsets.pop()
+        phase = np.linspace(-np.pi, np.pi, 512, endpoint=False)[None, :]
+        hue = ((phase + offset + np.pi) % (2.0 * np.pi)) / (2.0 * np.pi)
+        hsv = np.stack(
+            (hue, np.ones_like(hue), np.ones_like(hue)), axis=-1)
+        legend_width = min(0.5, 3.0 / figure.get_figwidth())
+        legend_height = min(0.04, 0.16 / figure.get_figheight())
+        legend_bottom = min(0.04, 0.24 / figure.get_figheight())
+        legend = figure.add_axes((
+            0.5 - legend_width / 2.0, legend_bottom,
+            legend_width, legend_height))
+        legend.imshow(
+            hsv_to_rgb(hsv), aspect="auto", origin="lower",
+            extent=(-np.pi, np.pi, 0.0, 1.0), interpolation="nearest")
+        legend.set_yticks(())
+        legend.set_xticks((-np.pi, 0.0, np.pi), ("−π", "0", "π"))
+        legend.tick_params(axis="x", labelsize=8, length=2, pad=1)
+        label = panels[0].encoding_label
+        if offset:
+            label += f"; palette phase offset = {offset:.6g} rad"
+        legend.set_xlabel(label, fontsize=8, labelpad=1)
+        for spine in legend.spines.values():
+            spine.set_color("#777777")
+            spine.set_linewidth(0.5)
 
     def _render_streamline_panel(
             self, figure, axes, spec: StreamlineMapSpec) -> None:

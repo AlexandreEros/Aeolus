@@ -138,6 +138,7 @@ class SphericalHarmonicField:
     times: np.ndarray | None = None
     normalization: str = "orthonormal"
     layout: str = "unpacked-l-m-nonnegative"
+    longitude_origin_radians: float = 0.0
 
     def __post_init__(self) -> None:
         coefficients = _array(self.coefficients, name="coefficients")
@@ -157,6 +158,8 @@ class SphericalHarmonicField:
             raise ValueError(f"unsupported coefficient layout {self.layout!r}")
         if not isinstance(self.normalization, str) or not self.normalization.strip():
             raise ValueError("spherical-harmonic normalization must be nonempty")
+        if not np.isfinite(self.longitude_origin_radians):
+            raise ValueError("longitude origin must be finite")
         if not isinstance(self.name, str) or not self.name.strip():
             raise ValueError("field name must be a nonempty string")
         if not isinstance(self.units, str):
@@ -192,4 +195,5 @@ class SphericalHarmonicField:
         selected_times = None if self.times is None else self.times[index:index + 1]
         return SphericalHarmonicField(
             self.coefficients_at(index), self.name, self.units,
-            selected_times, self.normalization, self.layout)
+            selected_times, self.normalization, self.layout,
+            self.longitude_origin_radians)

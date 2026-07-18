@@ -86,6 +86,19 @@ Y_l^m(θ, λ) = N_l^m · P_l^m(cos θ) · e^{imλ},      N_l^m = sqrt( (2l+1)/(4
 
 `sh_matrix_real.cu` (a real-basis variant) exists but is **never loaded** by any Python code.
 
+Spectral snapshot color follows this convention directly: hue represents
+`arg(a_lm)` on the fixed cyclic interval `[-pi, pi)`, with no sign inversion or
+palette phase offset, while amplitude dB relative to the timeline-wide maximum
+controls saturation over `[-60, 0] dB` and value remains 1. Thus the legacy
+`arg(-a_lm)` rotation by pi is not used;
+the repository's `exp(im lambda)` basis provides no scientific reason for that
+palette rotation. Interpreting a coefficient color therefore requires the
+complex spherical-harmonic basis (including the Condon-Shortley convention),
+the coefficient normalization, the longitude origin, and any explicitly
+configured palette phase offset. In particular, changing the longitude origin
+rotates phases for `m > 0` even when the represented physical field is
+unchanged.
+
 ### 2.2 Spectral coefficient layout
 
 Two layouts coexist, with fixed mappings between them:

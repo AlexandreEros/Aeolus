@@ -165,9 +165,11 @@ def build_bve_spectral_snapshot_timeline_from_data(
         FigureFrame(time_seconds, FigureSpec(
             panels=(PanelPlacement(SpectralCoefficientMapSpec(
                 field,
-                f"Vorticity coefficients @ t={time_seconds / 3600.0:.2f} h",
+                ("Relative vorticity coefficients @ "
+                 f"t={time_seconds / 3600.0:.2f} h"),
                 time_index=index,
                 normalization=NormalizationPolicy.logarithmic_magnitude(),
+                encoding="phase-magnitude",
                 color_policy="magnitude",
                 normalization_group="bve-vorticity-coefficients"), 0, 0),),
             rows=1, columns=1, size_inches=(8.0, 6.0), dpi=200))

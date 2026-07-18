@@ -1,11 +1,15 @@
 """Backend-independent visualization data/specifications and renderers."""
 
+from .complex_encoding import (PHASE_DOMAIN, normalized_magnitude_strength,
+                               phase_hue, phase_magnitude_hsv,
+                               relative_magnitude_db, wrapped_phase)
 from .fields import ScalarGridField, SphericalHarmonicField
 from .normalization import (NormalizationKind, NormalizationPolicy,
                             ResolvedNormalization)
 from .renderers import Renderer, get_default_renderer
 from .specs import (FigureSpec, PanelGroup, PanelGroupSpec, ScalarMapSpec,
-                    SpectralCoefficientMapSpec, StreamlineMapSpec)
+                    SpectralCoefficientMapSpec, SpectralEncoding,
+                    StreamlineMapSpec)
 from .timeline import (FigureFrame, FigureTimeline, TimelineFrame,
                        build_timeline_overview, render_figure_timeline,
                        render_snapshot_product, render_timeline,
@@ -17,6 +21,7 @@ __all__ = [
     "FigureTimeline",
     "NormalizationKind",
     "NormalizationPolicy",
+    "PHASE_DOMAIN",
     "PanelGroup",
     "PanelGroupSpec",
     "PlanetViewer",
@@ -25,6 +30,7 @@ __all__ = [
     "ScalarGridField",
     "ScalarMapSpec",
     "SpectralCoefficientMapSpec",
+    "SpectralEncoding",
     "StreamlineMapSpec",
     "SphericalHarmonicField",
     "TimelineFrame",
@@ -34,6 +40,11 @@ __all__ = [
     "render_snapshot_product",
     "render_timeline",
     "select_representative_frame_indices",
+    "normalized_magnitude_strength",
+    "phase_hue",
+    "phase_magnitude_hsv",
+    "relative_magnitude_db",
+    "wrapped_phase",
 ]
 
 

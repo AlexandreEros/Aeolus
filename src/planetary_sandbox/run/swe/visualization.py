@@ -213,6 +213,7 @@ def _build_swe_spectral_figure(
             field, title + " coefficients" + title_suffix,
             time_index=time_index,
             normalization=NormalizationPolicy.logarithmic_magnitude(),
+            encoding="phase-magnitude",
             color_policy="magnitude",
             normalization_group=f"{group}-coefficients"), 0, column)
         for column, (field, title, group) in enumerate(zip(

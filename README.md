@@ -151,6 +151,9 @@ Field-state storage and image generation are controlled independently:
   frames visibly separate prognostic state from instantaneous diagnostic
   fields; BVE diagnostics include streamfunction and velocity streamlines,
   while SWE derives velocity and `h' = Phi'/g` from each persisted state.
+  Spectral coefficient frames use cyclic hue for phase and timeline-wide
+  relative amplitude in decibels for saturation (default `[-60, 0] dB`),
+  with valid zeros white and the invalid `m > l` triangle gray.
   Field snapshots (`vorticity_coeffs.npy` / `vorticity_grid.npy`), their
   authoritative `bve_snapshot_times.npy` time axis, and the
   per-step numerical diagnostics CSV are always written regardless of plot

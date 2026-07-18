@@ -4,6 +4,9 @@ import matplotlib.pyplot as plt
 import matplotlib.tri as mtri
 from matplotlib.colors import hsv_to_rgb
 
+from .complex_encoding import phase_magnitude_hsv
+from .fields import SphericalHarmonicField
+from .normalization import NormalizationPolicy
 from ..planet import Planet
 from ..numerics import (
     SpectralOperators,
@@ -168,54 +171,23 @@ class PlanetViewer:
 
     @staticmethod
     def plot_coefficient_complex_visualization(coeffs_complex, ax1, fig):
-        """
-        Visualize SH coefficients with magnitude as value and phase as hue.
-        """
-
-        max_l = min(coeffs_complex.shape[0]-1, 30)
-
-        coeffs_complex = cp.roll(coeffs_complex, 0, axis=0).get()
-
-        magnitude = np.abs(coeffs_complex)
-        totalpower = np.sum(coeffs_complex * coeffs_complex.conj())
-        cum_pwr_covered = np.cumsum(np.sum(magnitude ** 2, axis=1)) / totalpower
-        l_99 = np.where(cum_pwr_covered >= 0.99)[0][0]
-        coeffs_complex = coeffs_complex[:l_99+1, :l_99+1]
-        max_l = l_99
-
-        # Compute magnitude and phase
-        magnitude = np.abs(coeffs_complex)
-        phase = np.angle(-coeffs_complex)  # Returns [-π, π]
-
-        # Normalize magnitude for brightness (log scale)
-        # mag_normalized = np.log10(magnitude + 1e-12)
-        mag_normalized = magnitude / magnitude.max()
-
-        # Create HSV image
-        # H: phase mapped to [0, 1] (full color wheel)
-        # S: constant at 1.0 (fully saturated) where magnitude > threshold, 0 otherwise
-        # V: normalized magnitude
-
-        hue = (phase + np.pi) / (2 * np.pi)  # Map [-π, π] to [0, 1]
-        saturation = mag_normalized
-        value = np.ones(hue.shape) # np.where(magnitude > 1e-10, 0.9, 0.0)  # Desaturate near-zero coeffs
-
-        # Stack into HSV image
-        hsv_image = np.dstack([hue, saturation, value])
-
-        # Convert to RGB
+        """Visualize the complete SH triangle with the shared encoding."""
+        field = SphericalHarmonicField(
+            coeffs_complex, "spherical-harmonic coefficients", "")
+        hsv_image = phase_magnitude_hsv(
+            field.coefficients, NormalizationPolicy.logarithmic_magnitude(),
+            valid_mask=field.valid_mask)
         rgb_image = hsv_to_rgb(hsv_image)
+        rgb_image[~field.valid_mask] = (0.85, 0.85, 0.85)
 
-        # # Create figure
-        # fig, ax1 = plt.subplots(1, 1, figsize=(8, 6))
-
-        # Plot 1: Complex coefficient visualization
-        im1 = ax1.imshow(rgb_image, aspect='equal', origin='lower',
-                         extent=[0, l_99, 0, l_99])
-                        #extent=[-max_l, max_l, 0, max_l])
+        ax1.imshow(
+            rgb_image, aspect='equal', origin='lower',
+            interpolation='nearest',
+            extent=[-0.5, field.l_max + 0.5, -0.5, field.l_max + 0.5])
         ax1.set_xlabel('Order m', fontsize=12)
         ax1.set_ylabel('Degree l', fontsize=12)
-        ax1.set_title('SH Coefficients: Sat=Phase, Brightness=|C_lm|', fontsize=14)
+        ax1.set_title(
+            'SH coefficients: Hue = phase, saturation = |C_lm|', fontsize=14)
         ax1.grid(True, alpha=0.2, color='white', linewidth=0.5)
 
         plt.tight_layout()

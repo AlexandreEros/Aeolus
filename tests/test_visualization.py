@@ -15,6 +15,7 @@ from planetary_sandbox.viz.normalization import (NormalizationKind,
                                                   NormalizationPolicy)
 from planetary_sandbox.viz.specs import (ScalarMapSpec,
                                          SpectralCoefficientMapSpec,
+                                         SpectralEncoding,
                                          FigureSpec, PanelGroupSpec,
                                          PanelPlacement, StreamlineMapSpec,
                                          TextPanelSpec)
@@ -143,7 +144,8 @@ def test_spectral_coefficient_diagnostic_masks_invalid_triangle(
     coefficients[1, 0] = 1.0
     coefficients[3, 2] = 1.0e-4j
     field = SphericalHarmonicField(coefficients, "height", "m")
-    spec = SpectralCoefficientMapSpec(field, "Height coefficients")
+    spec = SpectralCoefficientMapSpec(
+        field, "Height coefficients", encoding="magnitude")
 
     from matplotlib.axes import Axes
     original = Axes.imshow
@@ -364,7 +366,7 @@ def test_mixed_panel_timeline_normalizes_all_first_class_panel_families():
             resolved_panels[0].normalization.vmax) == (-2.0, 2.0)
     assert (resolved_panels[1].normalization.vmin < 5.0 <
             resolved_panels[1].normalization.vmax)
-    assert (resolved_panels[2].normalization.vmin < 8.0 <
+    assert (resolved_panels[2].normalization.vmin < 8.0 <=
             resolved_panels[2].normalization.vmax)
     assert (resolved_panels[2].normalization.kind is
             NormalizationKind.LOG_MAGNITUDE)
@@ -551,9 +553,17 @@ def test_swe_snapshot_timeline_uses_persisted_times_and_shared_limits(tmp_path):
     np.testing.assert_array_equal(
         timelines["physical"].times_seconds,
         timelines["spectral"].times_seconds)
-    assert all(isinstance(placement.panel, SpectralCoefficientMapSpec)
-               for placement in
-               timelines["spectral"].frames[0].specification.panels)
+    spectral_panels = [placement.panel for placement in
+                       timelines["spectral"].frames[0].specification.panels]
+    assert all(isinstance(panel, SpectralCoefficientMapSpec)
+               for panel in spectral_panels)
+    assert all(panel.encoding is SpectralEncoding.PHASE_MAGNITUDE
+               for panel in spectral_panels)
+    assert [panel.title for panel in spectral_panels] == [
+        "Relative vorticity coefficients @ t=0.00 h",
+        "Horizontal divergence coefficients @ t=0.00 h",
+        "Perturbation geopotential coefficients @ t=0.00 h",
+    ]
 
     render_swe_snapshots(
         _FakeSWEModel(), tmp_path, scenario="gravity_wave",
@@ -630,9 +640,12 @@ def test_bve_snapshot_timeline_reloads_persisted_artifacts(tmp_path):
     np.testing.assert_array_equal(
         timelines["physical"].times_seconds,
         timelines["spectral"].times_seconds)
-    assert isinstance(
-        timelines["spectral"].frames[0].specification.panels[0].panel,
-        SpectralCoefficientMapSpec)
+    spectral_panel = (
+        timelines["spectral"].frames[0].specification.panels[0].panel)
+    assert isinstance(spectral_panel, SpectralCoefficientMapSpec)
+    assert spectral_panel.encoding is SpectralEncoding.PHASE_MAGNITUDE
+    assert spectral_panel.title == (
+        "Relative vorticity coefficients @ t=0.00 h")
 
     render_bve_snapshots(
         _FakeBVEPlanet(), tmp_path, scenario="rh4", renderer=_ByteRenderer())
