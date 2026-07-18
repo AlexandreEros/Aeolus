@@ -4,7 +4,8 @@ from __future__ import annotations
 import pathlib
 from typing import Protocol, runtime_checkable
 
-from .specs import FigureSpec, ScalarMapSpec, SpectralCoefficientMapSpec
+from .specs import (FigureSpec, ScalarMapSpec, SpectralCoefficientMapSpec,
+                    StreamlineMapSpec)
 
 
 @runtime_checkable
@@ -19,6 +20,12 @@ class Renderer(Protocol):
 
     def render_spectral_coefficient_map(
             self, specification: SpectralCoefficientMapSpec,
+            output_path: pathlib.Path | str, *, metadata: dict | None = None,
+            dpi: int = 200) -> pathlib.Path:
+        ...
+
+    def render_streamline_map(
+            self, specification: StreamlineMapSpec,
             output_path: pathlib.Path | str, *, metadata: dict | None = None,
             dpi: int = 200) -> pathlib.Path:
         ...

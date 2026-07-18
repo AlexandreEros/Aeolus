@@ -29,6 +29,7 @@ _GENERATED_RESULT_FILES: tuple[str, ...] = (
 _GENERATED_RESULT_DIRS: tuple[str, ...] = (
     "diagnostics",
     "figures",
+    "snapshots",
 )
 
 _SNAPSHOT_FRAME_RE = re.compile(r".+_t\d{13}\.\d{9}s\.png\Z")

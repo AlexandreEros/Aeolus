@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 
 import matplotlib.image as mpimg
 import numpy as np
@@ -14,9 +15,13 @@ from planetary_sandbox.viz.normalization import (NormalizationKind,
                                                   NormalizationPolicy)
 from planetary_sandbox.viz.specs import (ScalarMapSpec,
                                          SpectralCoefficientMapSpec,
-                                         FigureSpec, PanelPlacement)
+                                         FigureSpec, PanelGroupSpec,
+                                         PanelPlacement, StreamlineMapSpec,
+                                         TextPanelSpec)
 from planetary_sandbox.viz.timeline import (FigureFrame, FigureTimeline,
-                                             render_figure_timeline)
+                                             render_figure_timeline,
+                                             render_snapshot_product,
+                                             select_representative_frame_indices)
 
 
 LATITUDES = np.array([np.pi / 2.0, 0.0, -np.pi / 2.0])
@@ -158,6 +163,63 @@ def test_spectral_coefficient_diagnostic_masks_invalid_triangle(
     assert not mask[3, 2]
 
 
+def test_streamline_map_is_a_direct_first_class_renderable(tmp_path):
+    specification = StreamlineMapSpec(
+        LATITUDES, LONGITUDES,
+        np.ones((3, 4)), np.zeros((3, 4)),
+        radius=1.0, title="Velocity")
+
+    output = MatplotlibRenderer().render_streamline_map(
+        specification, tmp_path / "streamlines.png", dpi=50)
+
+    assert output.stat().st_size > 0
+    assert mpimg.imread(output).shape[:2] == (300, 600)
+
+
+def test_matplotlib_renders_generic_panel_group_headings_and_separator(
+        tmp_path, monkeypatch):
+    field = ScalarGridField(
+        np.ones((3, 4)), LATITUDES, LONGITUDES, "field", "1")
+    specification = FigureSpec(
+        panels=(
+            PanelPlacement(ScalarMapSpec(field, "State"), 0, 0),
+            PanelPlacement(ScalarMapSpec(field, "Derived"), 0, 1),
+        ),
+        rows=1, columns=2, size_inches=(6.0, 3.0), dpi=50,
+        panel_groups=(
+            PanelGroupSpec("First role", 0, 0),
+            PanelGroupSpec(
+                "Second role", 0, 1, separator_before=True)))
+
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure
+    from matplotlib.lines import Line2D
+    original_text = Axes.text
+    original_add_artist = Figure.add_artist
+    headings = []
+    separators = []
+
+    def recording_text(self, x, y, text, *args, **kwargs):
+        if text in ("First role", "Second role"):
+            headings.append(text)
+        return original_text(self, x, y, text, *args, **kwargs)
+
+    def recording_add_artist(self, artist, *args, **kwargs):
+        if isinstance(artist, Line2D):
+            separators.append(artist)
+        return original_add_artist(self, artist, *args, **kwargs)
+
+    monkeypatch.setattr(Axes, "text", recording_text)
+    monkeypatch.setattr(Figure, "add_artist", recording_add_artist)
+    output = MatplotlibRenderer().render_figure(
+        specification, tmp_path / "groups.png")
+
+    assert output.stat().st_size > 0
+    assert headings == ["First role", "Second role"]
+    assert len(separators) == 1
+    assert separators[0].get_alpha() < 0.5
+
+
 def test_atomic_renderer_preserves_previous_image_and_removes_partial_temp(
         tmp_path, monkeypatch):
     field = ScalarGridField(
@@ -239,6 +301,165 @@ def test_figure_timeline_render_failure_keeps_prior_complete_set(tmp_path):
     assert not list(tmp_path.glob(".transaction.timeline-*"))
 
 
+def test_representative_frame_selection_handles_empty_short_and_irregular():
+    assert select_representative_frame_indices([]) == ()
+    for count in range(1, 6):
+        assert select_representative_frame_indices(np.arange(count)) == tuple(
+            range(count))
+
+    # Targets are [0, 25.25, 50.5, 75.75, 101].  Several targets are much
+    # closer to one cluster than the other; the selected result stays
+    # chronological and distinct while retaining both endpoints.
+    irregular = np.array([0.0, 10.0, 11.0, 12.0, 100.0, 101.0])
+    assert select_representative_frame_indices(irregular) == (0, 2, 3, 4, 5)
+
+
+def test_timeline_overview_uses_full_sequence_normalization():
+    # Six frames force a five-frame overview. Frame 3 is not selected, but its
+    # outlier must still determine every overview panel's frozen limits.
+    values = [1.0, 2.0, 3.0, 99.0, 4.0, 5.0]
+    timeline = FigureTimeline(tuple(
+        _scalar_frame(np.full((3, 4), value), float(index))
+        for index, value in enumerate(values)), filename_prefix="overview")
+    assert timeline.representative_indices() == (0, 1, 2, 4, 5)
+
+    overview = timeline.overview_specification()
+    scalar_panels = [placement.panel for placement in overview.panels
+                     if isinstance(placement.panel, ScalarMapSpec)]
+    labels = [placement.panel for placement in overview.panels
+              if isinstance(placement.panel, TextPanelSpec)]
+    assert len(scalar_panels) == len(labels) == 5
+    assert {(panel.normalization.vmin, panel.normalization.vmax)
+            for panel in scalar_panels} == {(-99.0, 99.0)}
+    assert labels[0].text == "Physical time: 0 s"
+    assert labels[-1].text == "Physical time: 5 s"
+
+
+def test_mixed_panel_timeline_normalizes_all_first_class_panel_families():
+    scalar = ScalarGridField(
+        np.full((3, 4), 2.0), LATITUDES, LONGITUDES, "scalar", "1")
+    coefficients = np.zeros((3, 3), dtype=np.complex128)
+    coefficients[2, 1] = 8.0j
+    spectral = SphericalHarmonicField(coefficients, "spectral", "1")
+    figure = FigureSpec(
+        panels=(
+            PanelPlacement(ScalarMapSpec(
+                scalar, "Scalar", normalization=NormalizationPolicy.symmetric(),
+                normalization_group="mixed-scalar"), 0, 0),
+            PanelPlacement(StreamlineMapSpec(
+                LATITUDES, LONGITUDES,
+                np.full((3, 4), 3.0), np.full((3, 4), 4.0),
+                radius=1.0, title="Flow",
+                normalization_group="mixed-flow"), 0, 1),
+            PanelPlacement(SpectralCoefficientMapSpec(
+                spectral, "Coefficients",
+                normalization_group="mixed-spectral"), 0, 2),
+        ), rows=1, columns=3, size_inches=(6.0, 2.0), dpi=50)
+    timeline = FigureTimeline(
+        (FigureFrame(0.0, figure),), filename_prefix="mixed")
+
+    resolved_panels = [placement.panel for placement in
+                       timeline.resolve_normalizations().frames[0].specification.panels]
+    assert (resolved_panels[0].normalization.vmin,
+            resolved_panels[0].normalization.vmax) == (-2.0, 2.0)
+    assert (resolved_panels[1].normalization.vmin < 5.0 <
+            resolved_panels[1].normalization.vmax)
+    assert (resolved_panels[2].normalization.vmin < 8.0 <
+            resolved_panels[2].normalization.vmax)
+    assert (resolved_panels[2].normalization.kind is
+            NormalizationKind.LOG_MAGNITUDE)
+
+
+class _ByteRenderer:
+    def __init__(self, *, fail_on_representation=None):
+        self.fail_on_representation = fail_on_representation
+
+    def render_figure(self, specification, output_path, *, metadata=None):
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"new")
+        if (self.fail_on_representation is not None and
+                self.fail_on_representation in output_path.parts):
+            raise RuntimeError("synthetic representation failure")
+        return output_path
+
+
+def _two_representation_timelines():
+    frames = (
+        _scalar_frame(np.zeros((3, 4)), 0.0),
+        _scalar_frame(np.ones((3, 4)), 3600.0),
+    )
+    return {
+        "physical": FigureTimeline(frames, filename_prefix="physical-model"),
+        "spectral": FigureTimeline(frames, filename_prefix="spectral-model"),
+    }
+
+
+def test_snapshot_product_layout_and_rerender_removes_stale_frames(tmp_path):
+    stale = tmp_path / "snapshots" / "physical"
+    stale.mkdir(parents=True)
+    (stale / "t000123s.png").write_bytes(b"stale")
+    (stale / "timeline.png").write_bytes(b"stale")
+
+    outputs = render_snapshot_product(
+        _two_representation_timelines(), tmp_path, renderer=_ByteRenderer())
+
+    for representation in ("physical", "spectral"):
+        directory = tmp_path / "snapshots" / representation
+        assert {path.name for path in directory.iterdir()} == {
+            "t000000s.png", "t003600s.png", "timeline.png"}
+        assert all(path.suffix == ".png" for path in directory.iterdir())
+        assert outputs[representation][-1] == directory / "timeline.png"
+    assert not list(tmp_path.glob(".snapshots.product-*"))
+
+
+def test_snapshot_product_failure_preserves_previous_complete_product(tmp_path):
+    for representation in ("physical", "spectral"):
+        directory = tmp_path / "snapshots" / representation
+        directory.mkdir(parents=True)
+        (directory / "timeline.png").write_bytes(
+            f"old-{representation}".encode())
+        (directory / "t000000s.png").write_bytes(
+            f"old-frame-{representation}".encode())
+
+    with pytest.raises(RuntimeError, match="representation failure"):
+        render_snapshot_product(
+            _two_representation_timelines(), tmp_path,
+            renderer=_ByteRenderer(fail_on_representation="spectral"))
+
+    assert (tmp_path / "snapshots" / "physical" / "timeline.png").read_bytes() == (
+        b"old-physical")
+    assert (tmp_path / "snapshots" / "spectral" / "timeline.png").read_bytes() == (
+        b"old-spectral")
+    assert not list(tmp_path.glob(".snapshots.product-*"))
+
+
+def test_snapshot_product_publication_failure_rolls_back_directory(
+        tmp_path, monkeypatch):
+    old = tmp_path / "snapshots" / "physical" / "timeline.png"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"old-product")
+
+    from planetary_sandbox.viz import timeline as timeline_module
+    real_replace = timeline_module.os.replace
+
+    def fail_final_directory_publish(source, destination):
+        source = pathlib.Path(source)
+        if (source.name == "snapshots" and
+                source.parent.name.startswith(".snapshots.product-")):
+            raise OSError("synthetic directory publication failure")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(
+        timeline_module.os, "replace", fail_final_directory_publish)
+    with pytest.raises(OSError, match="directory publication failure"):
+        render_snapshot_product(
+            _two_representation_timelines(), tmp_path,
+            renderer=_ByteRenderer())
+
+    assert old.read_bytes() == b"old-product"
+    assert not list(tmp_path.glob(".snapshots.product-*"))
+
+
 class _FakeTransform:
     def inv_transform(self, coefficients):
         marker = int(round(float(np.real(coefficients[1, 0]))))
@@ -252,6 +473,14 @@ class _FakeSWEModel:
     sh = _FakeTransform()
     grid = object()  # values already have the established view-grid shape
     gravity = 10.0
+    R = 1.0
+
+    @staticmethod
+    def wind_on_state_grid(state):
+        u_marker = float(np.real(state.coeffs[0, 1, 0]))
+        v_marker = float(np.real(state.coeffs[1, 1, 0]))
+        shape = (91, 181)
+        return np.full(shape, u_marker), np.full(shape, v_marker)
 
 
 def _write_fake_swe_artifacts(path):
@@ -271,14 +500,14 @@ def test_swe_summary_titles_units_shape_and_nonempty_image(tmp_path):
     specification = build_swe_summary_spec(_FakeSWEModel(), tmp_path)
     scalar_specs = [placement.panel for placement in specification.panels]
     assert [panel.title for panel in scalar_specs] == [
-        "Layer thickness anomaly", "Relative vorticity",
-        "Horizontal divergence"]
+        "Relative vorticity", "Horizontal divergence",
+        "Layer-thickness anomaly h' = Phi'/g"]
     assert [panel.display_units for panel in scalar_specs] == [
-        "m", "s^-1", "s^-1"]
+        "s^-1", "s^-1", "m"]
     assert all(panel.normalization.kind is NormalizationKind.SYMMETRIC
                for panel in scalar_specs)
     # phi marker 3 is converted to thickness using g=10.
-    assert np.max(np.abs(scalar_specs[0].field.values)) == pytest.approx(0.3)
+    assert np.max(np.abs(scalar_specs[2].field.values)) == pytest.approx(0.3)
     assert scalar_specs[0].field.latitudes[0] > scalar_specs[0].field.latitudes[-1]
     initial_specification = build_swe_summary_spec(
         _FakeSWEModel(), tmp_path, time_index=0)
@@ -293,7 +522,8 @@ def test_swe_summary_titles_units_shape_and_nonempty_image(tmp_path):
 
 def test_swe_snapshot_timeline_uses_persisted_times_and_shared_limits(tmp_path):
     from planetary_sandbox.run.swe.visualization import (
-        build_swe_snapshot_timeline)
+        build_swe_snapshot_timeline, build_swe_snapshot_timelines,
+        render_swe_snapshots)
 
     _write_fake_swe_artifacts(tmp_path)
     timeline = build_swe_snapshot_timeline(
@@ -304,10 +534,32 @@ def test_swe_snapshot_timeline_uses_persisted_times_and_shared_limits(tmp_path):
 
     resolved = timeline.resolve_normalizations()
     thickness_policies = [
-        frame.specification.panels[0].panel.normalization
+        frame.specification.panels[2].panel.normalization
         for frame in resolved.frames]
     assert {(policy.vmin, policy.vmax) for policy in thickness_policies} == {
         (-0.3, 0.3)}
+    physical_specification = timeline.frames[0].specification
+    assert [group.title for group in physical_specification.panel_groups] == [
+        "Prognostic state", "Diagnostic fields"]
+    assert isinstance(
+        physical_specification.panels[-1].panel, StreamlineMapSpec)
+    assert "Phi'/g" in physical_specification.panels[2].panel.title
+
+    timelines = build_swe_snapshot_timelines(
+        _FakeSWEModel(), tmp_path, scenario="gravity_wave")
+    assert tuple(timelines) == ("physical", "spectral")
+    np.testing.assert_array_equal(
+        timelines["physical"].times_seconds,
+        timelines["spectral"].times_seconds)
+    assert all(isinstance(placement.panel, SpectralCoefficientMapSpec)
+               for placement in
+               timelines["spectral"].frames[0].specification.panels)
+
+    render_swe_snapshots(
+        _FakeSWEModel(), tmp_path, scenario="gravity_wave",
+        renderer=_ByteRenderer())
+    assert (tmp_path / "snapshots" / "physical" / "timeline.png").exists()
+    assert (tmp_path / "snapshots" / "spectral" / "timeline.png").exists()
 
 
 class _FakeBVETransform:
@@ -346,7 +598,8 @@ class _FakeBVEPlanet:
 
 def test_bve_snapshot_timeline_reloads_persisted_artifacts(tmp_path):
     from planetary_sandbox.run.bve.visualization import (
-        BVE_SNAPSHOT_TIMES_FILENAME, build_bve_snapshot_timeline)
+        BVE_SNAPSHOT_TIMES_FILENAME, build_bve_snapshot_timeline,
+        build_bve_snapshot_timelines, render_bve_snapshots)
 
     coefficients = np.zeros((2, 3, 3), dtype=np.complex128)
     coefficients[0, 1, 0] = 1.0
@@ -360,11 +613,32 @@ def test_bve_snapshot_timeline_reloads_persisted_artifacts(tmp_path):
     timeline = build_bve_snapshot_timeline(
         _FakeBVEPlanet(), tmp_path, scenario="rh4")
     assert timeline.times_seconds.tolist() == [0.0, 12.5]
-    assert all(len(frame.specification.panels) == 4
+    assert all(len(frame.specification.panels) == 3
                for frame in timeline.frames)
+    assert [group.title for group in
+            timeline.frames[0].specification.panel_groups] == [
+                "Prognostic state", "Diagnostic fields"]
+    assert isinstance(
+        timeline.frames[0].specification.panels[-1].panel,
+        StreamlineMapSpec)
     policies = [frame.specification.panels[0].panel.normalization
                 for frame in timeline.resolve_normalizations().frames]
     assert {(policy.vmin, policy.vmax) for policy in policies} == {(-3.0, 3.0)}
+
+    timelines = build_bve_snapshot_timelines(
+        _FakeBVEPlanet(), tmp_path, scenario="rh4")
+    np.testing.assert_array_equal(
+        timelines["physical"].times_seconds,
+        timelines["spectral"].times_seconds)
+    assert isinstance(
+        timelines["spectral"].frames[0].specification.panels[0].panel,
+        SpectralCoefficientMapSpec)
+
+    render_bve_snapshots(
+        _FakeBVEPlanet(), tmp_path, scenario="rh4", renderer=_ByteRenderer())
+    assert (tmp_path / "snapshots" / "physical" / "t000000s.png").exists()
+    assert (tmp_path / "snapshots" / "spectral" /
+            "t000012.500000000s.png").exists()
 
 
 def test_swe_visualization_failure_prevents_completion_and_publication(

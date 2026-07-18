@@ -5,18 +5,21 @@ import pathlib
 
 import numpy as np
 
-from planetary_sandbox.viz.fields import ScalarGridField
+from planetary_sandbox.viz.fields import (ScalarGridField,
+                                           SphericalHarmonicField)
 from planetary_sandbox.viz.grid_adapter import map_to_uniform_latlon
 from planetary_sandbox.viz.normalization import NormalizationPolicy
 from planetary_sandbox.viz.renderers import get_default_renderer
 from planetary_sandbox.viz.specs import (
-    FigureSpec, LinePanelSpec, LineSeriesSpec, PanelPlacement, ScalarMapSpec,
-    StreamlineMapSpec, TextPanelSpec)
+    FigureSpec, LinePanelSpec, LineSeriesSpec, PanelGroupSpec, PanelPlacement,
+    ScalarMapSpec, SpectralCoefficientMapSpec, StreamlineMapSpec,
+    TextPanelSpec)
 from planetary_sandbox.viz.timeline import (FigureFrame, FigureTimeline,
-                                             render_figure_timeline)
+                                             render_snapshot_product)
 
 
 BVE_SNAPSHOT_TIMES_FILENAME = "bve_snapshot_times.npy"
+_SPECTRAL_NORMALIZATION = "orthonormal-complex-m>=0-real-field"
 
 
 def _host(values) -> np.ndarray:
@@ -31,28 +34,6 @@ def _backend_array(owner, values):
         import cupy as cp
         return cp.asarray(values)
     return values
-
-
-def _physical_weights(planet, sample: np.ndarray) -> np.ndarray:
-    """Return model-grid physical areas shaped like one persisted field."""
-    try:
-        weights = _host(planet.grid.cell_areas)
-    except (AttributeError, NotImplementedError):
-        weights = None
-    if weights is not None and weights.size == sample.size:
-        return weights.reshape(sample.shape)
-
-    if sample.ndim == 2 and hasattr(planet.grid, "latitudes"):
-        latitudes = _host(planet.grid.latitudes)
-        longitudes = _host(planet.grid.longitudes)
-        if latitudes.size < 2 or longitudes.size < 2:
-            raise ValueError("BVE snapshot statistics require at least a 2x2 grid")
-        d_lat = abs(latitudes[1] - latitudes[0])
-        d_lon = abs(longitudes[1] - longitudes[0])
-        radius = planet.params.equatorial_radius
-        return (np.cos(latitudes)[:, None] * d_lat * d_lon * radius**2 *
-                np.ones((1, longitudes.size)))
-    raise ValueError("BVE persisted grid shape does not match its model grid")
 
 
 def _map_vector_to_view(planet, u, v):
@@ -91,7 +72,6 @@ def build_bve_snapshot_timeline_from_data(
                 "BVE coefficients must have shape (time, l, m) matching grids")
         coefficient_states = coefficient_array
 
-    weights = _physical_weights(planet, grids[0])
     radius = planet.params.equatorial_radius
     frames: list[FigureFrame] = []
     for index, (time_seconds, zeta_grid, zeta_lm) in enumerate(
@@ -118,23 +98,11 @@ def build_bve_snapshot_timeline_from_data(
             psi_view, latitudes, longitudes,
             name="streamfunction", units="m^2/s", times=selected_time)
 
-        speed = np.sqrt(u_grid**2 + v_grid**2)
-        circulation = float(np.sum(zeta_grid * weights))
-        kinetic_energy = float(0.5 * np.sum(speed**2 * weights))
         time_hours = time_seconds / 3600.0
-        stats = (
-            "Snapshot Stats\n"
-            "----------------\n"
-            f"Time: {time_hours:.2f} h\n"
-            f"Circulation: {circulation:+.2e} m^2/s\n"
-            f"Kinetic Energy: {kinetic_energy:.2e} J/kg\n"
-            f"Max |vorticity|: {np.max(np.abs(zeta_grid)):.2e} s^-1\n"
-            f"RMS vorticity: {np.sqrt(np.mean(zeta_grid**2)):.2e} s^-1\n"
-            f"Max speed: {np.max(speed):.2f} m/s\n")
 
         panels = (
             PanelPlacement(ScalarMapSpec(
-                zeta_field, f"Vorticity @ t={time_hours:.2f} h",
+                zeta_field, f"Relative vorticity @ t={time_hours:.2f} h",
                 normalization=NormalizationPolicy.symmetric(),
                 color_policy="signed", normalization_group="bve-vorticity"),
                 0, 0),
@@ -145,16 +113,19 @@ def build_bve_snapshot_timeline_from_data(
                 normalization_group="bve-streamfunction"), 0, 1),
             PanelPlacement(StreamlineMapSpec(
                 latitudes, longitudes, u_view, v_view, radius=radius,
-                title=f"Flow @ t={time_hours:.2f} h",
+                title=f"Velocity streamlines @ t={time_hours:.2f} h",
                 normalization_group="bve-speed"), 0, 2),
-            PanelPlacement(TextPanelSpec(
-                stats, horizontal_alignment="left", font_size=10.0), 0, 3),
         )
         frames.append(FigureFrame(
             time_seconds, FigureSpec(
-                panels=panels, rows=1, columns=4,
-                size_inches=(24.0, 6.0), dpi=200,
-                width_ratios=(1.0, 1.0, 1.0, 0.9))))
+                panels=panels, rows=1, columns=3,
+                size_inches=(18.0, 6.0), dpi=200,
+                panel_groups=(
+                    PanelGroupSpec(
+                        "Prognostic state", 0, 0, column_span=1),
+                    PanelGroupSpec(
+                        "Diagnostic fields", 0, 1, column_span=2,
+                        separator_before=True)))))
 
     return FigureTimeline(tuple(frames), filename_prefix=scenario)
 
@@ -171,16 +142,78 @@ def build_bve_snapshot_timeline(
         planet, grids, times, scenario=scenario, coefficients=coefficients)
 
 
+def build_bve_spectral_snapshot_timeline_from_data(
+        coefficients, times_seconds, *, scenario: str) -> FigureTimeline:
+    """Compose BVE coefficient-space frames from persisted artifacts."""
+    coefficients = _host(coefficients)
+    times = _host(times_seconds).astype(np.float64, copy=False)
+    if coefficients.ndim != 3 or coefficients.shape[0] == 0:
+        raise ValueError(
+            "BVE coefficients must have shape (time, l, m) with at least "
+            "one state")
+    if times.shape != (coefficients.shape[0],):
+        raise ValueError("BVE snapshot times must match the coefficient time axis")
+    if not np.isfinite(times).all() or np.any(times < 0.0):
+        raise ValueError("BVE snapshot times must be finite and nonnegative")
+    if times.size > 1 and not np.all(np.diff(times) > 0.0):
+        raise ValueError("BVE snapshot times must be strictly increasing")
+
+    field = SphericalHarmonicField(
+        coefficients, "relative vorticity", "s^-1", times,
+        normalization=_SPECTRAL_NORMALIZATION)
+    frames = tuple(
+        FigureFrame(time_seconds, FigureSpec(
+            panels=(PanelPlacement(SpectralCoefficientMapSpec(
+                field,
+                f"Vorticity coefficients @ t={time_seconds / 3600.0:.2f} h",
+                time_index=index,
+                normalization=NormalizationPolicy.logarithmic_magnitude(),
+                color_policy="magnitude",
+                normalization_group="bve-vorticity-coefficients"), 0, 0),),
+            rows=1, columns=1, size_inches=(8.0, 6.0), dpi=200))
+        for index, time_seconds in enumerate(times))
+    return FigureTimeline(frames, filename_prefix=f"{scenario}-spectral")
+
+
+def build_bve_spectral_snapshot_timeline(
+        planet, out_dir: pathlib.Path | str, *, scenario: str
+        ) -> FigureTimeline:
+    """Load persisted BVE coefficients and compose their timeline."""
+    del planet  # Kept for a symmetric public adapter signature.
+    out_dir = pathlib.Path(out_dir)
+    coefficients = np.load(out_dir / "vorticity_coeffs.npy")
+    times = np.load(out_dir / BVE_SNAPSHOT_TIMES_FILENAME)
+    return build_bve_spectral_snapshot_timeline_from_data(
+        coefficients, times, scenario=scenario)
+
+
+def build_bve_snapshot_timelines(
+        planet, out_dir: pathlib.Path | str, *, scenario: str
+        ) -> dict[str, FigureTimeline]:
+    """Build physical and spectral BVE views from one persisted payload."""
+    out_dir = pathlib.Path(out_dir)
+    coefficients = np.load(out_dir / "vorticity_coeffs.npy")
+    grids = np.load(out_dir / "vorticity_grid.npy")
+    times = np.load(out_dir / BVE_SNAPSHOT_TIMES_FILENAME)
+    return {
+        "physical": build_bve_snapshot_timeline_from_data(
+            planet, grids, times, scenario=scenario,
+            coefficients=coefficients),
+        "spectral": build_bve_spectral_snapshot_timeline_from_data(
+            coefficients, times, scenario=scenario),
+    }
+
+
 def render_bve_snapshots(
         planet, out_dir: pathlib.Path | str, *, scenario: str,
         metadata: dict | None = None, renderer=None
-        ) -> tuple[pathlib.Path, ...]:
-    """Render BVE frames from persisted artifacts through the shared path."""
+        ) -> dict[str, tuple[pathlib.Path, ...]]:
+    """Atomically render the complete physical/spectral BVE product."""
     out_dir = pathlib.Path(out_dir)
-    timeline = build_bve_snapshot_timeline(
+    timelines = build_bve_snapshot_timelines(
         planet, out_dir, scenario=scenario)
-    return render_figure_timeline(
-        timeline, out_dir, renderer=renderer or get_default_renderer(),
+    return render_snapshot_product(
+        timelines, out_dir, renderer=renderer or get_default_renderer(),
         metadata=metadata)
 
 

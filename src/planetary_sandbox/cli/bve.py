@@ -44,6 +44,7 @@ _GENERATED_RESULT_FILES: tuple[str, ...] = (
 _GENERATED_RESULT_DIRS: tuple[str, ...] = (
     "diagnostics",
     "figures",
+    "snapshots",
 )
 
 #: Snapshot image names: the legacy viewer montage followed by current

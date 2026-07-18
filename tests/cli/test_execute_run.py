@@ -352,12 +352,17 @@ def _make_generated_outputs(run_path, scenario="two_vortices"):
     (run_path / "bve_summary.png").write_bytes(b"png")
     (run_path / f"{scenario}_t0.00h-24.00h-6.00h.png").write_bytes(b"png")
     (run_path / f"{scenario}_t0000000000000.000000000s.png").write_bytes(b"png")
+    for representation in ("physical", "spectral"):
+        snapshot_dir = run_path / "snapshots" / representation
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        (snapshot_dir / "timeline.png").write_bytes(b"png")
+        (snapshot_dir / "t000000s.png").write_bytes(b"png")
 
 
 def test_clean_removes_known_generated_artifacts(tmp_path):
     _make_generated_outputs(tmp_path)
     bve._clean_overwrite_artifacts(tmp_path)
-    for name in ("diagnostics", "figures", "vorticity_coeffs.npy",
+    for name in ("diagnostics", "figures", "snapshots", "vorticity_coeffs.npy",
                  "vorticity_grid.npy", "bve_snapshot_times.npy",
                  "bve_summary.png"):
         assert not (tmp_path / name).exists()

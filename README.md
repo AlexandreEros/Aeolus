@@ -144,6 +144,13 @@ Field-state storage and image generation are controlled independently:
   existing commands behave exactly as before.
 - `--plot TYPE` (repeatable: `diagnostics`, `snapshots`, `summary`, or
   `all`) selects which image products to render; `--no-plots` renders none.
+  The `snapshots` product is published as one staged directory containing
+  `physical/` and `spectral/` frames plus a representative `timeline.png` in
+  each representation. Both views use the persisted snapshot time axis and
+  the same full-sequence normalization as their complete frame sets. Physical
+  frames visibly separate prognostic state from instantaneous diagnostic
+  fields; BVE diagnostics include streamfunction and velocity streamlines,
+  while SWE derives velocity and `h' = Phi'/g` from each persisted state.
   Field snapshots (`vorticity_coeffs.npy` / `vorticity_grid.npy`), their
   authoritative `bve_snapshot_times.npy` time axis, and the
   per-step numerical diagnostics CSV are always written regardless of plot

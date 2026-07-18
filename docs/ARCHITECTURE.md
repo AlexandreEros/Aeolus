@@ -169,14 +169,25 @@ state grid is under-resolved.
 Visualization data and rendering are separated under `viz/`: `fields.py`
 represents latitude-longitude scalar fields and unpacked triangular
 spherical-harmonic fields; `normalization.py` and `specs.py` describe numeric
-scaling and requested views without plotting objects; `renderers.py` is the
+scaling, scalar maps, streamline maps, complex-coefficient maps, and generic
+panel groups without plotting objects; `renderers.py` is the
 small backend protocol; `timeline.py` owns timestamped figure sequences,
-cross-frame normalization, deterministic filenames, and transactional frame
-publication; and `matplotlib_renderer.py` is the initial backend. BVE and SWE
+cross-frame normalization, representative-frame selection, deterministic
+filenames, and transactional whole-product publication; and
+`matplotlib_renderer.py` is the initial backend. BVE and SWE
 adapters choose their own physical fields, labels, panels, and layouts and
 reconstruct frames from persisted run arrays. PNGs are written to
 same-directory temporary siblings and atomically replaced, so only complete
 images can become run artifacts.
+
+Physical snapshot frames use backend-neutral panel-group metadata to display
+`Prognostic state` and `Diagnostic fields` headings with a subtle separator;
+the renderer knows only group geometry and styling. BVE places relative
+vorticity in the prognostic group and derives streamfunction and velocity
+streamlines from the same state. SWE places relative vorticity, horizontal
+divergence, and `h' = Phi'/g` in the prognostic group and derives velocity
+streamlines instantaneously. History-dependent diagnostics remain in the
+diagnostic time-series products rather than snapshot frames.
 
 A current run capsule looks like this:
 
@@ -198,13 +209,19 @@ runs/
     ├── vorticity_grid.npy
     ├── bve_snapshot_times.npy
     ├── bve_summary.png
-    └── <scenario>_t<seconds>s.png  # one deterministic file per state
+    └── snapshots/
+        ├── physical/
+        │   ├── timeline.png
+        │   └── t<seconds>s.png
+        └── spectral/
+            ├── timeline.png
+            └── t<seconds>s.png
 ```
 
 An SWE capsule uses `swe_coeffs.npy` (shape `(N, 3, L+1, L+1)`, ordered as
 relative vorticity, horizontal divergence, and perturbation geopotential),
 `swe_snapshot_times.npy`, and `swe_summary.png` in place of the BVE state and
-summary products. Its per-state `<scenario>_t<seconds>s.png` frames and final
+summary products. Its physical and spectral snapshot products and final
 summary are regenerated from those persisted arrays.
 
 The intended semantic categories are:
@@ -216,14 +233,17 @@ runs/
     ├── config.json
     ├── diagnostics/
     ├── states/       # currently BVE's three state/time .npy files at capsule root
-    ├── figures/      # diagnostic figures; viewer figures are also at root
+    ├── figures/      # diagnostic figures; summaries are currently at root
+    ├── snapshots/    # physical/spectral frames and representative overviews
     └── logs/         # reserved; CLI stdout is not persisted yet
 ```
 
 Which figures exist depends on the run's plot selection (`--plot` /
-`--no-plots`): `figures/` comes from the `diagnostics` plot product, the
-one `<scenario>_t<seconds>s.png` frame per stored state from `snapshots`, and
-the model summary from `summary`. The `.npy` state files and `diagnostics/`
+`--no-plots`): `figures/` comes from the `diagnostics` plot product,
+`snapshots/{physical,spectral}/` comes from `snapshots`, and the model summary
+comes from `summary`. Each snapshot representation has one deterministic
+frame per stored state and a vertically assembled overview of at most five
+physical-time representatives. The `.npy` state files and `diagnostics/`
 data are written regardless of plot selection (and are empty-but-present when
 `--n-snapshots 0` stores no field states).
 

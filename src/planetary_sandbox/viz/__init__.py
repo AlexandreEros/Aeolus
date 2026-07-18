@@ -4,9 +4,12 @@ from .fields import ScalarGridField, SphericalHarmonicField
 from .normalization import (NormalizationKind, NormalizationPolicy,
                             ResolvedNormalization)
 from .renderers import Renderer, get_default_renderer
-from .specs import (FigureSpec, ScalarMapSpec, SpectralCoefficientMapSpec)
+from .specs import (FigureSpec, PanelGroup, PanelGroupSpec, ScalarMapSpec,
+                    SpectralCoefficientMapSpec, StreamlineMapSpec)
 from .timeline import (FigureFrame, FigureTimeline, TimelineFrame,
-                       render_figure_timeline, render_timeline)
+                       build_timeline_overview, render_figure_timeline,
+                       render_snapshot_product, render_timeline,
+                       select_representative_frame_indices)
 
 __all__ = [
     "FigureSpec",
@@ -14,17 +17,23 @@ __all__ = [
     "FigureTimeline",
     "NormalizationKind",
     "NormalizationPolicy",
+    "PanelGroup",
+    "PanelGroupSpec",
     "PlanetViewer",
     "Renderer",
     "ResolvedNormalization",
     "ScalarGridField",
     "ScalarMapSpec",
     "SpectralCoefficientMapSpec",
+    "StreamlineMapSpec",
     "SphericalHarmonicField",
     "TimelineFrame",
+    "build_timeline_overview",
     "get_default_renderer",
     "render_figure_timeline",
+    "render_snapshot_product",
     "render_timeline",
+    "select_representative_frame_indices",
 ]
 
 

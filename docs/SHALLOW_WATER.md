@@ -171,11 +171,16 @@ Options: `--gravity`, `--mean-depth`, `--day-hours`, `--radius-earth-units`,
 runs (`config.json`, `manifest.json` with status lifecycle,
 `latest_run.txt`); stored artifacts are `swe_coeffs.npy`
 (`(N, 3, l_max+1, l_max+1)` spectral snapshots), `swe_snapshot_times.npy`,
-`diagnostics/timeseries.csv`, `figures/`, one deterministic time-named PNG per
-stored state, and `swe_summary.png`. Snapshot frames and the summary are
-reconstructed from persisted coefficients and show layer thickness anomaly
-relative to the configured mean depth, relative vorticity, and horizontal
-divergence. Each field keeps one normalization across the complete timeline.
+`diagnostics/timeseries.csv`, `figures/`, `snapshots/`, and
+`swe_summary.png`. The snapshot product contains physical and coefficient
+frames at every persisted time plus a representative `timeline.png` for each
+view. The prognostic physical group shows relative vorticity, horizontal
+divergence, and the layer-thickness anomaly explicitly labeled
+`h' = Phi'/g`; its diagnostic group shows velocity streamlines reconstructed
+from that persisted state's Helmholtz decomposition. Spectral frames show the
+persisted relative-vorticity, horizontal-divergence, and perturbation-
+geopotential coefficient magnitudes. Each field keeps one normalization
+across the complete timeline.
 A selected-product rendering failure marks the capsule failed and prevents
 publication through `latest_run.txt`.
 

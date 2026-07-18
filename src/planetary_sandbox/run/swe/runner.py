@@ -46,7 +46,8 @@ def run_swe(model: ShallowWaterModel,
     * ``swe_snapshot_times.npy``  stored times in seconds
     * ``diagnostics/timeseries.csv``  per-step scalar diagnostics
     * ``figures/``                rendered when 'diagnostics' in ``plots``
-    * ``<scenario>_t<seconds>s.png`` one per state when 'snapshots' is selected
+    * ``snapshots/{physical,spectral}/`` complete time-named frames and a
+                                         representative ``timeline.png``
     * ``swe_summary.png``         rendered when 'summary' in ``plots``
     """
     planet = model.planet

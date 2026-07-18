@@ -46,6 +46,15 @@ class MatplotlibRenderer:
             rows=1, columns=1, size_inches=(8.0, 6.0), dpi=dpi)
         return self.render_figure(figure, output_path, metadata=metadata)
 
+    def render_streamline_map(
+            self, specification: StreamlineMapSpec,
+            output_path: pathlib.Path | str, *, metadata: dict | None = None,
+            dpi: int = 200) -> pathlib.Path:
+        figure = FigureSpec(
+            panels=(PanelPlacement(specification, 0, 0),),
+            rows=1, columns=1, size_inches=(12.0, 6.0), dpi=dpi)
+        return self.render_figure(figure, output_path, metadata=metadata)
+
     def render_figure(self, specification: FigureSpec,
                       output_path: pathlib.Path | str, *,
                       metadata: dict | None = None) -> pathlib.Path:
@@ -55,22 +64,104 @@ class MatplotlibRenderer:
         output.parent.mkdir(parents=True, exist_ok=True)
         figure = plt.figure(figsize=specification.size_inches)
         try:
+            header_rows = sorted({group.row
+                                  for group in specification.panel_groups})
+            source_height_ratios = (
+                specification.height_ratios or
+                (1.0,) * specification.rows)
+            mean_row_ratio = sum(source_height_ratios) / len(
+                source_height_ratios)
+            expanded_height_ratios = []
+            for row, ratio in enumerate(source_height_ratios):
+                if row in header_rows:
+                    expanded_height_ratios.append(0.08 * mean_row_ratio)
+                expanded_height_ratios.append(ratio)
+
             grid = figure.add_gridspec(
-                specification.rows, specification.columns,
+                specification.rows + len(header_rows), specification.columns,
                 width_ratios=specification.width_ratios,
-                height_ratios=specification.height_ratios)
-            for placement in specification.panels:
+                height_ratios=expanded_height_ratios)
+            rendered_groups = []
+            for group in specification.panel_groups:
+                header_row = group.row + sum(
+                    candidate < group.row for candidate in header_rows)
                 axes = figure.add_subplot(grid[
-                    placement.row:placement.row + placement.row_span,
+                    header_row,
+                    group.column:group.column + group.column_span])
+                axes.axis("off")
+                axes.text(
+                    0.5, 0.45, group.title, ha="center", va="center",
+                    fontsize=11.0, fontweight="semibold", color="#333333")
+                rendered_groups.append((group, axes))
+
+            rendered_panels = []
+            for placement in specification.panels:
+                first_row = placement.row + sum(
+                    candidate <= placement.row for candidate in header_rows)
+                last_source_row = placement.row + placement.row_span - 1
+                last_row = last_source_row + sum(
+                    candidate <= last_source_row for candidate in header_rows)
+                axes = figure.add_subplot(grid[
+                    first_row:last_row + 1,
                     placement.column:placement.column + placement.column_span])
                 self._render_panel(figure, axes, placement.panel)
+                rendered_panels.append((placement, axes))
             if specification.tight_layout:
                 figure.tight_layout()
+            self._render_panel_groups(
+                figure, specification, rendered_panels, rendered_groups)
             self._save_atomic(
                 figure, output, dpi=specification.dpi, metadata=metadata)
         finally:
             plt.close(figure)
         return output
+
+    @staticmethod
+    def _render_panel_groups(
+            figure, specification, rendered_panels, rendered_groups) -> None:
+        """Draw requested generic inter-group dividers after layout."""
+        if not specification.panel_groups:
+            return
+
+        from matplotlib.lines import Line2D
+        from matplotlib.transforms import Bbox
+
+        # Layout must be settled before axes positions can anchor separators.
+        figure.canvas.draw()
+        bounds = []
+        heading_axes = dict(rendered_groups)
+        for group in specification.panel_groups:
+            axes = [axes for placement, axes in rendered_panels
+                    if group.contains(placement)]
+            if not axes:  # FigureSpec validation normally makes this impossible.
+                continue
+            if group in heading_axes:
+                axes.append(heading_axes[group])
+            box = Bbox.union([axes.get_position() for axes in axes])
+            bounds.append((group, box))
+
+        for group, box in bounds:
+            if not group.separator_before:
+                continue
+            previous = [
+                (other, other_box) for other, other_box in bounds
+                if (other.row < group.row + group.row_span and
+                    group.row < other.row + other.row_span and
+                    other.column + other.column_span <= group.column)]
+            if previous:
+                _, previous_box = max(
+                    previous, key=lambda member: member[0].column +
+                    member[0].column_span)
+                x = (previous_box.x1 + box.x0) / 2.0
+                y0 = min(previous_box.y0, box.y0)
+                y1 = max(previous_box.y1, box.y1)
+            else:
+                x = box.x0 - 0.012
+                y0, y1 = box.y0, box.y1
+            figure.add_artist(Line2D(
+                (x, x), (y0, y1), transform=figure.transFigure,
+                color="#666666", linewidth=0.8, alpha=0.4,
+                solid_capstyle="round"))
 
     def _render_panel(self, figure, axes, panel) -> None:
         if isinstance(panel, ScalarMapSpec):

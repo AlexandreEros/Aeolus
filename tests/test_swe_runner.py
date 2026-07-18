@@ -267,3 +267,17 @@ def test_swe_cli_end_to_end(tmp_path, capsys):
     assert (run_dir / "swe_coeffs.npy").exists()
     assert (run_dir / "diagnostics" / "timeseries.csv").exists()
     assert not (run_dir / "figures").exists()
+
+
+def test_swe_overwrite_cleanup_removes_snapshot_product(tmp_path):
+    from planetary_sandbox.cli import swe
+
+    snapshots = tmp_path / "snapshots" / "physical"
+    snapshots.mkdir(parents=True)
+    (snapshots / "timeline.png").write_bytes(b"old")
+    (tmp_path / "custom.png").write_bytes(b"user")
+
+    swe._clean_overwrite_artifacts(tmp_path)
+
+    assert not (tmp_path / "snapshots").exists()
+    assert (tmp_path / "custom.png").read_bytes() == b"user"

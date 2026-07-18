@@ -161,6 +161,47 @@ class PanelPlacement:
 
 
 @dataclass(frozen=True)
+class PanelGroupSpec:
+    """A labeled rectangular group of scientifically related panels.
+
+    The group describes layout and presentation only. Scientific role names
+    and the decision about which fields belong together remain adapter-owned.
+    """
+
+    title: str
+    row: int
+    column: int
+    row_span: int = 1
+    column_span: int = 1
+    separator_before: bool = False
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.title, str) or not self.title.strip():
+            raise ValueError("panel-group title must be a nonempty string")
+        if (not isinstance(self.separator_before, bool) or
+                any(not isinstance(value, int) or isinstance(value, bool)
+                    for value in (self.row, self.column, self.row_span,
+                                  self.column_span))):
+            raise TypeError("panel-group placement values must be integers")
+        if (self.row < 0 or self.column < 0 or self.row_span < 1 or
+                self.column_span < 1):
+            raise ValueError("panel-group placement must be positive")
+
+    def contains(self, placement: PanelPlacement) -> bool:
+        """Whether a panel placement lies completely inside this group."""
+        return (
+            placement.row >= self.row and
+            placement.column >= self.column and
+            placement.row + placement.row_span <= self.row + self.row_span and
+            placement.column + placement.column_span <=
+            self.column + self.column_span)
+
+
+# Concise public spelling for callers that do not need the Spec suffix.
+PanelGroup = PanelGroupSpec
+
+
+@dataclass(frozen=True)
 class FigureSpec:
     panels: tuple[PanelPlacement, ...]
     rows: int
@@ -170,6 +211,7 @@ class FigureSpec:
     width_ratios: tuple[float, ...] | None = None
     height_ratios: tuple[float, ...] | None = None
     tight_layout: bool = True
+    panel_groups: tuple[PanelGroupSpec, ...] = ()
 
     def __post_init__(self) -> None:
         if self.rows < 1 or self.columns < 1:
@@ -180,9 +222,31 @@ class FigureSpec:
             raise ValueError("width-ratio count must equal figure columns")
         if self.height_ratios is not None and len(self.height_ratios) != self.rows:
             raise ValueError("height-ratio count must equal figure rows")
+        groups = tuple(self.panel_groups)
+        occupied: set[tuple[int, int]] = set()
+        for group in groups:
+            if not isinstance(group, PanelGroupSpec):
+                raise TypeError("figure panel_groups must contain PanelGroupSpec")
+            if (group.row + group.row_span > self.rows or
+                    group.column + group.column_span > self.columns):
+                raise ValueError(
+                    f"panel group is outside figure grid: {group}")
+            cells = {
+                (row, column)
+                for row in range(group.row, group.row + group.row_span)
+                for column in range(
+                    group.column, group.column + group.column_span)}
+            if occupied.intersection(cells):
+                raise ValueError("panel groups must not overlap")
+            occupied.update(cells)
         for placement in self.panels:
             if (placement.row < 0 or placement.column < 0 or
                     placement.row_span < 1 or placement.column_span < 1 or
                     placement.row + placement.row_span > self.rows or
                     placement.column + placement.column_span > self.columns):
                 raise ValueError(f"panel placement is outside figure grid: {placement}")
+        for group in groups:
+            if not any(group.contains(placement) for placement in self.panels):
+                raise ValueError(
+                    f"panel group contains no panels: {group.title!r}")
+        object.__setattr__(self, "panel_groups", groups)
