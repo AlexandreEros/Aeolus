@@ -22,8 +22,8 @@ from ..bve.config import (GRID_TYPES, MIN_NLAT, MIN_NLON,
 
 #: Image products in deterministic execution order.  The summary requires at
 #: least one persisted state; diagnostics remain available for N=0 runs.
-SWE_PLOT_TYPES = ("diagnostics", "summary")
-_SWE_PLOTS_REQUIRING_SNAPSHOTS = ("summary",)
+SWE_PLOT_TYPES = ("diagnostics", "snapshots", "summary")
+_SWE_PLOTS_REQUIRING_SNAPSHOTS = ("snapshots", "summary")
 
 #: Default sidereal day (hours): 2*pi / 7.292e-5 s^-1, i.e. Earth's rotation
 #: rate. Unlike the BVE (whose historical default is non-rotating), the
@@ -159,7 +159,7 @@ class SWERunConfig:
             raise ValueError("plots must be deduplicated and in canonical order")
         if self.n_snapshots == 0 and any(
                 plot in _SWE_PLOTS_REQUIRING_SNAPSHOTS for plot in self.plots):
-            raise ValueError("SWE summary visualization requires a stored snapshot")
+            raise ValueError("SWE snapshot visualization requires a stored state")
 
     # ------------------------------------------------------------------
 
@@ -169,7 +169,7 @@ class SWERunConfig:
         explicit = {k: v for k, v in dict(explicit).items() if v is not None}
 
         allowed = set(SWE_BASE_DEFAULTS) | {
-            "n_snapshots", "dt_snapshots", "no_plots"}
+            "n_snapshots", "dt_snapshots", "plots", "no_plots"}
         unknown = set(explicit) - allowed
         if unknown:
             raise ValueError(f"unknown explicit settings: {sorted(unknown)}")
@@ -207,15 +207,39 @@ class SWERunConfig:
             snapshot_mode = "interval"
             dt = interval
 
-        if explicit.get("no_plots"):
-            plots = ()
-        elif snapshot_mode == "count" and n == 0:
-            plots = ("diagnostics",)
-        else:
-            plots = SWE_PLOT_TYPES
+        has_snapshots = not (snapshot_mode == "count" and n == 0)
+        plots = cls._resolve_plots(
+            explicit.get("plots"), explicit.get("no_plots"),
+            has_snapshots=has_snapshots)
 
         return cls(dt_snapshots=dt, snapshot_mode=snapshot_mode,
                    n_snapshots=n, plots=plots, **settings)
+
+    @staticmethod
+    def _resolve_plots(requested, no_plots, *,
+                       has_snapshots: bool) -> tuple[str, ...]:
+        """Resolve SWE plot selection in canonical execution order."""
+        if no_plots and requested:
+            raise ValueError("--no-plots and --plot are mutually exclusive")
+        if no_plots:
+            return ()
+        if requested is None:
+            if has_snapshots:
+                return SWE_PLOT_TYPES
+            return tuple(
+                plot for plot in SWE_PLOT_TYPES
+                if plot not in _SWE_PLOTS_REQUIRING_SNAPSHOTS)
+        selected = set()
+        for name in requested:
+            if name == "all":
+                selected.update(SWE_PLOT_TYPES)
+            elif name in SWE_PLOT_TYPES:
+                selected.add(name)
+            else:
+                raise ValueError(
+                    f"unknown SWE plot type {name!r}; choose from "
+                    f"{', '.join(SWE_PLOT_TYPES)} or 'all'")
+        return tuple(plot for plot in SWE_PLOT_TYPES if plot in selected)
 
     # ------------------------------------------------------------------
 

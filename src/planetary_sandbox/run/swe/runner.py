@@ -23,7 +23,7 @@ from ..engine import (IntegrationScheduler, advective_cfl_timestep,
                       integrate, rk4_step_array, validate_snapshot_schedule)
 from .config import SWE_PLOT_TYPES
 from .diagnostics import SWEDiagnosticsRecorder, plot_swe_diagnostics
-from .visualization import render_swe_summary
+from .visualization import render_swe_snapshots, render_swe_summary
 
 
 def run_swe(model: ShallowWaterModel,
@@ -34,7 +34,8 @@ def run_swe(model: ShallowWaterModel,
             figure_metadata: dict | None = None,
             snapshot_times: Sequence[float] | None = None,
             plots: Sequence[str] | None = None,
-            snapshot_mode: str | None = None) -> int:
+            snapshot_mode: str | None = None,
+            scenario: str = "swe") -> int:
     """Integrate the shallow-water equations and persist outputs.
 
     Snapshot semantics are identical to ``run_bve`` (count mode with exact
@@ -45,6 +46,7 @@ def run_swe(model: ShallowWaterModel,
     * ``swe_snapshot_times.npy``  stored times in seconds
     * ``diagnostics/timeseries.csv``  per-step scalar diagnostics
     * ``figures/``                rendered when 'diagnostics' in ``plots``
+    * ``<scenario>_t<seconds>s.png`` one per state when 'snapshots' is selected
     * ``swe_summary.png``         rendered when 'summary' in ``plots``
     """
     planet = model.planet
@@ -129,6 +131,13 @@ def run_swe(model: ShallowWaterModel,
         except Exception as err:
             # Plotting must never take down a finished run; the CSV survives.
             print(f"Diagnostics plotting failed (data preserved): {err}")
+
+    if "snapshots" in plots and coeffs_stack.shape[0] > 0:
+        # Reload from the persisted arrays so post-run regeneration and the
+        # in-run product follow exactly the same adapter path.
+        render_swe_snapshots(
+            model, out_dir, scenario=scenario,
+            metadata=figure_metadata)
 
     if "summary" in plots:
         # This image is part of the selected run product.  Unlike optional

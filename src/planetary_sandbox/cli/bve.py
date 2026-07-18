@@ -35,6 +35,7 @@ class OverwriteCleanupError(RuntimeError):
 _GENERATED_RESULT_FILES: tuple[str, ...] = (
     "vorticity_coeffs.npy",   # saved spectral state
     "vorticity_grid.npy",     # saved plotting snapshots
+    "bve_snapshot_times.npy", # authoritative stored times (seconds)
     "bve_summary.png",        # the summary image
 )
 
@@ -45,13 +46,13 @@ _GENERATED_RESULT_DIRS: tuple[str, ...] = (
     "figures",
 )
 
-#: Per-snapshot panel image naming pattern produced by
-#: ``VorticityViewer.plot_all_snapshots``:
-#: ``{scenario}_t{t0:02.2f}h-{t1:02.2f}h-{dt:02.2f}h.png``. Matched narrowly
-#: (numeric triplet) so a blanket ``*.png`` sweep never claims a user file
-#: such as ``custom.png``. ``bve_summary.png`` also does not match.
+#: Snapshot image names: the legacy viewer montage followed by current
+#: timeline frames (fixed-width seconds). Matched narrowly so a blanket PNG
+#: sweep never claims a user file such as ``custom.png``; the legacy form is
+#: retained only so --overwrite cleans capsules created by older versions.
 _SNAPSHOT_PANEL_RE = re.compile(
-    r".+_t\d+\.\d{2}h-\d+\.\d{2}h-\d+\.\d{2}h\.png\Z")
+    r"(?:.+_t\d+\.\d{2}h-\d+\.\d{2}h-\d+\.\d{2}h|"
+    r".+_t\d{13}\.\d{9}s)\.png\Z")
 
 
 def _resolve_writable_base_dir(requested_out: str) -> tuple[pathlib.Path, bool]:
@@ -77,7 +78,7 @@ def _iter_generated_artifacts(out_dir: pathlib.Path):
     """Yield the known Aeolus-generated result artifacts present in ``out_dir``.
 
     Strictly scoped: named result files/directories plus per-snapshot panel
-    PNGs matching the viewer's naming pattern. Never yields config.json /
+    PNGs matching a known snapshot naming pattern. Never yields config.json /
     manifest.json (lifecycle-managed) or arbitrary user files, so unrelated
     content such as a root-level ``custom.png`` is preserved.
     """

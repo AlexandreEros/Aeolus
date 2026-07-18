@@ -13,7 +13,10 @@ from planetary_sandbox.viz.matplotlib_renderer import MatplotlibRenderer
 from planetary_sandbox.viz.normalization import (NormalizationKind,
                                                   NormalizationPolicy)
 from planetary_sandbox.viz.specs import (ScalarMapSpec,
-                                         SpectralCoefficientMapSpec)
+                                         SpectralCoefficientMapSpec,
+                                         FigureSpec, PanelPlacement)
+from planetary_sandbox.viz.timeline import (FigureFrame, FigureTimeline,
+                                             render_figure_timeline)
 
 
 LATITUDES = np.array([np.pi / 2.0, 0.0, -np.pi / 2.0])
@@ -177,6 +180,65 @@ def test_atomic_renderer_preserves_previous_image_and_removes_partial_temp(
     assert not list(tmp_path.glob(".*.tmp-*.png"))
 
 
+def _scalar_frame(values, time_seconds):
+    field = ScalarGridField(
+        np.asarray(values), LATITUDES, LONGITUDES, "shared", "1")
+    panel = ScalarMapSpec(
+        field, f"t={time_seconds}",
+        normalization=NormalizationPolicy.symmetric(),
+        color_policy="signed", normalization_group="shared-field")
+    return FigureFrame(time_seconds, FigureSpec(
+        panels=(PanelPlacement(panel, 0, 0),), rows=1, columns=1,
+        size_inches=(2.0, 1.0), dpi=50))
+
+
+def test_figure_timeline_resolves_shared_limits_and_time_filenames():
+    timeline = FigureTimeline((
+        _scalar_frame(np.full((3, 4), -2.0), 0.0),
+        _scalar_frame(np.full((3, 4), 7.0), 3600.0),
+    ), filename_prefix="experiment")
+
+    resolved = timeline.resolve_normalizations()
+    policies = [frame.specification.panels[0].panel.normalization
+                for frame in resolved.frames]
+    assert all(policy.kind is NormalizationKind.SYMMETRIC
+               for policy in policies)
+    assert {(policy.vmin, policy.vmax) for policy in policies} == {(-7.0, 7.0)}
+    assert [timeline.filename_for(i) for i in range(2)] == [
+        "experiment_t0000000000000.000000000s.png",
+        "experiment_t0000000003600.000000000s.png",
+    ]
+
+
+def test_figure_timeline_render_failure_keeps_prior_complete_set(tmp_path):
+    timeline = FigureTimeline((
+        _scalar_frame(np.zeros((3, 4)), 0.0),
+        _scalar_frame(np.ones((3, 4)), 1.0),
+    ), filename_prefix="transaction")
+    previous = []
+    for index in range(2):
+        path = tmp_path / timeline.filename_for(index)
+        path.write_bytes(f"old-{index}".encode())
+        previous.append(path)
+
+    class FailsOnSecondFrame:
+        calls = 0
+
+        def render_figure(self, specification, output_path, *, metadata=None):
+            self.calls += 1
+            output_path.write_bytes(b"new")
+            if self.calls == 2:
+                raise RuntimeError("synthetic frame failure")
+            return output_path
+
+    with pytest.raises(RuntimeError, match="frame failure"):
+        render_figure_timeline(
+            timeline, tmp_path, renderer=FailsOnSecondFrame())
+
+    assert [path.read_bytes() for path in previous] == [b"old-0", b"old-1"]
+    assert not list(tmp_path.glob(".transaction.timeline-*"))
+
+
 class _FakeTransform:
     def inv_transform(self, coefficients):
         marker = int(round(float(np.real(coefficients[1, 0]))))
@@ -227,6 +289,82 @@ def test_swe_summary_titles_units_shape_and_nonempty_image(tmp_path):
     image = mpimg.imread(output)
     assert output.stat().st_size > 0
     assert image.shape[:2] == (1200, 3600)
+
+
+def test_swe_snapshot_timeline_uses_persisted_times_and_shared_limits(tmp_path):
+    from planetary_sandbox.run.swe.visualization import (
+        build_swe_snapshot_timeline)
+
+    _write_fake_swe_artifacts(tmp_path)
+    timeline = build_swe_snapshot_timeline(
+        _FakeSWEModel(), tmp_path, scenario="gravity_wave")
+    assert timeline.times_seconds.tolist() == [0.0, 3600.0]
+    assert timeline.filename_for(1) == (
+        "gravity_wave_t0000000003600.000000000s.png")
+
+    resolved = timeline.resolve_normalizations()
+    thickness_policies = [
+        frame.specification.panels[0].panel.normalization
+        for frame in resolved.frames]
+    assert {(policy.vmin, policy.vmax) for policy in thickness_policies} == {
+        (-0.3, 0.3)}
+
+
+class _FakeBVETransform:
+    def inv_transform(self, coefficients):
+        marker = float(np.real(coefficients[1, 0]))
+        return np.full((91, 181), marker)
+
+
+class _FakeBVEOperators:
+    def __init__(self, transform):
+        self.transform = transform
+
+    @staticmethod
+    def inv_laplacian(coefficients):
+        return coefficients * 2.0
+
+    def velocity_from_streamfunction(self, coefficients):
+        values = self.transform.inv_transform(coefficients)
+        return values, -values
+
+
+class _FakeBVEGrid:
+    cell_areas = np.ones((91, 181))
+
+
+class _FakeBVEParams:
+    equatorial_radius = 1.0
+
+
+class _FakeBVEPlanet:
+    sh = _FakeBVETransform()
+    so = _FakeBVEOperators(sh)
+    grid = _FakeBVEGrid()
+    params = _FakeBVEParams()
+
+
+def test_bve_snapshot_timeline_reloads_persisted_artifacts(tmp_path):
+    from planetary_sandbox.run.bve.visualization import (
+        BVE_SNAPSHOT_TIMES_FILENAME, build_bve_snapshot_timeline)
+
+    coefficients = np.zeros((2, 3, 3), dtype=np.complex128)
+    coefficients[0, 1, 0] = 1.0
+    coefficients[1, 1, 0] = 3.0
+    np.save(tmp_path / "vorticity_coeffs.npy", coefficients)
+    np.save(tmp_path / "vorticity_grid.npy", np.stack((
+        np.full((91, 181), 1.0), np.full((91, 181), 3.0))))
+    np.save(tmp_path / BVE_SNAPSHOT_TIMES_FILENAME,
+            np.array([0.0, 12.5]))
+
+    timeline = build_bve_snapshot_timeline(
+        _FakeBVEPlanet(), tmp_path, scenario="rh4")
+    assert timeline.times_seconds.tolist() == [0.0, 12.5]
+    assert all(len(frame.specification.panels) == 4
+               for frame in timeline.frames)
+    policies = [frame.specification.panels[0].panel.normalization
+                for frame in timeline.resolve_normalizations().frames]
+    assert {(policy.vmin, policy.vmax) for policy in policies} == {(-3.0, 3.0)}
 
 
 def test_swe_visualization_failure_prevents_completion_and_publication(

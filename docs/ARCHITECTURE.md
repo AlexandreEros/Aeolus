@@ -170,10 +170,13 @@ Visualization data and rendering are separated under `viz/`: `fields.py`
 represents latitude-longitude scalar fields and unpacked triangular
 spherical-harmonic fields; `normalization.py` and `specs.py` describe numeric
 scaling and requested views without plotting objects; `renderers.py` is the
-small backend protocol; and `matplotlib_renderer.py` is the initial backend.
-BVE and SWE modules choose their own physical fields, labels, panels, and
-layouts. Summary PNGs are written to same-directory temporary siblings and
-atomically replaced, so only a complete image can become a run artifact.
+small backend protocol; `timeline.py` owns timestamped figure sequences,
+cross-frame normalization, deterministic filenames, and transactional frame
+publication; and `matplotlib_renderer.py` is the initial backend. BVE and SWE
+adapters choose their own physical fields, labels, panels, and layouts and
+reconstruct frames from persisted run arrays. PNGs are written to
+same-directory temporary siblings and atomically replaced, so only complete
+images can become run artifacts.
 
 A current run capsule looks like this:
 
@@ -193,14 +196,16 @@ runs/
     │   └── spectra.png
     ├── vorticity_coeffs.npy
     ├── vorticity_grid.npy
+    ├── bve_snapshot_times.npy
     ├── bve_summary.png
-    └── <scenario>_t<times>.png
+    └── <scenario>_t<seconds>s.png  # one deterministic file per state
 ```
 
 An SWE capsule uses `swe_coeffs.npy` (shape `(N, 3, L+1, L+1)`, ordered as
 relative vorticity, horizontal divergence, and perturbation geopotential),
 `swe_snapshot_times.npy`, and `swe_summary.png` in place of the BVE state and
-viewer products. The SWE summary is regenerated from those persisted arrays.
+summary products. Its per-state `<scenario>_t<seconds>s.png` frames and final
+summary are regenerated from those persisted arrays.
 
 The intended semantic categories are:
 
@@ -210,16 +215,16 @@ runs/
     ├── manifest.json
     ├── config.json
     ├── diagnostics/
-    ├── states/       # currently the two vorticity .npy files at capsule root
+    ├── states/       # currently BVE's three state/time .npy files at capsule root
     ├── figures/      # diagnostic figures; viewer figures are also at root
     └── logs/         # reserved; CLI stdout is not persisted yet
 ```
 
 Which figures exist depends on the run's plot selection (`--plot` /
 `--no-plots`): `figures/` comes from the `diagnostics` plot product, the
-`<scenario>_t<times>.png` panel from `snapshots`, and `bve_summary.png` from
-`summary`. The `.npy` state files and `diagnostics/` data are written
-regardless of plot selection (and are empty-but-present when
+one `<scenario>_t<seconds>s.png` frame per stored state from `snapshots`, and
+the model summary from `summary`. The `.npy` state files and `diagnostics/`
+data are written regardless of plot selection (and are empty-but-present when
 `--n-snapshots 0` stores no field states).
 
 `config.json` is the authoritative model/CLI configuration: the historical
@@ -254,7 +259,9 @@ enstrophy, circulation, CFL, high-degree content, and periodic transform
 residuals) and `diagnostics/spectra.npz` (degree spectra). The viewer summary is
 useful for visual inspection but is not the scientific invariant record.
 `vorticity_coeffs.npy` is the saved spectral state; `vorticity_grid.npy`
-contains plotting snapshots.
+contains plotting snapshots; and `bve_snapshot_times.npy` is their
+authoritative time axis in seconds. BVE and SWE timeline frames can be
+regenerated from these persisted arrays without rerunning either model.
 
 A capsule is reproducible only to the extent recorded by its manifest. Runs from
 a dirty tree require the uncommitted patch as well as the commit, and the

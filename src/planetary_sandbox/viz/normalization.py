@@ -40,16 +40,12 @@ class NormalizationPolicy:
             if self.vmin is None or self.vmax is None:
                 raise ValueError("fixed normalization requires vmin and vmax")
             ResolvedNormalization(self.kind, float(self.vmin), float(self.vmax))
-        elif self.kind is NormalizationKind.LOG_MAGNITUDE:
+        else:
             if (self.vmin is None) != (self.vmax is None):
-                raise ValueError(
-                    "logarithmic normalization limits must be supplied together")
+                raise ValueError("normalization limits must be supplied together")
             if self.vmin is not None:
                 ResolvedNormalization(
                     self.kind, float(self.vmin), float(self.vmax))
-        elif self.vmin is not None or self.vmax is not None:
-            raise ValueError(
-                "explicit limits are only valid for fixed or logarithmic normalization")
 
     @classmethod
     def automatic(cls) -> "NormalizationPolicy":
@@ -70,21 +66,25 @@ class NormalizationPolicy:
         """Log magnitude scaling, optionally with reusable fixed limits."""
         return cls(NormalizationKind.LOG_MAGNITUDE, vmin, vmax)
 
+    @classmethod
+    def from_resolved(
+            cls, normalization: ResolvedNormalization
+            ) -> "NormalizationPolicy":
+        """Keep semantic scaling while freezing already-resolved limits."""
+        return cls(normalization.kind, normalization.vmin, normalization.vmax)
+
     def resolve(self, values) -> ResolvedNormalization:
         """Resolve numeric limits from any state or full time sequence.
 
         Passing an entire time sequence resolves one pair of limits that can
-        subsequently be reused through :meth:`fixed` for every frame.
+        subsequently be frozen with :meth:`from_resolved` for every frame.
         """
         data = np.asarray(values)
-        if self.kind is NormalizationKind.FIXED:
+        if self.vmin is not None:
             return ResolvedNormalization(
                 self.kind, float(self.vmin), float(self.vmax))
 
         if self.kind is NormalizationKind.LOG_MAGNITUDE:
-            if self.vmin is not None:
-                return ResolvedNormalization(
-                    self.kind, float(self.vmin), float(self.vmax))
             magnitude = np.abs(data)
             finite_positive = magnitude[np.isfinite(magnitude) & (magnitude > 0.0)]
             if finite_positive.size == 0:

@@ -7,6 +7,7 @@ shared with the BVE command (``cli/run_lifecycle.py``).
 from __future__ import annotations
 
 import pathlib
+import re
 import shutil
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,8 @@ _GENERATED_RESULT_DIRS: tuple[str, ...] = (
     "diagnostics",
     "figures",
 )
+
+_SNAPSHOT_FRAME_RE = re.compile(r".+_t\d{13}\.\d{9}s\.png\Z")
 
 #: Manifest notes describing the shallow-water solver.
 SWE_MANIFEST_NOTES = {
@@ -67,6 +70,9 @@ def _clean_overwrite_artifacts(out_dir: pathlib.Path) -> None:
         target = out_dir / name
         if target.exists():
             targets.append(target)
+    targets.extend(
+        child for child in out_dir.iterdir()
+        if child.is_file() and _SNAPSHOT_FRAME_RE.match(child.name))
     for target in targets:
         try:
             if target.is_dir():
@@ -121,7 +127,8 @@ def _execute_solver(cfg: "SWERunConfig", run_dir, run_config: dict) -> None:
             figure_metadata=run_dir.figure_metadata(),
             snapshot_times=cfg.snapshot_times_seconds(),
             plots=cfg.plots,
-            snapshot_mode=cfg.snapshot_mode)
+            snapshot_mode=cfg.snapshot_mode,
+            scenario=cfg.scenario)
 
 
 def execute_run(cfg: "SWERunConfig") -> int:

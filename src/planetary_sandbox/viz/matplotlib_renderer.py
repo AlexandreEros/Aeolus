@@ -181,11 +181,12 @@ class MatplotlibRenderer:
         u_angular = u_grid / (spec.radius * cos_lat[:, None])
         v_angular = v_grid / spec.radius
         speed = np.sqrt(u_grid * u_grid + v_grid * v_grid)
+        _, norm = self._mpl_normalization(spec.normalization, speed)
         stream = axes.streamplot(
             np.rad2deg(longitudes), np.rad2deg(latitudes),
             u_angular, v_angular, color=speed,
             cmap=_SEMANTIC_COLORS.get(spec.color_policy, spec.color_policy),
-            density=spec.density, linewidth=1, arrowsize=1.2)
+            norm=norm, density=spec.density, linewidth=1, arrowsize=1.2)
         figure.colorbar(
             stream.lines, ax=axes, label=f"Flow Speed ({spec.units})",
             orientation="horizontal", pad=0.1, fraction=0.05, aspect=30)

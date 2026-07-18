@@ -13,6 +13,8 @@ from .config import (PLOT_TYPES, IntegrationScheduler, advective_cfl_timestep,
 # is kept as this module's historical name for it (tests import it here).
 from ..engine import integrate as _integrate
 from .diagnostics import DiagnosticsRecorder, plot_diagnostics
+from .visualization import (BVE_SNAPSHOT_TIMES_FILENAME,
+                            render_bve_snapshots)
 from ...viz.vorticity_viewer import VorticityViewer
 from ...viz.renderers import get_default_renderer
 
@@ -109,7 +111,7 @@ def run_bve(planet: Planet,
     step = 0
     all_zeta_lm: list[cp.ndarray] = []
     vorticity_grid_snapshot_list: list[cp.ndarray] = []
-    stored_times_hours: list[float] = []
+    stored_times_seconds: list[float] = []
 
     def on_store(event_time: float) -> None:
         # Transfer to host immediately: stacking many separate device arrays
@@ -119,7 +121,7 @@ def run_bve(planet: Planet,
         print(f"Time: {event_time/3600.0:8.2f} hrs | Step: {step} ")
         # Record the scheduled time (exact target in count mode), not a drifted
         # accumulator, so the stored snapshot time is authoritative.
-        stored_times_hours.append(event_time / 3600.0)
+        stored_times_seconds.append(event_time)
         # Dump ζ on grid for plotting.
         zeta_grid = planet.sh.inv_transform(state.coeffs)
         vorticity_grid_snapshot_list.append(cp.asnumpy(zeta_grid))
@@ -164,6 +166,8 @@ def run_bve(planet: Planet,
         grid_stack = _empty_grid_stack(zeta_initial_grid)
     np.save(out_dir / "vorticity_coeffs.npy", coeffs_stack)
     np.save(out_dir / "vorticity_grid.npy", grid_stack)
+    stored_times_array = np.asarray(stored_times_seconds, dtype=np.float64)
+    np.save(out_dir / BVE_SNAPSHOT_TIMES_FILENAME, stored_times_array)
 
     # Image products, in the fixed order of PLOT_TYPES:
     # diagnostics -> snapshots -> summary. The initial grid field is
@@ -176,12 +180,16 @@ def run_bve(planet: Planet,
             # Plotting must never take down a finished run; the CSV/npz survive.
             print(f"Diagnostics plotting failed (data preserved): {err}")
 
-    wants_viewer = ("snapshots" in plots or "summary" in plots)
-    if wants_viewer and grid_stack.shape[0] > 0:
-        snapshot_times_arr = (
-            np.array(stored_times_hours, dtype=np.float64)
-            if stored_times_hours else np.empty((0,), dtype=np.float64))
+    if grid_stack.shape[0] > 0:
+        if "snapshots" in plots:
+            # The adapter reloads the just-persisted arrays, so this product
+            # exercises the same reproducible path available after the run.
+            render_bve_snapshots(
+                planet, out_dir, scenario=scenario,
+                metadata=figure_metadata)
 
+    if "summary" in plots and grid_stack.shape[0] > 0:
+        snapshot_times_arr = stored_times_array / 3600.0
         viewer = VorticityViewer(
             planet,
             scenario=scenario,
@@ -189,18 +197,12 @@ def run_bve(planet: Planet,
             times=snapshot_times_arr,
             initial_field=cp.asnumpy(zeta_initial_grid))
 
-        if "snapshots" in plots:
-            # Individual snapshot plots for debugging
-            viewer.plot_all_snapshots(scenario=scenario, out_dir=out_dir,
-                                      metadata=figure_metadata)
-
-        if "summary" in plots:
-            summary, stats = viewer.summary_spec()
-            get_default_renderer().render_figure(
-                summary, out_dir / "bve_summary.png",
-                metadata=figure_metadata)
-            print("VorticityViewer: Summary plot generated.")
-            print(stats)
+        summary, stats = viewer.summary_spec()
+        get_default_renderer().render_figure(
+            summary, out_dir / "bve_summary.png",
+            metadata=figure_metadata)
+        print("VorticityViewer: Summary plot generated.")
+        print(stats)
 
     return 0
 

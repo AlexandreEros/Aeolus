@@ -284,7 +284,8 @@ examples:
 
 def add_swe_arguments(parser: argparse.ArgumentParser) -> None:
     """All `run swe` options. Every default is None (resolution applies them)."""
-    from planetary_sandbox.run.swe.config import SWE_SCENARIOS  # import-light
+    from planetary_sandbox.run.swe.config import (  # import-light
+        SWE_PLOT_TYPES, SWE_SCENARIOS)
 
     parser.add_argument(
         "--backend", "--grid", dest="grid", choices=list(BACKEND_CHOICES),
@@ -335,7 +336,14 @@ def add_swe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--scenario", choices=sorted(SWE_SCENARIOS), default=None,
         help="Initial-condition scenario [default: williamson2].")
-    parser.add_argument(
+    plot_group = parser.add_mutually_exclusive_group()
+    plot_group.add_argument(
+        "--plot", dest="plots", action="append", metavar="TYPE",
+        choices=list(SWE_PLOT_TYPES) + ["all"], default=None,
+        help="Generate only the named image product; repeatable "
+             f"({', '.join(SWE_PLOT_TYPES)}, or 'all'). Duplicates are "
+             "ignored and execution order is fixed.")
+    plot_group.add_argument(
         "--no-plots", action="store_true", default=None,
         help="Generate no image files (spectral snapshots and numerical "
              "diagnostics are still written).")
@@ -353,7 +361,7 @@ def add_swe_arguments(parser: argparse.ArgumentParser) -> None:
 _SWE_EXPLICIT_KEYS = (
     "lmax", "grid", "resolution", "nlat", "nlon", "day_hours",
     "radius_earth_units", "duration_days", "gravity", "mean_depth_m",
-    "scenario", "n_snapshots", "dt_snapshots", "no_plots", "out",
+    "scenario", "n_snapshots", "dt_snapshots", "plots", "no_plots", "out",
     "experiment", "overwrite")
 
 

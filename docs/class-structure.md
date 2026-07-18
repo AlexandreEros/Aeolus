@@ -272,20 +272,37 @@ classDiagram
         +plot_summary()
     }
 
+    class FigureTimeline {
+        +frames
+        +filename_prefix
+        +resolve_normalizations()
+        +filename_for(frame)
+    }
+
+    class ModelVisualizationAdapter {
+        +load persisted fields
+        +compose FigureSpec panels
+        +build snapshot timeline
+    }
+
     BarotropicVorticity --> Planet : evolves
     BarotropicVorticity ..> BarotropicState : reads and creates
     DiagnosticsRecorder --> Planet : receives its numerics
     PlanetViewer --> Planet : visualizes
     VorticityViewer --> Planet : visualizes
+    ModelVisualizationAdapter --> Planet : extracts physical fields
+    ModelVisualizationAdapter --> FigureTimeline : composes
     RunDirectory ..> PlanetViewer : figure metadata
     RunDirectory ..> VorticityViewer : figure metadata
 ```
 
 `run_bve()` and `rk4_step()` are orchestration functions rather than classes.
 They own the integration loop, pass `BarotropicState` through the model,
-record every accepted step with `DiagnosticsRecorder`, save snapshots, and
-construct `VorticityViewer`. The CLI creates a `RunDirectory` and writes the
-run manifest/provenance around that flow.
+record every accepted step with `DiagnosticsRecorder`, and save snapshots.
+The BVE/SWE visualization adapters reload those artifacts, compose their
+model-specific panels, and hand backend-neutral timelines to the renderer;
+`VorticityViewer` remains the BVE summary adapter. The CLI creates a
+`RunDirectory` and writes the run manifest/provenance around that flow.
 
 ## Secondary and legacy classes
 

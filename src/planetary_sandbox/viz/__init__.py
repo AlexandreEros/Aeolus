@@ -5,9 +5,13 @@ from .normalization import (NormalizationKind, NormalizationPolicy,
                             ResolvedNormalization)
 from .renderers import Renderer, get_default_renderer
 from .specs import (FigureSpec, ScalarMapSpec, SpectralCoefficientMapSpec)
+from .timeline import (FigureFrame, FigureTimeline, TimelineFrame,
+                       render_figure_timeline, render_timeline)
 
 __all__ = [
     "FigureSpec",
+    "FigureFrame",
+    "FigureTimeline",
     "NormalizationKind",
     "NormalizationPolicy",
     "PlanetViewer",
@@ -17,7 +21,10 @@ __all__ = [
     "ScalarMapSpec",
     "SpectralCoefficientMapSpec",
     "SphericalHarmonicField",
+    "TimelineFrame",
     "get_default_renderer",
+    "render_figure_timeline",
+    "render_timeline",
 ]
 
 

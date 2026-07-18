@@ -153,7 +153,29 @@ class VorticityViewer:
         return self._view_grid, (u_grid, v_grid)
 
 
-    def plot_all_snapshots(self, scenario="snapshots", out_dir=None, metadata=None):
+    def plot_all_snapshots(self, scenario="snapshots", out_dir=None,
+                           metadata=None):
+        """Render timestamped frames through the shared timeline abstraction.
+
+        The run pipeline uses the stronger persisted-artifact adapter directly;
+        this wrapper preserves the historical viewer entry point for callers
+        that already hold a viewer in memory.
+        """
+        import pathlib
+
+        from ..run.bve.visualization import (
+            build_bve_snapshot_timeline_from_data)
+        from .timeline import render_figure_timeline
+
+        destination = pathlib.Path(".") if out_dir is None else pathlib.Path(out_dir)
+        timeline = build_bve_snapshot_timeline_from_data(
+            self.planet, self.snapshots, np.asarray(self.times) * 3600.0,
+            scenario=scenario)
+        return render_figure_timeline(
+            timeline, destination, metadata=metadata)
+
+    def _plot_all_snapshots_legacy(self, scenario="snapshots", out_dir=None,
+                                   metadata=None):
         """
         Create individual plots for each snapshot to diagnose time evolution.
 

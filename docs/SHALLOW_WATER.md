@@ -155,7 +155,7 @@ monopole-free and band-limited.
 
 ```powershell
 # Default: Williamson-2 steady flow, geodesic res 4, l_max 21, 1 day,
-# 5 stored states, diagnostics figures, and a final-state summary.
+# 5 stored states, a normalized snapshot timeline, diagnostics, and a summary.
 aeolus run swe
 
 # Gauss lat-lon backend, gravity-wave test on a non-rotating planet:
@@ -165,16 +165,19 @@ aeolus run swe --backend gauss-latlon --nlat 32 --nlon 64 --l-max 15 `
 
 Options: `--gravity`, `--mean-depth`, `--day-hours`, `--radius-earth-units`,
 `--l-max`, `--resolution` / `--nlat`+`--nlon`, `--days`, `--n-snapshots` /
-`--snapshot-interval-seconds`, `--scenario`, `--no-plots`, `--out`,
+`--snapshot-interval-seconds`, `--scenario`, repeatable `--plot TYPE`,
+`--no-plots`, `--out`,
 `--experiment`, `--overwrite`. Run capsules carry the same provenance as BVE
 runs (`config.json`, `manifest.json` with status lifecycle,
 `latest_run.txt`); stored artifacts are `swe_coeffs.npy`
 (`(N, 3, l_max+1, l_max+1)` spectral snapshots), `swe_snapshot_times.npy`,
-`diagnostics/timeseries.csv`, `figures/`, and `swe_summary.png`. The summary
-is reconstructed from the persisted final coefficient state and shows layer
-thickness anomaly relative to the configured mean depth, relative vorticity,
-and horizontal divergence. A summary-rendering failure marks the capsule
-failed and prevents publication through `latest_run.txt`.
+`diagnostics/timeseries.csv`, `figures/`, one deterministic time-named PNG per
+stored state, and `swe_summary.png`. Snapshot frames and the summary are
+reconstructed from persisted coefficients and show layer thickness anomaly
+relative to the configured mean depth, relative vorticity, and horizontal
+divergence. Each field keeps one normalization across the complete timeline.
+A selected-product rendering failure marks the capsule failed and prevents
+publication through `latest_run.txt`.
 
 ## Diagnostics
 

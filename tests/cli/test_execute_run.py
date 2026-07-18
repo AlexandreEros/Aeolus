@@ -348,17 +348,21 @@ def _make_generated_outputs(run_path, scenario="two_vortices"):
     (run_path / "figures" / "energy.png").write_bytes(b"png")
     (run_path / "vorticity_coeffs.npy").write_bytes(b"npy")
     (run_path / "vorticity_grid.npy").write_bytes(b"npy")
+    (run_path / "bve_snapshot_times.npy").write_bytes(b"npy")
     (run_path / "bve_summary.png").write_bytes(b"png")
     (run_path / f"{scenario}_t0.00h-24.00h-6.00h.png").write_bytes(b"png")
+    (run_path / f"{scenario}_t0000000000000.000000000s.png").write_bytes(b"png")
 
 
 def test_clean_removes_known_generated_artifacts(tmp_path):
     _make_generated_outputs(tmp_path)
     bve._clean_overwrite_artifacts(tmp_path)
     for name in ("diagnostics", "figures", "vorticity_coeffs.npy",
-                 "vorticity_grid.npy", "bve_summary.png"):
+                 "vorticity_grid.npy", "bve_snapshot_times.npy",
+                 "bve_summary.png"):
         assert not (tmp_path / name).exists()
     assert not list(tmp_path.glob("*_t*h-*h-*h.png"))
+    assert not list(tmp_path.glob("*_t*s.png"))
 
 
 def test_clean_preserves_user_files_including_custom_png(tmp_path):

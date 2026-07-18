@@ -34,7 +34,7 @@ def test_swe_config_defaults():
     assert cfg.gravity == pytest.approx(9.80616)
     assert cfg.mean_depth_m == 3000.0
     assert cfg.day_hours == pytest.approx(23.9345)
-    assert cfg.plots == ("diagnostics", "summary")
+    assert cfg.plots == ("diagnostics", "snapshots", "summary")
     assert SWERunConfig.resolve({"n_snapshots": 0}).plots == ("diagnostics",)
     times = cfg.snapshot_times_seconds()
     assert len(times) == 5 and times[0] == 0.0 and times[-1] == 86400.0
@@ -55,6 +55,18 @@ def test_swe_config_rejects_bad_values():
         SWERunConfig.resolve({"duration_days": math.nan})
     with pytest.raises(ValueError, match="unknown explicit"):
         SWERunConfig.resolve({"viscosity": 1.0})
+    with pytest.raises(ValueError, match="requires a stored state"):
+        SWERunConfig.resolve({"n_snapshots": 0, "plots": ["snapshots"]})
+
+
+def test_swe_plot_selection_is_deduplicated_and_canonical():
+    from planetary_sandbox.run.swe.config import SWERunConfig
+
+    cfg = SWERunConfig.resolve({
+        "plots": ["summary", "snapshots", "snapshots"]})
+    assert cfg.plots == ("snapshots", "summary")
+    assert SWERunConfig.resolve({"plots": ["all"]}).plots == (
+        "diagnostics", "snapshots", "summary")
 
 
 def test_swe_config_dict_feeds_run_id():
@@ -83,7 +95,7 @@ def test_swe_cli_help_and_parse_errors(capsys):
         main(["run", "swe", "--help"])
     assert exc.value.code == 0
     out = capsys.readouterr().out
-    assert "--mean-depth" in out and "--gravity" in out
+    assert "--mean-depth" in out and "--gravity" in out and "--plot" in out
 
     with pytest.raises(SystemExit) as exc:
         main(["run", "swe", "--scenario", "nonsense"])

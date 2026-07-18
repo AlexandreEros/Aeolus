@@ -1,19 +1,192 @@
 """BVE-specific presentation decisions expressed as generic specifications."""
 from __future__ import annotations
 
+import pathlib
+
 import numpy as np
 
 from planetary_sandbox.viz.fields import ScalarGridField
+from planetary_sandbox.viz.grid_adapter import map_to_uniform_latlon
 from planetary_sandbox.viz.normalization import NormalizationPolicy
+from planetary_sandbox.viz.renderers import get_default_renderer
 from planetary_sandbox.viz.specs import (
     FigureSpec, LinePanelSpec, LineSeriesSpec, PanelPlacement, ScalarMapSpec,
     StreamlineMapSpec, TextPanelSpec)
+from planetary_sandbox.viz.timeline import (FigureFrame, FigureTimeline,
+                                             render_figure_timeline)
+
+
+BVE_SNAPSHOT_TIMES_FILENAME = "bve_snapshot_times.npy"
 
 
 def _host(values) -> np.ndarray:
     if hasattr(values, "get"):
         values = values.get()
     return np.asarray(values)
+
+
+def _backend_array(owner, values):
+    """Use device coefficients only for the repository's GPU operators."""
+    if type(owner).__module__.startswith("planetary_sandbox."):
+        import cupy as cp
+        return cp.asarray(values)
+    return values
+
+
+def _physical_weights(planet, sample: np.ndarray) -> np.ndarray:
+    """Return model-grid physical areas shaped like one persisted field."""
+    try:
+        weights = _host(planet.grid.cell_areas)
+    except (AttributeError, NotImplementedError):
+        weights = None
+    if weights is not None and weights.size == sample.size:
+        return weights.reshape(sample.shape)
+
+    if sample.ndim == 2 and hasattr(planet.grid, "latitudes"):
+        latitudes = _host(planet.grid.latitudes)
+        longitudes = _host(planet.grid.longitudes)
+        if latitudes.size < 2 or longitudes.size < 2:
+            raise ValueError("BVE snapshot statistics require at least a 2x2 grid")
+        d_lat = abs(latitudes[1] - latitudes[0])
+        d_lon = abs(longitudes[1] - longitudes[0])
+        radius = planet.params.equatorial_radius
+        return (np.cos(latitudes)[:, None] * d_lat * d_lon * radius**2 *
+                np.ones((1, longitudes.size)))
+    raise ValueError("BVE persisted grid shape does not match its model grid")
+
+
+def _map_vector_to_view(planet, u, v):
+    view_grid, mapped_u = map_to_uniform_latlon(_host(u), planet.grid)
+    _, mapped_v = map_to_uniform_latlon(
+        _host(v), planet.grid, target_grid=view_grid)
+    return view_grid, mapped_u, mapped_v
+
+
+def build_bve_snapshot_timeline_from_data(
+        planet, vorticity_grids, times_seconds, *, scenario: str,
+        coefficients=None) -> FigureTimeline:
+    """Compose BVE snapshot panels from an already-loaded artifact payload."""
+    grids = _host(vorticity_grids)
+    times = _host(times_seconds).astype(np.float64, copy=False)
+    if grids.ndim not in (2, 3) or grids.shape[0] == 0:
+        raise ValueError(
+            "BVE snapshot grids must have shape (time, points) or "
+            "(time, lat, lon) with at least one state")
+    if times.shape != (grids.shape[0],):
+        raise ValueError("BVE snapshot times must match the grid time axis")
+    if not np.isfinite(times).all() or np.any(times < 0.0):
+        raise ValueError("BVE snapshot times must be finite and nonnegative")
+    if times.size > 1 and not np.all(np.diff(times) > 0.0):
+        raise ValueError("BVE snapshot times must be strictly increasing")
+
+    if coefficients is None:
+        coefficient_states = [
+            _host(planet.sh.transform(_backend_array(planet.sh, grid)))
+            for grid in grids]
+    else:
+        coefficient_array = _host(coefficients)
+        if (coefficient_array.ndim != 3 or
+                coefficient_array.shape[0] != grids.shape[0]):
+            raise ValueError(
+                "BVE coefficients must have shape (time, l, m) matching grids")
+        coefficient_states = coefficient_array
+
+    weights = _physical_weights(planet, grids[0])
+    radius = planet.params.equatorial_radius
+    frames: list[FigureFrame] = []
+    for index, (time_seconds, zeta_grid, zeta_lm) in enumerate(
+            zip(times, grids, coefficient_states)):
+        zeta_grid = np.asarray(zeta_grid).real
+        device_zeta_lm = _backend_array(planet.so, zeta_lm)
+        psi_lm = planet.so.inv_laplacian(device_zeta_lm)
+        psi_grid = _host(planet.sh.inv_transform(psi_lm)).real
+        u_grid, v_grid = planet.so.velocity_from_streamfunction(psi_lm)
+        u_grid, v_grid = _host(u_grid).real, _host(v_grid).real
+
+        view_grid, zeta_view = map_to_uniform_latlon(zeta_grid, planet.grid)
+        _, psi_view = map_to_uniform_latlon(
+            psi_grid, planet.grid, target_grid=view_grid)
+        _, u_view, v_view = _map_vector_to_view(planet, u_grid, v_grid)
+        latitudes = _host(view_grid.latitudes)
+        longitudes = _host(view_grid.longitudes)
+        selected_time = times[index:index + 1]
+
+        zeta_field = ScalarGridField(
+            zeta_view, latitudes, longitudes,
+            name="relative vorticity", units="s^-1", times=selected_time)
+        psi_field = ScalarGridField(
+            psi_view, latitudes, longitudes,
+            name="streamfunction", units="m^2/s", times=selected_time)
+
+        speed = np.sqrt(u_grid**2 + v_grid**2)
+        circulation = float(np.sum(zeta_grid * weights))
+        kinetic_energy = float(0.5 * np.sum(speed**2 * weights))
+        time_hours = time_seconds / 3600.0
+        stats = (
+            "Snapshot Stats\n"
+            "----------------\n"
+            f"Time: {time_hours:.2f} h\n"
+            f"Circulation: {circulation:+.2e} m^2/s\n"
+            f"Kinetic Energy: {kinetic_energy:.2e} J/kg\n"
+            f"Max |vorticity|: {np.max(np.abs(zeta_grid)):.2e} s^-1\n"
+            f"RMS vorticity: {np.sqrt(np.mean(zeta_grid**2)):.2e} s^-1\n"
+            f"Max speed: {np.max(speed):.2f} m/s\n")
+
+        panels = (
+            PanelPlacement(ScalarMapSpec(
+                zeta_field, f"Vorticity @ t={time_hours:.2f} h",
+                normalization=NormalizationPolicy.symmetric(),
+                color_policy="signed", normalization_group="bve-vorticity"),
+                0, 0),
+            PanelPlacement(ScalarMapSpec(
+                psi_field, f"Streamfunction @ t={time_hours:.2f} h",
+                normalization=NormalizationPolicy.automatic(),
+                color_policy="viridis",
+                normalization_group="bve-streamfunction"), 0, 1),
+            PanelPlacement(StreamlineMapSpec(
+                latitudes, longitudes, u_view, v_view, radius=radius,
+                title=f"Flow @ t={time_hours:.2f} h",
+                normalization_group="bve-speed"), 0, 2),
+            PanelPlacement(TextPanelSpec(
+                stats, horizontal_alignment="left", font_size=10.0), 0, 3),
+        )
+        frames.append(FigureFrame(
+            time_seconds, FigureSpec(
+                panels=panels, rows=1, columns=4,
+                size_inches=(24.0, 6.0), dpi=200,
+                width_ratios=(1.0, 1.0, 1.0, 0.9))))
+
+    return FigureTimeline(tuple(frames), filename_prefix=scenario)
+
+
+def build_bve_snapshot_timeline(
+        planet, out_dir: pathlib.Path | str, *, scenario: str
+        ) -> FigureTimeline:
+    """Load the persisted BVE state and compose its snapshot timeline."""
+    out_dir = pathlib.Path(out_dir)
+    coefficients = np.load(out_dir / "vorticity_coeffs.npy")
+    grids = np.load(out_dir / "vorticity_grid.npy")
+    times = np.load(out_dir / BVE_SNAPSHOT_TIMES_FILENAME)
+    return build_bve_snapshot_timeline_from_data(
+        planet, grids, times, scenario=scenario, coefficients=coefficients)
+
+
+def render_bve_snapshots(
+        planet, out_dir: pathlib.Path | str, *, scenario: str,
+        metadata: dict | None = None, renderer=None
+        ) -> tuple[pathlib.Path, ...]:
+    """Render BVE frames from persisted artifacts through the shared path."""
+    out_dir = pathlib.Path(out_dir)
+    timeline = build_bve_snapshot_timeline(
+        planet, out_dir, scenario=scenario)
+    return render_figure_timeline(
+        timeline, out_dir, renderer=renderer or get_default_renderer(),
+        metadata=metadata)
+
+
+# Descriptive aliases kept at the adapter boundary.
+build_bve_timeline = build_bve_snapshot_timeline
+render_bve_snapshot_timeline = render_bve_snapshots
 
 
 def build_bve_summary_spec(viewer) -> tuple[FigureSpec, str]:

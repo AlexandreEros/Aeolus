@@ -162,12 +162,14 @@ flowchart TD
     cfln --> sched
 
     ev -- "none (done)" --> close["DiagnosticsRecorder.close()"]
-    close --> save["save coefficient/grid snapshots<br/>(always, independent of plots)"]
+    close --> save["save coefficient/grid/time snapshots<br/>(always, independent of plots)"]
     save --> plotsel{"plot selection"}
     plotsel -- "diagnostics" --> diagPlot["plot_diagnostics()"]
-    plotsel -- "snapshots / summary" --> viewer["VorticityViewer()"]
-    viewer --> snapshots["plot_all_snapshots()"]
-    viewer --> summary["plot_summary()"]
+    plotsel -- "snapshots" --> adapter["BVE visualization adapter<br/>reload persisted arrays"]
+    adapter --> timeline["FigureTimeline<br/>shared frame normalization"]
+    timeline --> snapshots["transactionally publish<br/>time-named frames"]
+    plotsel -- "summary" --> viewer["VorticityViewer()"]
+    viewer --> summary["backend-neutral summary spec"]
 ```
 
 Image products run in a fixed order (diagnostics, snapshots, summary) and
@@ -219,10 +221,13 @@ flowchart LR
     spectra --> plots
     plots --> figures["figures/*.png"]
 
-    snapshots["saved run snapshots"] --> viewer["VorticityViewer"]
-    viewer --> individual["per-snapshot figures"]
-    viewer --> summary["bve_summary.png"]
+    snapshots["saved run snapshots"] --> adapter["BVE / SWE visualization adapter"]
+    adapter --> timeline["FigureTimeline"]
+    timeline --> individual["normalized time-named frames"]
+    adapter --> summary["model summary spec"]
+    summary --> summaryPng["bve_summary.png / swe_summary.png"]
 ```
 
-Plotting failures after integration are caught so completed numerical data
-remain available even when figure generation fails.
+Optional diagnostic plotting failures are caught so completed numerical data
+remain available. Selected snapshot/summary failures propagate, allowing the
+run lifecycle to mark the capsule failed and withhold latest-run publication.

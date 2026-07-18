@@ -21,6 +21,7 @@ class ScalarMapSpec:
     view: str = "equirectangular"
     central_longitude: float | None = None
     color_policy: str = "viridis"
+    normalization_group: str | None = None
 
     def __post_init__(self) -> None:
         self.field.values_at(self.time_index)
@@ -33,6 +34,10 @@ class ScalarMapSpec:
             raise ValueError("central longitude must be finite")
         if not self.color_policy:
             raise ValueError("color policy must be nonempty")
+        if (self.normalization_group is not None and
+                (not isinstance(self.normalization_group, str) or
+                 not self.normalization_group.strip())):
+            raise ValueError("normalization group must be a nonempty string")
 
     @property
     def display_units(self) -> str:
@@ -48,11 +53,16 @@ class SpectralCoefficientMapSpec:
     normalization: NormalizationPolicy = field(
         default_factory=NormalizationPolicy.logarithmic_magnitude)
     color_policy: str = "viridis"
+    normalization_group: str | None = None
 
     def __post_init__(self) -> None:
         self.field.coefficients_at(self.time_index)
         if not self.title:
             raise ValueError("coefficient-map title must be nonempty")
+        if (self.normalization_group is not None and
+                (not isinstance(self.normalization_group, str) or
+                 not self.normalization_group.strip())):
+            raise ValueError("normalization group must be a nonempty string")
 
     @property
     def display_units(self) -> str:
@@ -70,6 +80,9 @@ class StreamlineMapSpec:
     units: str = "m/s"
     density: float = 1.5
     color_policy: str = "viridis"
+    normalization: NormalizationPolicy = field(
+        default_factory=NormalizationPolicy.automatic)
+    normalization_group: str | None = None
 
     def __post_init__(self) -> None:
         lat = np.asarray(self.latitudes)
@@ -86,6 +99,10 @@ class StreamlineMapSpec:
             raise ValueError("streamline longitudes must be increasing")
         if not np.isfinite(self.radius) or self.radius <= 0.0:
             raise ValueError("streamline radius must be finite and positive")
+        if (self.normalization_group is not None and
+                (not isinstance(self.normalization_group, str) or
+                 not self.normalization_group.strip())):
+            raise ValueError("normalization group must be a nonempty string")
         object.__setattr__(self, "latitudes", lat)
         object.__setattr__(self, "longitudes", lon)
         object.__setattr__(self, "zonal_velocity", u)

@@ -144,7 +144,8 @@ Field-state storage and image generation are controlled independently:
   existing commands behave exactly as before.
 - `--plot TYPE` (repeatable: `diagnostics`, `snapshots`, `summary`, or
   `all`) selects which image products to render; `--no-plots` renders none.
-  Field snapshots (`vorticity_coeffs.npy` / `vorticity_grid.npy`) and the
+  Field snapshots (`vorticity_coeffs.npy` / `vorticity_grid.npy`), their
+  authoritative `bve_snapshot_times.npy` time axis, and the
   per-step numerical diagnostics CSV are always written regardless of plot
   selection, so `--n-snapshots 20 --no-plots` saves twenty states without
   rendering a single figure, and `--n-snapshots 0` still yields a
@@ -182,7 +183,7 @@ discussion and provenance are in [docs/VALIDATION.md](docs/VALIDATION.md).*
 | RH4 geodesic, 5 days (res-4 state, res-5 fine product grid) | relative energy drift **−4.4555×10⁻⁴** |
 | RH4 Gauss lat–lon, matched timestep (`32 × 64`) | energy drift **−1.34×10⁻¹⁰** |
 | Transform round trip, `L=21` (geodesic vs Gauss) | relative L2 residual **1.04×10⁻²** vs **6.84×10⁻¹⁵** |
-| Test suite (Python 3.12.12, CuPy 13.4.0, MX110; GPU-guarded tests skipped without CUDA) | **296 passed** |
+| Test suite (Python 3.12.12, CuPy 13.4.0, MX110; GPU-guarded tests skipped without CUDA) | **310 passed** |
 
 The five-day geodesic energy number is locked by
 `test_prediction_p1_5day_energy_drift`. Full tables, conservation diagnostics,
