@@ -4,6 +4,7 @@ Command tree::
 
     aeolus run bve [...]        run the barotropic vorticity solver
     aeolus run swe [...]        run the rotating shallow-water solver
+    aeolus run pe  [...]        run the dry primitive-equation solver
     aeolus list presets         named run configurations
     aeolus list scenarios       initial-condition scenarios
     aeolus inspect RUN_PATH     summarize a finished run from its manifest
@@ -408,6 +409,160 @@ def _cmd_run_swe(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# run pe: arguments and dispatch
+# ---------------------------------------------------------------------------
+
+_PE_EXAMPLES = """\
+examples:
+  aeolus run pe                          thermal_wave, tiny geodesic demo, fixed 300 s step
+  aeolus run pe --scenario isothermal_rest    verify the exact-rest property
+  aeolus run pe --backend gauss-latlon --nlat 32 --nlon 64 --l-max 15
+  aeolus run pe --levels 12 --dt-seconds 200 --days 0.05 --n-snapshots 4
+  aeolus run pe --sigma-interfaces 0,0.25,0.6,1.0 --temperature 250
+"""
+
+
+def _parse_sigma_interfaces(text: str) -> tuple[float, ...]:
+    """Parse a comma-separated list of sigma interface coordinates."""
+    try:
+        values = tuple(float(part) for part in text.split(",") if part.strip())
+    except ValueError as err:
+        raise argparse.ArgumentTypeError(
+            f"sigma interfaces must be comma-separated numbers, got {text!r}"
+        ) from err
+    if len(values) < 2:
+        raise argparse.ArgumentTypeError(
+            "need at least 2 sigma interfaces (1 layer)")
+    return values
+
+
+def add_pe_arguments(parser: argparse.ArgumentParser) -> None:
+    """All `run pe` options. Every default is None (resolution applies them)."""
+    from planetary_sandbox.run.pe.config import (  # import-light
+        PE_PLOT_TYPES, PE_SCENARIOS)
+
+    parser.add_argument(
+        "--backend", "--grid", dest="grid", choices=list(BACKEND_CHOICES),
+        default=None,
+        help="Numerical backend / grid family [default: geodesic]. "
+             "'gauss-latlon' is an alias for 'latlon'.")
+    parser.add_argument(
+        "--l-max", "--lmax", dest="lmax", type=int, default=None,
+        help="Maximum spherical harmonic degree [default: 10].")
+    parser.add_argument(
+        "--resolution", type=int, default=None,
+        help="Geodesic grid subdivision level [default: 3].")
+    parser.add_argument(
+        "--nlat", type=int, default=None,
+        help="Lat-lon backend: number of Gauss-Legendre latitudes [default: 32].")
+    parser.add_argument(
+        "--nlon", type=int, default=None,
+        help="Lat-lon backend: number of uniform longitudes [default: 64].")
+    parser.add_argument(
+        "--day-hours", type=float, default=None,
+        help="Sidereal day length in hours; 'inf' = non-rotating [default: 24].")
+    parser.add_argument(
+        "--radius-earth-units", type=float, default=None,
+        help="Planet radius in Earth radii [default: 1.0].")
+
+    levels = parser.add_mutually_exclusive_group()
+    levels.add_argument(
+        "--levels", dest="nlev", type=int, metavar="K", default=None,
+        help="Number of uniform sigma layers [default: 8]. Mutually "
+             "exclusive with --sigma-interfaces.")
+    levels.add_argument(
+        "--sigma-interfaces", dest="sigma_interfaces",
+        type=_parse_sigma_interfaces, metavar="S0,...,SK", default=None,
+        help="Explicit sigma interface coordinates (comma-separated, from "
+             "0.0 to 1.0). Overrides --levels.")
+
+    parser.add_argument(
+        "--r-dry", dest="r_dry", type=float, default=None,
+        help="Dry-air gas constant R_d in J/kg/K [default: 287.04].")
+    parser.add_argument(
+        "--cp-dry", dest="cp_dry", type=float, default=None,
+        help="Dry-air specific heat c_p in J/kg/K [default: 1004.64].")
+
+    parser.add_argument(
+        "--scenario", choices=sorted(PE_SCENARIOS), default=None,
+        help="Initial-condition preset [default: thermal_wave].")
+    parser.add_argument(
+        "--temperature", type=float, default=None,
+        help="Initial (resting) temperature in K [default: 260].")
+    parser.add_argument(
+        "--surface-pressure", dest="surface_pressure", type=float,
+        default=None,
+        help="Initial (uniform) surface pressure in Pa [default: 101325].")
+    parser.add_argument(
+        "--thermal-amplitude", dest="thermal_amplitude", type=float,
+        default=None,
+        help="thermal_wave degree-2 perturbation amplitude in K [default: 1].")
+
+    parser.add_argument(
+        "--dt-seconds", dest="dt_seconds", type=float, metavar="SECONDS",
+        default=None,
+        help="FIXED integration timestep in seconds [default: 300]. This "
+             "runner uses a user-supplied conservative fixed step, not an "
+             "adaptive CFL controller.")
+    parser.add_argument(
+        "--days", "--duration-days", dest="duration_days", type=float,
+        default=None,
+        help="Simulated duration in days [default: ~0.0208 (30 minutes)].")
+
+    snapshots = parser.add_mutually_exclusive_group()
+    snapshots.add_argument(
+        "--n-snapshots", type=int, metavar="N", default=None,
+        help="Store N spectral states evenly spaced over the duration "
+             "[default: 3]. Same semantics as run bve/swe.")
+    snapshots.add_argument(
+        "--snapshot-interval-seconds", "--dt-snapshots",
+        dest="dt_snapshots", type=float, metavar="SECONDS", default=None,
+        help="Store a state every SECONDS of simulated time instead of a count.")
+
+    plot_group = parser.add_mutually_exclusive_group()
+    plot_group.add_argument(
+        "--plot", dest="plots", action="append", metavar="TYPE",
+        choices=list(PE_PLOT_TYPES) + ["all"], default=None,
+        help="Generate only the named image product; repeatable "
+             f"({', '.join(PE_PLOT_TYPES)}, or 'all').")
+    plot_group.add_argument(
+        "--no-plots", action="store_true", default=None,
+        help="Generate no image files (spectral snapshots and numerical "
+             "diagnostics are still written).")
+    parser.add_argument(
+        "--out", type=str, default=None,
+        help="Base directory for run outputs [default: runs].")
+    parser.add_argument(
+        "--experiment", type=str, default=None,
+        help="Optional grouping name; runs go to <out>/<experiment>/<run_id>/.")
+    parser.add_argument(
+        "--overwrite", action="store_true", default=None,
+        help="Reuse an existing run directory on a run-id collision.")
+
+
+_PE_EXPLICIT_KEYS = (
+    "lmax", "grid", "resolution", "nlat", "nlon", "day_hours",
+    "radius_earth_units", "nlev", "sigma_interfaces", "r_dry", "cp_dry",
+    "duration_days", "dt_seconds", "scenario", "temperature",
+    "surface_pressure", "thermal_amplitude", "n_snapshots", "dt_snapshots",
+    "plots", "no_plots", "out", "experiment", "overwrite")
+
+
+def _cmd_run_pe(args: argparse.Namespace) -> int:
+    from planetary_sandbox.run.pe.config import PERunConfig  # import-light
+
+    explicit = {k: getattr(args, k, None) for k in _PE_EXPLICIT_KEYS}
+    try:
+        cfg = PERunConfig.resolve(explicit)
+    except ValueError as err:
+        args._parser.error(str(err))
+    print("\n".join(cfg.summary_lines()))
+    # Heavy imports (CuPy, matplotlib) happen inside execute_run.
+    from planetary_sandbox.cli import pe as pe_module
+    return pe_module.execute_run(cfg)
+
+
+# ---------------------------------------------------------------------------
 # list
 # ---------------------------------------------------------------------------
 
@@ -423,8 +578,10 @@ def _cmd_list_presets(args: argparse.Namespace) -> int:
 
 def _cmd_list_scenarios(args: argparse.Namespace) -> int:
     from planetary_sandbox.run.swe.config import SWE_SCENARIOS  # import-light
+    from planetary_sandbox.run.pe.config import PE_SCENARIOS  # import-light
 
-    for title, catalog in (("bve", SCENARIOS), ("swe", SWE_SCENARIOS)):
+    for title, catalog in (("bve", SCENARIOS), ("swe", SWE_SCENARIOS),
+                           ("pe", PE_SCENARIOS)):
         print(f"{title} scenarios:")
         width = max(len(name) for name in catalog)
         for name in sorted(catalog):
@@ -660,6 +817,17 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     add_swe_arguments(swe_parser)
     swe_parser.set_defaults(_handler=_cmd_run_swe, _parser=swe_parser)
+
+    pe_parser = solvers.add_parser(
+        "pe", help="Dry primitive equations (hydrostatic, sigma coordinate).",
+        description="Run the dry hydrostatic primitive equations on a planet "
+                    "(vorticity/divergence/temperature/ln p_s prognostics, "
+                    "fixed-step RK4; no forcing, diffusion, or semi-implicit "
+                    "terms).",
+        epilog=_PE_EXAMPLES,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    add_pe_arguments(pe_parser)
+    pe_parser.set_defaults(_handler=_cmd_run_pe, _parser=pe_parser)
 
     # aeolus list <topic>
     list_parser = commands.add_parser(

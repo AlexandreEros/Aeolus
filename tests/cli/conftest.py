@@ -26,6 +26,7 @@ ADDITIVE_CONFIG_KEYS = {"snapshot_mode", "n_snapshots", "snapshot_times", "plots
 HEAVY_MODULES = ("cupy", "cupyx", "matplotlib",
                  "planetary_sandbox.planet.planet",
                  "planetary_sandbox.run.bve.runner",
+                 "planetary_sandbox.run.pe.runner",
                  "planetary_sandbox.viz")
 
 

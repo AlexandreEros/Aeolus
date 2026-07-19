@@ -131,6 +131,22 @@ the snapshot schedule, plus optional fixed Gaussian-mountain topography; the
 model and its verification are documented in
 [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md).
 
+The first runnable dry **primitive-equation** experiment (hydrostatic,
+sigma-coordinate, fixed-step RK4; no forcing, diffusion, or semi-implicit
+terms) is exposed the same way:
+
+```powershell
+aeolus run pe                                  # tiny thermal_wave demo
+aeolus run pe --scenario isothermal_rest       # verify the exact-rest property
+aeolus run pe --backend gauss-latlon --nlat 32 --nlon 64 --l-max 15
+```
+
+`aeolus run pe --help` lists the options — backend/resolution, `--levels` or
+explicit `--sigma-interfaces`, the dry gas constants, the initial-condition
+preset and its temperature/pressure/amplitude, the **fixed** `--dt-seconds`
+step, duration, and the snapshot schedule; the runner is documented in
+[docs/PRIMITIVE_EQUATIONS_RUNNER.md](docs/PRIMITIVE_EQUATIONS_RUNNER.md).
+
 ### Snapshots and plots
 
 Field-state storage and image generation are controlled independently:
@@ -196,7 +212,7 @@ discussion and provenance are in [docs/VALIDATION.md](docs/VALIDATION.md).*
 | RH4 geodesic, 5 days (res-4 state, res-5 fine product grid) | relative energy drift **−4.4555×10⁻⁴** |
 | RH4 Gauss lat–lon, matched timestep (`32 × 64`) | energy drift **−1.34×10⁻¹⁰** |
 | Transform round trip, `L=21` (geodesic vs Gauss) | relative L2 residual **1.04×10⁻²** vs **6.84×10⁻¹⁵** |
-| Test suite (Python 3.12.12, CuPy 13.4.0, MX110; GPU-guarded tests skipped without CUDA) | **465 passed** |
+| Test suite (Python 3.12.12, CuPy 13.4.0, MX110; GPU-guarded tests skipped without CUDA) | **571 passed** |
 
 The five-day geodesic energy number is locked by
 `test_prediction_p1_5day_energy_drift`. Full tables, conservation diagnostics,
@@ -214,6 +230,10 @@ and orientation/rotation-equivalence tests are in
 - [docs/MATHEMATICAL_MODEL.md](docs/MATHEMATICAL_MODEL.md) — equations and conventions.
 - [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md) — the rotating shallow-water
   core: prognostics, discretization, CFL, scenarios, verification status.
+- [docs/PRIMITIVE_EQUATIONS_DESIGN.md](docs/PRIMITIVE_EQUATIONS_DESIGN.md) and
+  [docs/PRIMITIVE_EQUATIONS_RUNNER.md](docs/PRIMITIVE_EQUATIONS_RUNNER.md) —
+  the dry hydrostatic primitive-equation core and its first runnable
+  fixed-step experiment (presets, capsule schema, diagnostics, results).
 - Deeper audit records: [docs/KNOWN_RISKS.md](docs/KNOWN_RISKS.md),
   [docs/VALIDATION_PLAN.md](docs/VALIDATION_PLAN.md),
   [docs/validation/](docs/validation/), and the current mermaid
