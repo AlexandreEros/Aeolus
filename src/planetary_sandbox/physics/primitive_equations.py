@@ -1,15 +1,20 @@
-"""Dry hydrostatic primitive-equation core on the sphere — FOUNDATION ONLY.
+"""Dry hydrostatic primitive-equation core on the sphere.
 
 Scope (docs/PRIMITIVE_EQUATIONS_DESIGN.md): the spectral state
 representation, hard state validation, hydrostatic geopotential
 reconstruction, the discrete column continuity diagnostics (surface-
-pressure tendency, interface sigma-velocity, layer mass closure), and the
-characteristic-speed estimate for the future CFL controller.
-
-**There is deliberately no ``tendency()`` method.** The prognostic
-tendencies are a separate milestone, gated on this foundation's tests; no
-placeholder physics that silently returns zero exists here. What IS
-implemented is real, tested machinery the tendency will be built from.
+pressure tendency, interface sigma-velocity, layer mass closure), the
+characteristic-speed estimate for the CFL controller, and — the tendency
+milestone — the first true nonlinear explicit tendency: product-grid
+reconstruction of every primitive-equation field, thermodynamic and
+surface-pressure tendencies, the vector-invariant momentum (zeta/delta)
+tendencies using the weak-form vector curl/divergence analysis (design
+doc Section 8a), and the public :meth:`PrimitiveEquationsModel.tendency`
+gated behind the Phase-6 verification battery (exact rest, BVE
+degeneracy, monopole/continuity invariants, RK4 stage-validated
+stability). Deliberately NOT here (still deferred): runner/CLI/config,
+semi-implicit terms, T_ref split, hyperdiffusion, forcing, topography
+experiments, long integrations.
 
 Formulation summary (full derivation and sign conventions in the design
 doc): sigma = p/p_s vertical coordinate, Lorenz staggering, prognostic
@@ -681,6 +686,44 @@ class PrimitiveEquationsModel:
         zeta_dot[:, 0, :] = 0.0
         delta_dot[:, 0, :] = 0.0
         return zeta_dot, delta_dot
+
+    # ------------------------------------------------------------------
+    # Public tendency (the first true nonlinear dry hydrostatic PE
+    # tendency; exposed only behind the Phase-6 verification battery)
+    # ------------------------------------------------------------------
+
+    def tendency(self, coeffs: cp.ndarray) -> cp.ndarray:
+        """d/dt of the (3K+1, l_max+1, l_max+1) prognostic stack.
+
+        Fully explicit, unsplit dry hydrostatic primitive equations in
+        vorticity–divergence form (design doc Section 1): no T_ref split,
+        no semi-implicit terms, full T in R_d T grad(ln p_s), no
+        hyperdiffusion. Row layout matches the state:
+        ``[zeta_1..zeta_K, delta_1..delta_K, T_1..T_K, ln p_s]``.
+
+        Takes and returns raw coefficient stacks so it plugs directly
+        into ``run.engine.rk4_step_array`` (use ``validate_state`` wrapped
+        as the ``stage_validator``, as ``run/swe/runner.py`` does).
+
+        All nonlinear terms are evaluated on the backend product sampling
+        via one shared reconstruction (:meth:`_tendency_product_fields`);
+        every quantity in the continuity and energy-exchange identities
+        derives from the same product-grid G and sigma_dot. Exact
+        properties (tested): an isothermal resting atmosphere returns
+        exactly zero; the BVE-degenerate state reproduces the barotropic
+        tendency per level; zeta/delta monopole rows are bitwise zero;
+        T and ln p_s monopoles evolve freely.
+        """
+        fields = self._tendency_product_fields(coeffs)
+        t_dot, lnps_dot = self._thermo_mass_tendencies(coeffs, fields)
+        zeta_dot, delta_dot = self._momentum_tendencies(coeffs, fields)
+        return cp.concatenate(
+            [zeta_dot, delta_dot, t_dot, lnps_dot[None]], axis=0)
+
+    def tendency_state(self, state: PrimitiveEquationsState
+                       ) -> PrimitiveEquationsState:
+        """Dataclass-in, dataclass-out convenience wrapper over tendency()."""
+        return PrimitiveEquationsState(self.tendency(state.coeffs))
 
     # ------------------------------------------------------------------
     # Characteristic speed (design doc Section 10)

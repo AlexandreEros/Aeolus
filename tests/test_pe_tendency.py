@@ -895,6 +895,184 @@ def test_momentum_tendencies_finite_on_geodesic(geodesic_planet):
     assert float(cp.abs(delta_dot[:, 0, :]).max()) == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Phase 6 — public tendency(): full verification battery
+# ---------------------------------------------------------------------------
+
+def test_full_tendency_exact_rest_latlon(latlon_planet):
+    """Exact rest: every tendency coefficient of the full stack is
+    exactly zero."""
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _rest_state(model)
+    out = model.tendency(state.coeffs)
+    assert out.shape == state.coeffs.shape
+    assert float(cp.abs(out).max()) == 0.0
+
+
+def test_full_tendency_exact_rest_geodesic(geodesic_planet):
+    import cupy as cp
+    model = _make_model(geodesic_planet)
+    state = _rest_state(model)
+    out = model.tendency(state.coeffs)
+    assert float(cp.abs(out).max()) == 0.0
+
+
+def test_full_tendency_equals_assembled_parts(latlon_planet):
+    """The public tendency is exactly the concatenation of the tested
+    parts — guards the wiring, bitwise."""
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _band_limited_state(model, seed=59)
+    out = model.tendency(state.coeffs)
+
+    fields = model._tendency_product_fields(state.coeffs)
+    t_dot, lnps_dot = model._thermo_mass_tendencies(state.coeffs, fields)
+    zeta_dot, delta_dot = model._momentum_tendencies(state.coeffs, fields)
+    K = model.nlev
+    assert float(cp.abs(out[0:K] - zeta_dot).max()) == 0.0
+    assert float(cp.abs(out[K:2 * K] - delta_dot).max()) == 0.0
+    assert float(cp.abs(out[2 * K:3 * K] - t_dot).max()) == 0.0
+    assert float(cp.abs(out[3 * K] - lnps_dot).max()) == 0.0
+
+
+def _bve_degeneracy_public(planet, nlev=4):
+    import cupy as cp
+    from planetary_sandbox.physics.barotropic import (
+        BarotropicState, BarotropicVorticity)
+    from planetary_sandbox.run.bve.initial_conditions import make_ic
+
+    model = _make_model(planet, nlev=nlev)
+    zeta_lm = planet.sh.transform(make_ic("rh4", planet))
+    zeta_lm[0, :] = 0.0
+    state = _rest_state(model)
+    for k in range(model.nlev):
+        state.zeta[k] += zeta_lm
+    bve_dot = BarotropicVorticity(planet, viscosity=0.0).tendency(
+        BarotropicState(zeta_lm), None)
+    out = model.tendency(state.coeffs)
+    err = max(float(cp.abs(out[k] - bve_dot).max())
+              for k in range(model.nlev))
+    return err, float(cp.abs(bve_dot).max())
+
+
+def test_full_tendency_bve_degeneracy_latlon(latlon_planet):
+    err, scale = _bve_degeneracy_public(latlon_planet)
+    assert err <= 1e-12 * scale
+
+
+def test_full_tendency_bve_degeneracy_geodesic(geodesic_planet):
+    err, scale = _bve_degeneracy_public(geodesic_planet)
+    assert err <= 1e-12 * scale
+
+
+def test_full_tendency_monopoles_and_continuity(latlon_planet):
+    """zeta/delta tendency monopoles bitwise zero at every level; the
+    ln p_s tendency row matches the independently assembled product-grid
+    continuity; T / ln p_s monopoles are NOT zeroed."""
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _band_limited_state(model, seed=61)
+    out = model.tendency(state.coeffs)
+    K = model.nlev
+
+    assert float(cp.abs(out[0:2 * K, 0, :]).max()) == 0.0
+    assert float(cp.abs(out[3 * K, 0, 0])) > 0.0
+    assert max(float(cp.abs(out[2 * K + k, 0, 0])) for k in range(K)) > 0.0
+
+    fields = model._tendency_product_fields(state.coeffs)
+    dlnps_ref = None
+    for k in range(K):
+        adv = (fields["u"][k] * fields["lnps_lam"]
+               - fields["v"][k] * fields["lnps_snt"]) / fields["coslat"]
+        term = -model.sigma.thickness[k] * (fields["delta"][k] + adv)
+        dlnps_ref = term if dlnps_ref is None else dlnps_ref + term
+    ref_lm = model._truncate(model._ps.sh.transform(dlnps_ref))
+    scale = float(cp.abs(ref_lm).max())
+    assert float(cp.abs(out[3 * K] - ref_lm).max()) < 1e-12 * scale
+
+
+def test_rk4_rest_state_is_bitwise_stationary(latlon_planet):
+    """An exact resting atmosphere is a bitwise fixed point of RK4 with
+    the model tendency and validate_state as the stage validator."""
+    import cupy as cp
+    from planetary_sandbox.physics.primitive_equations import (
+        PrimitiveEquationsState)
+    from planetary_sandbox.run.engine import rk4_step_array
+    model = _make_model(latlon_planet)
+    state = _rest_state(model)
+
+    def validate_stage(y_stage):
+        model.validate_state(PrimitiveEquationsState(y_stage),
+                             context="in an RK4 stage")
+
+    y = state.coeffs
+    for _ in range(4):
+        y = rk4_step_array(model.tendency, y, 0.0, 600.0,
+                           stage_validator=validate_stage)
+    assert bool((y == state.coeffs).all())
+
+
+def test_rk4_small_perturbation_stays_finite_and_valid(latlon_planet):
+    """A small smooth perturbation advances through several deliberately
+    small RK4 steps with stage validation; every accepted state passes
+    the hard validator and the tendency stays genuinely nonzero."""
+    import cupy as cp
+    from planetary_sandbox.physics.primitive_equations import (
+        PrimitiveEquationsState)
+    from planetary_sandbox.run.engine import rk4_step_array
+    model = _make_model(latlon_planet)
+    state = _band_limited_state(model, seed=67)
+    model.validate_state(state, context="initial perturbed state")
+
+    def validate_stage(y_stage):
+        model.validate_state(PrimitiveEquationsState(y_stage),
+                             context="in an RK4 stage")
+
+    y = state.coeffs.copy()
+    dt = 60.0
+    for step in range(5):
+        y = rk4_step_array(model.tendency, y, step * dt, dt,
+                           stage_validator=validate_stage)
+        model.validate_state(PrimitiveEquationsState(y),
+                             context=f"after step {step + 1}")
+    assert bool(cp.isfinite(y).all())
+    assert float(cp.abs(y - state.coeffs).max()) > 0.0
+
+
+def test_rk4_small_perturbation_geodesic(geodesic_planet):
+    import cupy as cp
+    from planetary_sandbox.physics.primitive_equations import (
+        PrimitiveEquationsState)
+    from planetary_sandbox.run.engine import rk4_step_array
+    model = _make_model(geodesic_planet)
+    state = _band_limited_state(model, seed=71)
+    model.validate_state(state, context="initial perturbed state")
+
+    def validate_stage(y_stage):
+        model.validate_state(PrimitiveEquationsState(y_stage),
+                             context="in an RK4 stage")
+
+    y = state.coeffs.copy()
+    for step in range(3):
+        y = rk4_step_array(model.tendency, y, 0.0, 60.0,
+                           stage_validator=validate_stage)
+        model.validate_state(PrimitiveEquationsState(y),
+                             context=f"after step {step + 1}")
+    assert bool(cp.isfinite(y).all())
+
+
+def test_tendency_state_wrapper(latlon_planet):
+    import cupy as cp
+    from planetary_sandbox.physics.primitive_equations import (
+        PrimitiveEquationsState)
+    model = _make_model(latlon_planet)
+    state = _band_limited_state(model, seed=73)
+    out_state = model.tendency_state(state)
+    assert isinstance(out_state, PrimitiveEquationsState)
+    assert bool((out_state.coeffs == model.tendency(state.coeffs)).all())
+
+
 def test_product_fields_on_geodesic_are_finite_and_structural(geodesic_planet):
     """The same reconstruction runs on the geodesic backend: finite fields,
     structural sigma_dot zeros, round-off layer closure."""
