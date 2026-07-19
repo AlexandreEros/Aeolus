@@ -159,7 +159,12 @@ def run_pe(model: PrimitiveEquationsModel,
     if "summary" in plots:
         # Part of the selected run product: a failure propagates so the shared
         # lifecycle marks the run failed and never publishes it as complete.
+        # The single-level summary and the per-snapshot upper/lower figures are
+        # rendered together from the just-persisted coefficient stack.
         from .visualization import render_pe_summary
+        from .snapshot_visualization import render_all_pe_snapshots
         render_pe_summary(model, out_dir, metadata=figure_metadata)
+        render_all_pe_snapshots(model, out_dir, metadata=figure_metadata,
+                                scenario=scenario)
 
     return 0
