@@ -30,6 +30,7 @@ _GENERATED_RESULT_FILES: tuple[str, ...] = (
 _GENERATED_RESULT_DIRS: tuple[str, ...] = (
     "diagnostics",
     "figures",
+    "snapshots",
 )
 
 #: Manifest notes describing the dry primitive-equation solver and the exact

@@ -32,6 +32,9 @@ Stored artifacts:
 * ``diagnostics/timeseries.csv``  per-step scalar diagnostics.
 * ``figures/``               rendered when 'diagnostics' in ``plots``.
 * ``pe_summary.png``         rendered when 'summary' in ``plots``.
+* ``snapshots/physical/``    per-snapshot upper/lower figures + timeline.png,
+                             rendered alongside the summary (same BVE/SWE
+                             capsule-root snapshot-product layout).
 """
 from __future__ import annotations
 
@@ -162,9 +165,9 @@ def run_pe(model: PrimitiveEquationsModel,
         # The single-level summary and the per-snapshot upper/lower figures are
         # rendered together from the just-persisted coefficient stack.
         from .visualization import render_pe_summary
-        from .snapshot_visualization import render_all_pe_snapshots
+        from .snapshot_visualization import render_pe_snapshots
         render_pe_summary(model, out_dir, metadata=figure_metadata)
-        render_all_pe_snapshots(model, out_dir, metadata=figure_metadata,
-                                scenario=scenario)
+        render_pe_snapshots(model, out_dir, metadata=figure_metadata,
+                            scenario=scenario)
 
     return 0

@@ -38,18 +38,11 @@ def _host(values) -> np.ndarray:
     return np.asarray(values)
 
 
-def _load_pe_coeffs(out_dir: pathlib.Path | str, nlev: int, *,
-                    mmap_mode: str | None = None
-                    ) -> tuple[np.ndarray, np.ndarray]:
-    """Validate and return the persisted PE coefficient stack and times.
-
-    ``mmap_mode`` is forwarded to :func:`numpy.load` for the (potentially
-    large) coefficient stack so a caller that renders snapshots one at a time
-    can avoid holding the whole run in host memory; the small times array is
-    always read normally.
-    """
+def _load_pe_coeffs(out_dir: pathlib.Path | str,
+                    nlev: int) -> tuple[np.ndarray, np.ndarray]:
+    """Validate and return the persisted PE coefficient stack and times."""
     out_dir = pathlib.Path(out_dir)
-    coeffs = np.load(out_dir / PE_COEFFS_FILENAME, mmap_mode=mmap_mode)
+    coeffs = np.load(out_dir / PE_COEFFS_FILENAME)
     times = np.load(out_dir / PE_SNAPSHOT_TIMES_FILENAME)
     if coeffs.ndim != 4 or coeffs.shape[1] != 3 * nlev + 1:
         raise ValueError(

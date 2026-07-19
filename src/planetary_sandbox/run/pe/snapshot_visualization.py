@@ -1,6 +1,6 @@
 """Per-snapshot primitive-equation visualization (upper vs. lower atmosphere).
 
-For every stored primitive-equation state this module renders one scientifically
+For every stored primitive-equation state this renders one scientifically
 honest figure that places the horizontal structure at two representative model
 sigma levels side by side, so upper- and lower-atmospheric structure can be
 compared at a glance WITHOUT pretending to show a full time-varying 3-D
@@ -9,21 +9,30 @@ relative vorticity, horizontal divergence, and temperature anomaly (relative to
 that level's area-weighted horizontal mean), plus a single surface-pressure
 anomaly panel (surface pressure has no vertical index).
 
-Design constraints honored here (see the branch brief):
+The frames are published exactly like the BVE/SWE snapshot products: through
+the shared :func:`planetary_sandbox.viz.timeline.render_snapshot_product`, so a
+PE capsule grows a capsule-root ``snapshots/`` directory with one representation
+subdirectory (``physical``) of time-named frames (``t000000s.png`` ...) and a
+representative ``timeline.png`` overview, staged and swapped into place
+atomically. PE has a single combined physical-space figure per snapshot, so it
+contributes one ``physical`` representation (no ``spectral`` view exists yet).
+
+Design notes:
 
 * it reuses the model's own spherical-harmonic synthesis and the shared lat-lon
   view adapter (via :mod:`planetary_sandbox.run.pe.visualization` — no second
   synthesis implementation), the shared declarative
-  :mod:`planetary_sandbox.viz.specs` panels, and the default Matplotlib
-  renderer's atomic write;
-* color scaling is resolved ONCE per variable across the whole run (all stored
-  times and both selected levels) and is symmetric about zero; exactly-zero
-  fields fall back to a small valid symmetric extent rather than an invalid
-  normalization;
-* memory stays bounded: a first pass scans every snapshot to fix the shared
-  color limits, a second pass renders one snapshot at a time — a complete
-  time x level x lat x lon dataset is never stacked on the device, and large
-  device temporaries are released between snapshots;
+  :mod:`planetary_sandbox.viz.specs` panels, the timeline's cross-frame
+  normalization, and the default Matplotlib renderer's atomic write;
+* color scaling is symmetric about zero and resolved ONCE per variable across
+  the whole run: upper and lower panels of a variable share a single
+  ``normalization_group`` name, so the timeline resolves one shared symmetric
+  limit spanning all stored times AND both selected levels. Exactly-zero fields
+  fall back to a small valid symmetric extent (the shared
+  :class:`~planetary_sandbox.viz.normalization.NormalizationPolicy` behavior),
+  so exact-rest never yields an invalid normalization;
+* per snapshot only the two selected levels are synthesized (never the whole
+  column), matching how the SWE product reconstructs its physical frames;
 * sigma is a dimensionless vertical coordinate (p/p_s); nothing here describes
   it as geometric altitude, and the figures make no climate/convection/3-D
   claim.
@@ -35,34 +44,23 @@ is usable without CUDA; the synthesis/rendering helpers are imported lazily.
 """
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 import math
-import os
 import pathlib
-import shutil
-import tempfile
 
 import numpy as np
 
 from planetary_sandbox.physics.sigma_coordinate import SigmaGrid
 
 
-# The per-snapshot figures live inside the run capsule's figures/ directory,
-# beside the diagnostics plots and the single-level pe_summary.png.
-PE_FIGURES_DIRNAME = "figures"
-PE_SNAPSHOTS_DIRNAME = "pe_snapshots"
+# The per-snapshot product is a capsule-root ``snapshots/`` directory with one
+# representation subdirectory, exactly like the BVE/SWE capsules.
+PE_SNAPSHOTS_DIRNAME = "snapshots"
+PE_SNAPSHOTS_REPRESENTATION = "physical"
 
 # Default representative full levels (dimensionless sigma = p/p_s).
 DEFAULT_UPPER_SIGMA = 0.25
 DEFAULT_LOWER_SIGMA = 0.75
-
-# Below this a signed field is treated as identically zero, so the symmetric
-# color scale falls back to a small valid extent (mirrors the repository's
-# NormalizationPolicy.symmetric fallback so exact-rest never yields an invalid
-# normalization).
-_ZERO_FIELD_TOL = 1.0e-12
-_ZERO_FIELD_FALLBACK = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -235,64 +233,6 @@ def prepare_pe_snapshot_fields(model, coeffs_2d, *, index: int, total: int,
 
 
 # ---------------------------------------------------------------------------
-# Shared run-wide symmetric color limits (bounded-memory scan)
-# ---------------------------------------------------------------------------
-
-@dataclass(frozen=True)
-class PERunColorLimits:
-    """Run-wide max |field| per variable (over all times and both levels).
-
-    Stored as the raw maxima; :meth:`symmetric_limits` applies the exact-zero
-    fallback so a resting run still yields a valid symmetric normalization.
-    """
-
-    vorticity: float
-    divergence: float
-    temperature: float
-    surface_pressure: float
-
-    def bound(self, name: str) -> float:
-        raw = getattr(self, name)
-        return raw if raw > _ZERO_FIELD_TOL else _ZERO_FIELD_FALLBACK
-
-    def symmetric_limits(self, name: str) -> tuple[float, float]:
-        bound = self.bound(name)
-        return (-bound, bound)
-
-
-def compute_pe_run_color_limits(model, out_dir: pathlib.Path | str,
-                                levels: SelectedLevels) -> PERunColorLimits:
-    """Scan every stored snapshot to fix one symmetric scale per variable.
-
-    Bounded memory: the coefficient stack is memory-mapped and each snapshot's
-    two selected levels are synthesized, reduced to a running max, and released
-    before the next snapshot. Nothing accumulates a per-time field stack.
-    """
-    from .visualization import _load_pe_coeffs, _synthesize
-    K = model.nlev
-    coeffs, _times = _load_pe_coeffs(out_dir, K, mmap_mode="r")
-    max_v = max_d = max_t = max_p = 0.0
-    for index in range(coeffs.shape[0]):
-        snapshot = coeffs[index]
-        for level in (levels.upper_index, levels.lower_index):
-            zeta = _synthesize(model, snapshot[level], subtract_mean=False)
-            max_v = max(max_v, float(np.max(np.abs(zeta))))
-            delta = _synthesize(model, snapshot[K + level],
-                                subtract_mean=False)
-            max_d = max(max_d, float(np.max(np.abs(delta))))
-            t_anom = _synthesize(model, snapshot[2 * K + level],
-                                 subtract_mean=True)
-            max_t = max(max_t, float(np.max(np.abs(t_anom))))
-            del zeta, delta, t_anom
-        ps_anom = _surface_pressure_anomaly(model, snapshot[3 * K])
-        max_p = max(max_p, float(np.max(np.abs(ps_anom))))
-        del ps_anom
-        _free_device_memory()
-    return PERunColorLimits(vorticity=max_v, divergence=max_d,
-                            temperature=max_t, surface_pressure=max_p)
-
-
-# ---------------------------------------------------------------------------
 # Declarative figure layout (Matplotlib-free)
 # ---------------------------------------------------------------------------
 
@@ -306,10 +246,14 @@ def _readable_time(seconds: float) -> str:
     return f"{seconds:.3f} s"
 
 
-def _frozen_symmetric(bound: float):
-    from planetary_sandbox.viz.normalization import (NormalizationKind,
-                                                     NormalizationPolicy)
-    return NormalizationPolicy(NormalizationKind.SYMMETRIC, -bound, bound)
+def _backend_label(model) -> str:
+    name = type(model.grid).__name__
+    lowered = name.lower()
+    if "geodesic" in lowered:
+        return "geodesic"
+    if "latlon" in lowered or "lat_lon" in lowered:
+        return "Gauss lat-lon"
+    return name
 
 
 def _snapshot_header(fields: PESnapshotFields, *, scenario: str | None,
@@ -333,8 +277,7 @@ def _snapshot_header(fields: PESnapshotFields, *, scenario: str | None,
     return "\n".join((line1, line2, line3))
 
 
-def build_pe_snapshot_figure(model, fields: PESnapshotFields,
-                             limits: PERunColorLimits, *,
+def build_pe_snapshot_figure(model, fields: PESnapshotFields, *,
                              scenario: str | None = None,
                              backend_label: str | None = None,
                              run_id: str | None = None,
@@ -349,10 +292,13 @@ def build_pe_snapshot_figure(model, fields: PESnapshotFields,
         row 1  z upper   d upper   T' upper   |  p_s'
         row 2  z lower   d lower   T' lower   |  (p_s' spans rows 1-2)
 
-    Every signed field uses the run-wide frozen symmetric scale, so upper and
-    lower panels of a variable share limits and all snapshots are comparable.
+    Every signed field uses a symmetric normalization tagged with a per-variable
+    ``normalization_group``; the upper and lower panels of a variable share one
+    group name, so when the timeline resolves normalizations they receive ONE
+    shared symmetric scale spanning all stored times and both levels.
     """
     from .visualization import _view_field
+    from planetary_sandbox.viz.normalization import NormalizationPolicy
     from planetary_sandbox.viz.specs import (FigureSpec, PanelPlacement,
                                              ScalarMapSpec, TextPanelSpec)
 
@@ -360,7 +306,7 @@ def build_pe_snapshot_figure(model, fields: PESnapshotFields,
     su = f"{levels.upper_sigma:.3f}"
     sl = f"{levels.lower_sigma:.3f}"
 
-    # (values, title, units, variable-name, color-limit key, row, col, span)
+    # (values, title, units, variable-group, row, col, row_span)
     layout = [
         (fields.zeta_upper, f"Relative vorticity (upper sigma={su})", "s^-1",
          "vorticity", 1, 0, 1),
@@ -380,15 +326,14 @@ def build_pe_snapshot_figure(model, fields: PESnapshotFields,
 
     view_grid = target_grid
     panels = []
-    for values, title, units, key, row, column, row_span in layout:
+    for values, title, units, group, row, column, row_span in layout:
         view_grid, field = _view_field(
             model, values, name=title, units=units, target_grid=view_grid)
-        bound = limits.bound(key)
         panels.append(PanelPlacement(
             ScalarMapSpec(field, title, time_index=0,
-                          normalization=_frozen_symmetric(bound),
+                          normalization=NormalizationPolicy.symmetric(),
                           color_policy="signed",
-                          normalization_group=f"pe-snapshot-{key}"),
+                          normalization_group=f"pe-snapshot-{group}"),
             row, column, row_span=row_span))
 
     header = _snapshot_header(fields, scenario=scenario,
@@ -406,122 +351,76 @@ def build_pe_snapshot_figure(model, fields: PESnapshotFields,
 
 
 # ---------------------------------------------------------------------------
-# Rendering (bounded-memory two-pass, atomic directory publish)
+# Timeline assembly and rendering (shared BVE/SWE snapshot-product path)
 # ---------------------------------------------------------------------------
 
-def _free_device_memory() -> None:
-    """Release pooled device memory between snapshots (small-GPU friendly)."""
-    try:
-        import cupy as cp
-        cp.get_default_memory_pool().free_all_blocks()
-    except Exception:
-        pass
+def build_pe_snapshot_timeline(model, out_dir: pathlib.Path | str, *,
+                               scenario: str | None = None,
+                               run_id: str | None = None,
+                               upper_index: int | None = None,
+                               lower_index: int | None = None):
+    """Build the physical PE snapshot timeline from a persisted run capsule.
 
-
-def _backend_label(model) -> str:
-    name = type(model.grid).__name__
-    lowered = name.lower()
-    if "geodesic" in lowered:
-        return "geodesic"
-    if "latlon" in lowered or "lat_lon" in lowered:
-        return "Gauss lat-lon"
-    return name
-
-
-def render_all_pe_snapshots(model, out_dir: pathlib.Path | str, *,
-                            scenario: str | None = None,
-                            metadata: dict | None = None,
-                            renderer=None,
-                            upper_index: int | None = None,
-                            lower_index: int | None = None
-                            ) -> tuple[pathlib.Path, ...]:
-    """Render one figure per stored snapshot into ``figures/pe_snapshots/``.
-
-    Two bounded-memory passes: pass one fixes the shared per-variable symmetric
-    color limits; pass two synthesizes and renders one snapshot at a time. The
-    complete set is staged on the same filesystem and the ``pe_snapshots``
-    directory is swapped into place atomically, so a failure never leaves a
-    partial or mixed-generation set and never touches unrelated figures.
-    Failures deliberately propagate (a required scientific artifact, like the
-    single-level ``pe_summary.png``).
+    One :class:`~planetary_sandbox.viz.timeline.FigureFrame` per stored time.
+    Each snapshot's two selected levels are synthesized independently, so no
+    complete time x level x lat x lon dataset is stacked on the device.
     """
     from .visualization import _load_pe_coeffs
-    from planetary_sandbox.viz.renderers import get_default_renderer
+    from planetary_sandbox.viz.timeline import FigureFrame, FigureTimeline
 
-    out_dir = pathlib.Path(out_dir)
-    K = model.nlev
+    coeffs, times = _load_pe_coeffs(out_dir, model.nlev)
     levels = select_snapshot_levels(model.sigma, upper_index=upper_index,
                                     lower_index=lower_index)
-    coeffs, times = _load_pe_coeffs(out_dir, K, mmap_mode="r")
+    backend_label = _backend_label(model)
     total = int(coeffs.shape[0])
 
-    limits = compute_pe_run_color_limits(model, out_dir, levels)
-    backend = renderer or get_default_renderer()
-    backend_label = _backend_label(model)
+    view_grid = None
+    frames = []
+    for index in range(total):
+        fields = prepare_pe_snapshot_fields(
+            model, coeffs[index], index=index, total=total,
+            time_seconds=float(times[index]), levels=levels)
+        view_grid, spec = build_pe_snapshot_figure(
+            model, fields, scenario=scenario, backend_label=backend_label,
+            run_id=run_id, target_grid=view_grid)
+        frames.append(FigureFrame(float(times[index]), spec))
+    return FigureTimeline(tuple(frames), filename_prefix=scenario or "pe")
+
+
+def render_pe_snapshots(model, out_dir: pathlib.Path | str, *,
+                        scenario: str | None = None,
+                        metadata: dict | None = None,
+                        renderer=None) -> dict[str, tuple[pathlib.Path, ...]]:
+    """Render the physical PE snapshot product into ``<capsule>/snapshots/``.
+
+    Publishes exactly like the BVE/SWE snapshot products: a capsule-root
+    ``snapshots/physical/`` directory of time-named frames plus a
+    representative ``timeline.png`` overview, staged and swapped atomically so a
+    failure never exposes a partial or mixed-generation set. Failures propagate
+    (a required scientific artifact, like the single-level ``pe_summary.png``).
+    """
+    from planetary_sandbox.viz.renderers import get_default_renderer
+    from planetary_sandbox.viz.timeline import render_snapshot_product
+
     run_id = (metadata or {}).get("RunId") or None
-    width = max(4, len(str(total - 1)))
-
-    figures_dir = out_dir / PE_FIGURES_DIRNAME
-    figures_dir.mkdir(parents=True, exist_ok=True)
-    destination = figures_dir / PE_SNAPSHOTS_DIRNAME
-    if destination.exists() and not destination.is_dir():
-        raise ValueError(
-            f"PE snapshot destination is not a directory: {destination}")
-
-    stage_root = pathlib.Path(tempfile.mkdtemp(
-        prefix=f".{PE_SNAPSHOTS_DIRNAME}.product-", dir=figures_dir))
-    staged = stage_root / PE_SNAPSHOTS_DIRNAME
-    staged.mkdir()
-    published: list[pathlib.Path] = []
-    try:
-        view_grid = None
-        for index in range(total):
-            fields = prepare_pe_snapshot_fields(
-                model, coeffs[index], index=index, total=total,
-                time_seconds=float(times[index]), levels=levels)
-            view_grid, spec = build_pe_snapshot_figure(
-                model, fields, limits, scenario=scenario,
-                backend_label=backend_label, run_id=run_id,
-                target_grid=view_grid)
-            name = f"snapshot_{index:0{width}d}.png"
-            backend.render_figure(spec, staged / name, metadata=metadata)
-            if not (staged / name).is_file():
-                raise RuntimeError(
-                    f"renderer did not create requested snapshot {name}")
-            published.append(destination / name)
-            del fields, spec
-            _free_device_memory()
-
-        previous = stage_root / f".{PE_SNAPSHOTS_DIRNAME}.previous"
-        moved_previous = False
-        try:
-            if destination.exists():
-                os.replace(destination, previous)
-                moved_previous = True
-            os.replace(staged, destination)
-        except BaseException:
-            if moved_previous:
-                with contextlib.suppress(OSError):
-                    os.replace(previous, destination)
-            raise
-        if moved_previous:
-            shutil.rmtree(previous, ignore_errors=True)
-    finally:
-        shutil.rmtree(stage_root, ignore_errors=True)
-    return tuple(published)
+    timeline = build_pe_snapshot_timeline(model, out_dir, scenario=scenario,
+                                          run_id=run_id)
+    return render_snapshot_product(
+        {PE_SNAPSHOTS_REPRESENTATION: timeline}, out_dir,
+        renderer=renderer or get_default_renderer(), metadata=metadata,
+        directory_name=PE_SNAPSHOTS_DIRNAME)
 
 
 __all__ = [
     "DEFAULT_LOWER_SIGMA",
     "DEFAULT_UPPER_SIGMA",
-    "PE_FIGURES_DIRNAME",
     "PE_SNAPSHOTS_DIRNAME",
-    "PERunColorLimits",
+    "PE_SNAPSHOTS_REPRESENTATION",
     "PESnapshotFields",
     "SelectedLevels",
     "build_pe_snapshot_figure",
-    "compute_pe_run_color_limits",
+    "build_pe_snapshot_timeline",
     "prepare_pe_snapshot_fields",
-    "render_all_pe_snapshots",
+    "render_pe_snapshots",
     "select_snapshot_levels",
 ]
