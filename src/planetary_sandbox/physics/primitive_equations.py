@@ -38,7 +38,8 @@ from .sigma_coordinate import (SigmaGrid, column_energy_conversion,
                                column_mass_tendency, column_pressure_work,
                                hydrostatic_geopotential,
                                interface_sigma_dot, layer_mass_residual,
-                               omega_over_p)
+                               omega_over_p, vertical_advection,
+                               vertical_sbp)
 
 #: Dry-air constants (design doc Section 1; fixed so tests cannot drift).
 R_DRY = 287.04          # J kg^-1 K^-1
@@ -368,6 +369,56 @@ class PrimitiveEquationsModel:
             "work": work,
             "energy_residual": residual,
             "max_abs_energy_residual": float(cp.abs(residual).max()),
+        }
+
+    def vertical_transport_diagnostics(self, state: PrimitiveEquationsState,
+                                       continuity: dict | None = None
+                                       ) -> dict:
+        """Lorenz-grid vertical transport of u, v, T on the state grid.
+
+        Evaluates the Section-7a centered advective operator against this
+        state's continuity-consistent ``sigma_dot`` (the future tendency
+        subtracts these fields):
+
+        * ``sigma_dot_dU``, ``sigma_dot_dV``  (nlev, ...) component-wise
+          (sigma_dot dV/dsigma)_k of the reconstructed grid winds (m/s^2)
+        * ``sigma_dot_dT``                    (nlev, ...) temperature
+          transport (K/s)
+        * ``ke_exchange_lhs`` / ``ke_exchange_rhs`` / ``ke_exchange_residual``
+          the kinetic-energy exchange relation (SBP diagonal summed over
+          u and v): 2<u, V_adv(u)> + 2<v, V_adv(v)> against
+          sum Dsigma (u^2 + v^2)(G + d ln p_s/dt), per column
+        * ``max_abs_ke_exchange_residual`` scalar closure diagnostic
+
+        A resting atmosphere returns exactly zero everywhere; a constant
+        temperature yields bitwise-zero ``sigma_dot_dT`` even in flow.
+        ``continuity`` may pass a precomputed :meth:`continuity_diagnostics`
+        result belonging to the same state.
+        """
+        diag = (self.continuity_diagnostics(state) if continuity is None
+                else continuity)
+        g_full = diag["g_full"]
+        sigma_dot = diag["sigma_dot"]
+        u, v = self.wind_on_state_grid(state)
+        T = self.temperature_on_state_grid(state)
+
+        du = vertical_advection(self.sigma, sigma_dot, u)
+        dv = vertical_advection(self.sigma, sigma_dot, v)
+        dT = vertical_advection(self.sigma, sigma_dot, T)
+
+        sbp_u = vertical_sbp(self.sigma, g_full, u, u)
+        sbp_v = vertical_sbp(self.sigma, g_full, v, v)
+        lhs = sbp_u["lhs"] + sbp_v["lhs"]
+        rhs = sbp_u["rhs"] + sbp_v["rhs"]
+        residual = lhs - rhs
+        return {
+            "sigma_dot_dU": du,
+            "sigma_dot_dV": dv,
+            "sigma_dot_dT": dT,
+            "ke_exchange_lhs": lhs,
+            "ke_exchange_rhs": rhs,
+            "ke_exchange_residual": residual,
+            "max_abs_ke_exchange_residual": float(cp.abs(residual).max()),
         }
 
     def surface_pressure_on_state_grid(self, state: PrimitiveEquationsState

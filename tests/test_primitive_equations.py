@@ -345,6 +345,83 @@ def test_uniform_pressure_divergent_flow_energy_bookkeeping(latlon_planet):
 
 
 # ---------------------------------------------------------------------------
+# Lorenz-grid vertical transport on the sphere
+# ---------------------------------------------------------------------------
+
+def test_resting_atmosphere_has_zero_vertical_transport(latlon_planet):
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _rest_state(model)
+    vt = model.vertical_transport_diagnostics(state)
+    for key in ("sigma_dot_dU", "sigma_dot_dV", "sigma_dot_dT",
+                "ke_exchange_lhs", "ke_exchange_rhs"):
+        assert float(cp.abs(vt[key]).max()) == 0.0, key
+    assert vt["max_abs_ke_exchange_residual"] == 0.0
+
+
+def test_constant_temperature_feels_no_vertical_transport(latlon_planet):
+    """Divergent flow with vertically/horizontally uniform T: sigma_dot_dT
+    is bitwise zero while momentum transport is genuinely nonzero."""
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _divergent_state(model, seed=21)   # T stays uniform T0
+    vt = model.vertical_transport_diagnostics(state)
+    assert float(cp.abs(vt["sigma_dot_dT"]).max()) == 0.0
+    assert float(cp.abs(vt["sigma_dot_dU"]).max()) > 0.0
+    assert float(cp.abs(vt["sigma_dot_dV"]).max()) > 0.0
+
+
+def _check_ke_exchange_on_sphere(planet, seed):
+    """KE exchange relation with the RIGHT side assembled in the test from
+    winds and continuity fields only (no vertical-transport code)."""
+    import cupy as cp
+    model = _make_model(planet)
+    state = _divergent_state(model, seed=seed)
+    diag = model.continuity_diagnostics(state)
+    vt = model.vertical_transport_diagnostics(state, continuity=diag)
+
+    u, v = model.wind_on_state_grid(state)
+    manual_rhs = None
+    for k in range(model.nlev):
+        term = model.sigma.thickness[k] * (u[k] ** 2 + v[k] ** 2) * (
+            diag["g_full"][k] + diag["dlnps_dt"])
+        manual_rhs = term if manual_rhs is None else manual_rhs + term
+
+    scale = max(float(cp.abs(vt["ke_exchange_lhs"]).max()),
+                float(cp.abs(manual_rhs).max()))
+    assert scale > 0.0
+    assert float(cp.abs(vt["ke_exchange_rhs"] - manual_rhs).max()) \
+        < 1e-12 * scale
+    assert vt["max_abs_ke_exchange_residual"] < 1e-12 * scale
+
+
+def test_ke_exchange_relation_latlon(latlon_planet):
+    _check_ke_exchange_on_sphere(latlon_planet, seed=25)
+
+
+def test_ke_exchange_relation_geodesic(geodesic_planet):
+    _check_ke_exchange_on_sphere(geodesic_planet, seed=27)
+
+
+def test_structured_temperature_transport_is_finite_and_nonzero(latlon_planet):
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _divergent_state(model, seed=29)
+    for k in range(model.nlev):
+        state.temperature[k, 0, 0] = (T0 - 8.0 * k) * SQRT4PI  # lapse
+        state.temperature[k, 3, 2] = 2.0 + 0.5 * k             # structure
+    vt = model.vertical_transport_diagnostics(state)
+    dT = vt["sigma_dot_dT"]
+    assert bool(cp.isfinite(dT).all())
+    assert float(cp.abs(dT).max()) > 0.0
+    # Zero-flow limit: the same T field at rest transports nothing.
+    rest = _rest_state(model)
+    rest.temperature[:] = state.temperature
+    vt_rest = model.vertical_transport_diagnostics(rest)
+    assert float(cp.abs(vt_rest["sigma_dot_dT"]).max()) == 0.0
+
+
+# ---------------------------------------------------------------------------
 # Characteristic speed
 # ---------------------------------------------------------------------------
 
