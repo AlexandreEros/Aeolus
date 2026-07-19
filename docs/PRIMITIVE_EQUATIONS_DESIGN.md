@@ -201,18 +201,105 @@ telescoping is caught immediately.
 
 ## 7. Vertical-advection discretization and boundary behavior
 
-### 7a. Vertical advection (deferred)
+### 7a. Vertical transport (RESOLVED; implemented)
 
-Documented now, implemented with the tendency. Energy-conserving centered
-(second-order) form on the Lorenz grid, for any full-level quantity `X`:
+Notation: `<X, Y> = Sum_k Dsigma_k X_k Y_k` is the sigma-mass-weighted
+column inner product; `sigma_dot` boundary rows are structurally zero
+(Section 6); `d(ln p_s)/dt = -Sum_j G_j Dsigma_j` from Section 5.
 
-    (sigma_dot dX/dsigma)_k ~= [ sigma_dot_{k+1/2} (X_{k+1} - X_k)
-                               + sigma_dot_{k-1/2} (X_k - X_{k-1}) ] / (2 Dsigma_k)
+Two operators are defined at full levels, valid on any nonuniform grid.
+Advective form (used for every prognostic transport term):
 
-Boundary behavior: the `k = 1` term multiplying `sigma_dot_{1/2}` and the
-`k = K` term multiplying `sigma_dot_{K+1/2}` vanish identically because both
-boundary sigma-velocities are structurally zero (Section 6). No ghost
-levels, no extrapolated `X_0` or `X_{K+1}` values, are ever required.
+    V_adv(X)_k = [ sigma_dot_{k+1/2} (X_{k+1} - X_k)
+                 + sigma_dot_{k-1/2} (X_k - X_{k-1}) ] / (2 Dsigma_k)
+
+Flux form (conservation bookkeeping), with the ARITHMETIC-MEAN interface
+value `Xhat_{k+1/2} = (X_k + X_{k+1}) / 2` — the 1/2:1/2 weights are not a
+convenience but are FORCED by identity (A) below, even on nonuniform grids:
+
+    V_flux(X)_k = [ sigma_dot_{k+1/2} Xhat_{k+1/2}
+                  - sigma_dot_{k-1/2} Xhat_{k-1/2} ] / Dsigma_k
+
+Boundary behavior: the terms multiplying `sigma_dot_{1/2}` and
+`sigma_dot_{K+1/2}` are structurally absent (never evaluated), so no ghost
+levels or extrapolated `X_0`, `X_{K+1}` values exist; for K = 1 both
+operators are identically zero.
+
+Exact discrete identities (each derived by index shifting / Abel summation
+with the zero boundary sigma-velocities, and each enforced by tests):
+
+  (A) Flux/advective compatibility, per level, ANY sigma_dot with zero
+      boundary rows:
+
+          V_flux(X)_k = V_adv(X)_k
+                        + (X_k / Dsigma_k)(sigma_dot_{k+1/2} - sigma_dot_{k-1/2})
+
+      — the discrete Leibniz rule d(sigma_dot X)/dsigma =
+      sigma_dot dX/dsigma + X d(sigma_dot)/dsigma. It holds with the
+      arithmetic interface mean ONLY (any other interface weighting breaks
+      it, and with it every identity below).
+
+  (B) Exact column conservation of the flux form:
+      `Sum_k Dsigma_k V_flux(X)_k` telescopes to the boundary fluxes,
+      which are structurally zero.
+
+  (C) Constant-field compatibility with continuity: `V_adv(c) = 0`
+      BITWISE (differences of equal values), and via the Section-6 layer
+      mass budget
+
+          V_flux(c)_k = -c (G_k + d(ln p_s)/dt) ,
+
+      i.e. flux-form transport of a constant tracer reduces exactly to
+      the discrete continuity equation — no spurious tracer source.
+
+  (SBP) Mass-weighted summation-by-parts against the CONTINUITY-CONSISTENT
+      sigma_dot (i.e. sigma_dot = interface_sigma_dot(G), Section 6):
+
+          <X, V_adv(Y)> + <Y, V_adv(X)>
+              = Sum_k Dsigma_k (X Y)_k (G_k + d(ln p_s)/dt) .        (SBP)
+
+      Proof sketch: both advection sums shift onto interior interfaces,
+      giving Sum sigma_dot_{k+1/2} [(XY)_{k+1} - (XY)_k]; Abel summation
+      moves the difference onto sigma_dot, and the layer mass budget
+      (Section 6) converts sigma-dot differences into
+      -Dsigma_k (G_k + d ln p_s/dt).
+
+      The diagonal X = Y is the KINETIC-ENERGY / SCALAR-VARIANCE EXCHANGE
+      RELATION:
+
+          2 <X, V_adv(X)> = Sum_k Dsigma_k X_k^2 (G_k + d(ln p_s)/dt) ,
+
+      the discrete analogue of X sigma_dot dX/dsigma =
+      (sigma_dot / 2) dX^2/dsigma. Its meaning: centered vertical
+      advection produces quadratic content (KE for X in {u, v}, variance
+      for T) ONLY through the mass-convergence factor that the p_s
+      weighting of the full flux-form equations hands to continuity — it
+      cannot create or destroy variance on its own.
+
+Which equation uses which form:
+
+1. Generic scalar and TEMPERATURE: `-V_adv(T)` in the advective-form
+   thermodynamic equation. (C) guarantees an isothermal atmosphere feels
+   no vertical transport; the diagonal (SBP) governs T-variance.
+2. MOMENTUM: `-V_adv(u)`, `-V_adv(v)` applied COMPONENT-WISE to the
+   reconstructed grid winds. The diagonal (SBP) with X = u and X = v is
+   the KE-consistency statement. Note: u and v are multivalued at the
+   poles; this is safe because V_adv acts level-wise at fixed horizontal
+   position (no horizontal coupling), and the components enter the
+   spectral equations only through the curl/divergence of the assembled
+   nonlinear vector (Section 1), never as scalar spectral fields.
+3. CURL/DIVERGENCE representation: the vector
+   `W_k = (V_adv(u)_k, V_adv(v)_k)` joins the other nonlinear vector
+   terms (eta k x V, R_d T' grad ln p_s) BEFORE the curl/divergence is
+   taken; the spectral pathway for a general grid vector is a tendency-
+   milestone decision (see the handoff document) and is deliberately NOT
+   chosen here.
+
+What this does NOT claim: no statement is made about total-energy
+conservation of the full assembled tendency (horizontal terms, the
+omega/p heating, and the PGF must be combined and tested first —
+Section 7b provides the exchange identity, this section the transport
+identities; the assembly proof is future work).
 
 ### 7b. Energy-conversion term `kappa T omega/p` (RESOLVED; implemented)
 
@@ -325,6 +412,8 @@ Monitored invariants (diagnostics, not hard failures):
 * column energy-exchange closure — the Section 7b identity (E_d) residual
   (conversion minus column-local pressure work), expected at round-off
   always;
+* vertical-transport closure — the Section 7a (SBP) residual and the
+  flux-form column sum (B), expected at round-off always;
 * global dry total energy `Integral (c_p T + Phi_s + E) dm` and global
   angular momentum — defined with the tendency milestone;
 * `sigma_dot_{1/2} = sigma_dot_{K+1/2} = 0` exactly (tested, and structural).
@@ -382,8 +471,11 @@ Deferred (in intended order):
 5. Held–Suarez forcing, any moisture/radiation/convection/drag;
 6. mass fixer for the `ln p_s` drift.
 
-(The energy-conserving discrete `omega/p`, deferred when this document was
-first written, is now RESOLVED and implemented — Section 7b.)
+(The energy-conserving discrete `omega/p` and the vertical-transport
+operators, deferred when this document was first written, are now RESOLVED
+and implemented — Sections 7b and 7a. Still open within the tendency
+milestone: the spectral curl/divergence pathway for assembled nonlinear
+grid vectors — see docs/PRIMITIVE_EQUATIONS_TENDENCY_HANDOFF.md.)
 
 Known numerical risks (accepted and recorded, not hidden):
 
