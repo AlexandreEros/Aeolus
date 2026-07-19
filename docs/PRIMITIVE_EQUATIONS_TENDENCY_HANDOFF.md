@@ -1,5 +1,20 @@
 # Dry Primitive-Equation Tendency — Implementation Blueprint (Handoff)
 
+> **STATUS UPDATE (tendency milestone, 2026-07,
+> `feat/primitive-equations-tendency-core`): the tendency described here
+> is IMPLEMENTED.** Every item this document marked PROPOSED for the
+> tendency milestone is now built and tested: the product-grid
+> reconstruction (`_tendency_product_fields`), spectral hydrostatics on
+> complex coefficients (tested), the Section-1.4 curl/divergence decision
+> (pathway (a), the weak-form vector analysis, chosen as production on
+> BOTH backends on measured evidence — design doc Section 8a; pathway (b)
+> retained as a cross-validation reference), the thermodynamic and
+> ln p_s tendencies, the momentum assembly, and the public gated
+> `tendency()` with the rest/BVE/RK4 battery (tests/test_pe_tendency.py).
+> Item 3 of Section 2 (normal modes) and item 4 (drift measurement)
+> remain open, as do the runner/CLI items of Section 3 (out of scope by
+> design). The term-by-term map below is retained for its derivations.
+
 Audience: the agent implementing the nonlinear tendency on top of
 `feat/dry-primitive-equations-foundation`. Read
 `docs/PRIMITIVE_EQUATIONS_DESIGN.md` first; this document maps each term of

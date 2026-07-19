@@ -1,16 +1,19 @@
 # Dry Hydrostatic Primitive Equations — Design (Foundation Milestone)
 
-Status: **foundation only**. This document specifies the formulation for the
-future dry hydrostatic primitive-equation (PE) core and the exact scope of
-the first milestone: vertical-grid metadata, the spectral state
-representation, state validation, hydrostatic geopotential reconstruction,
-the discrete column continuity operator (surface-pressure tendency and
-interface sigma-velocity), and the column mass-closure diagnostics.
-
-**No prognostic tendency is implemented in this milestone.** The model class
-deliberately has no `tendency()` method; nothing silently returns zero.
-Every discretization stated here as "deferred" is a documented decision
-point, not an implemented default.
+Status: **foundation + explicit nonlinear tendency**. This document
+specifies the formulation of the dry hydrostatic primitive-equation (PE)
+core: vertical-grid metadata, the spectral state representation, state
+validation, hydrostatic geopotential reconstruction, the discrete column
+continuity operator (surface-pressure tendency and interface
+sigma-velocity), the column mass-closure diagnostics, and — as of the
+tendency milestone — the first true nonlinear tendency
+(`PrimitiveEquationsModel.tendency`): fully explicit, unsplit (no `T_ref`
+split, no semi-implicit terms, full `T` in `R_d T grad(ln p_s)`, no
+hyperdiffusion), with all nonlinear terms evaluated on the backend product
+sampling and the vector curl/divergence pathway resolved by measurement
+(Section 8a). Still absent by design: runner/CLI/config, forcing,
+topography experiments, semi-implicit scheme, long integrations
+(Section 12).
 
 Notation: `a` planetary radius, `Omega` rotation rate, `f = 2*Omega*sin(lat)`,
 `k` local vertical unit vector, `V = (u, v)` horizontal velocity (eastward,
@@ -552,19 +555,25 @@ the linear gravity-wave terms is the documented escape hatch, deferred.
 
 Deferred (in intended order):
 
-1. nonlinear tendency (separate commit series, only after this foundation's
-   tests pass);
+1. `PERunConfig` / PE runner / `aeolus run pe` CLI, run capsules and
+   diagnostics recording;
 2. semi-implicit gravity-wave treatment and the `T_ref(sigma)` profile;
 3. scale-selective hyperdiffusion (same `nabla^4` machinery as the SWE);
 4. topography (`Phi_s != 0`) and the PGF-error re-examination;
 5. Held–Suarez forcing, any moisture/radiation/convection/drag;
-6. mass fixer for the `ln p_s` drift.
+6. mass fixer for the `ln p_s` drift;
+7. linearized normal-mode verification against the discrete K-level
+   vertical-structure matrix, and short-run invariant-drift measurements
+   (the prerequisite for any energy-conservation claim about the
+   assembled tendency).
 
-(The energy-conserving discrete `omega/p` and the vertical-transport
-operators, deferred when this document was first written, are now RESOLVED
-and implemented — Sections 7b and 7a. Still open within the tendency
-milestone: the spectral curl/divergence pathway for assembled nonlinear
-grid vectors — see docs/PRIMITIVE_EQUATIONS_TENDENCY_HANDOFF.md.)
+(The energy-conserving discrete `omega/p`, the vertical-transport
+operators, the spectral curl/divergence pathway, and the assembled
+explicit nonlinear tendency itself are RESOLVED and implemented —
+Sections 7a, 7b, 8a, and the tendency milestone. No total-energy
+conservation claim is made for the assembled tendency: the column-local
+exchange identities close to round-off by construction and test, but
+global drift has not been measured — item 7.)
 
 Known numerical risks (accepted and recorded, not hidden):
 
