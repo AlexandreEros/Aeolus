@@ -1,15 +1,20 @@
-"""Dry hydrostatic primitive-equation core on the sphere — FOUNDATION ONLY.
+"""Dry hydrostatic primitive-equation core on the sphere.
 
 Scope (docs/PRIMITIVE_EQUATIONS_DESIGN.md): the spectral state
 representation, hard state validation, hydrostatic geopotential
 reconstruction, the discrete column continuity diagnostics (surface-
-pressure tendency, interface sigma-velocity, layer mass closure), and the
-characteristic-speed estimate for the future CFL controller.
-
-**There is deliberately no ``tendency()`` method.** The prognostic
-tendencies are a separate milestone, gated on this foundation's tests; no
-placeholder physics that silently returns zero exists here. What IS
-implemented is real, tested machinery the tendency will be built from.
+pressure tendency, interface sigma-velocity, layer mass closure), the
+characteristic-speed estimate for the CFL controller, and — the tendency
+milestone — the first true nonlinear explicit tendency: product-grid
+reconstruction of every primitive-equation field, thermodynamic and
+surface-pressure tendencies, the vector-invariant momentum (zeta/delta)
+tendencies using the weak-form vector curl/divergence analysis (design
+doc Section 8a), and the public :meth:`PrimitiveEquationsModel.tendency`
+gated behind the Phase-6 verification battery (exact rest, BVE
+degeneracy, monopole/continuity invariants, RK4 stage-validated
+stability). Deliberately NOT here (still deferred): runner/CLI/config,
+semi-implicit terms, T_ref split, hyperdiffusion, forcing, topography
+experiments, long integrations.
 
 Formulation summary (full derivation and sign conventions in the design
 doc): sigma = p/p_s vertical coordinate, Lorenz staggering, prognostic
@@ -202,6 +207,13 @@ class PrimitiveEquationsModel:
         l = cp.arange(self.l_max + 1, dtype=cp.float64)
         self.lap_eigs = -l * (l + 1.0) / self.R**2
 
+        # Exact spectral planetary vorticity: f = 2*Omega*sin(lat) is the
+        # pure (1,0) mode (same construction as BVE/SWE; avoids the lossy
+        # grid round trip, R-5).
+        n_f = self.l_max + 1
+        self.f_lm = cp.zeros((n_f, n_f), dtype=cp.complex128)
+        self.f_lm[1, 0] = 2.0 * self.Omega * math.sqrt(4.0 * math.pi / 3.0)
+
         # Product space: same object the BVE Jacobian and SWE tendency use.
         self._ps = self.so.backend.product_space(self.so.product_quadrature)
 
@@ -210,6 +222,10 @@ class PrimitiveEquationsModel:
         if coslat is None:
             coslat = cp.cos(cp.asarray(self.grid.point_latitudes))
         self._state_coslat = cp.maximum(cp.asarray(coslat, cp.float64), 1e-8)
+
+        # 2/3-rule truncation cut for analyzed nonlinear products (the
+        # SWE policy, applied once per combined quantity).
+        self._trunc_cut = (2 * self.l_max) // 3
 
     # ------------------------------------------------------------------
     # Per-level horizontal helpers (SWE conventions, level-looped)
@@ -425,6 +441,289 @@ class PrimitiveEquationsModel:
                                        ) -> cp.ndarray:
         """p_s = exp(ln p_s) on the state grid (Pa); positive when finite."""
         return cp.exp(self.sh.inv_transform(state.ln_ps).real)
+
+    # ------------------------------------------------------------------
+    # Tendency-path product-grid reconstruction (tendency milestone,
+    # Phase 1 — docs/PRIMITIVE_EQUATIONS_TENDENCY_HANDOFF.md)
+    # ------------------------------------------------------------------
+
+    def _tendency_product_fields(self, coeffs: cp.ndarray) -> dict:
+        """Every primitive-equation field on the backend PRODUCT sampling.
+
+        This is the tendency path's own reconstruction: nothing here reuses
+        the state-grid diagnostic fields (`continuity_diagnostics` etc.),
+        because the nonlinear tendency terms must be formed where they are
+        analyzed — on the backend product grid — exactly like the SWE. The
+        state-grid diagnostics and this path must agree in the band-limited
+        exact Gauss case (tested), but are deliberately separate samplings.
+
+        Takes the raw ``(3K+1, l_max+1, l_max+1)`` coefficient stack (the
+        RK4-stage object). Every quantity participating in the continuity
+        and Simmons–Burridge exchange identities is derived from the SAME
+        product-grid ``g_full`` and ``sigma_dot`` so the discrete identities
+        close on this sampling to round-off.
+
+        Returns a dict of product-sampling fields, level-stacked where
+        applicable (shape ``(nlev, n_product)`` / ``(nlev+1, ...)`` for
+        ``sigma_dot``):
+
+        ``u, v``                 per-level wind (m/s)
+        ``zeta, delta``          per-level relative vorticity / divergence
+        ``temperature``          per-level full temperature (K)
+        ``lnps``                 ln(p_s) grid field
+        ``lnps_lam, lnps_snt``   (1/R) d(lnps)/dlambda, (1/R) sin(theta)
+                                 d(lnps)/dtheta derivative fields
+        ``grad_lnps_u/v``        eastward/northward components of
+                                 grad(ln p_s) (1/m)
+        ``v_grad_lnps``          A_k = V_k . grad(ln p_s)
+        ``g_full``               G_k = delta_k + A_k
+        ``dlnps_dt``             -sum_k G_k Dsigma_k
+        ``sigma_dot``            continuity-consistent interface velocity
+        ``phi_full``             Simmons–Burridge geopotential from
+                                 product-grid T and Phi_s
+        ``phi_surface``          Phi_s on the product sampling
+        ``omega_over_p``         energy-conserving (omega/p)_k from the
+                                 same G and A
+        ``sigma_dot_dU/dV/dT``   centered vertical advection of u, v, T
+                                 against the same sigma_dot
+        ``coslat``               product-sampling cos(lat) (clamped)
+        """
+        K = self.nlev
+        zeta_c = coeffs[0:K]
+        delta_c = coeffs[K:2 * K]
+        temp_c = coeffs[2 * K:3 * K]
+        lnps_c = coeffs[3 * K]
+
+        ps = self._ps
+        sh_p = ps.sh
+        coslat = ps.coslat
+
+        lnps_lam, lnps_snt = self._deriv_fields(sh_p, lnps_c)
+        us, vs, zetas, deltas, temps, advs, gs = [], [], [], [], [], [], []
+        for k in range(K):
+            psi_lm = self._inv_laplacian(zeta_c[k])
+            chi_lm = self._inv_laplacian(delta_c[k])
+            u, v = self._wind_from(sh_p, coslat, psi_lm, chi_lm)
+            zeta_g = sh_p.inv_transform(zeta_c[k]).real
+            delta_g = sh_p.inv_transform(delta_c[k]).real
+            t_g = sh_p.inv_transform(temp_c[k]).real
+            adv = (u * lnps_lam - v * lnps_snt) / coslat
+            us.append(u)
+            vs.append(v)
+            zetas.append(zeta_g)
+            deltas.append(delta_g)
+            temps.append(t_g)
+            advs.append(adv)
+            gs.append(delta_g + adv)
+        u = cp.stack(us)
+        v = cp.stack(vs)
+        temperature = cp.stack(temps)
+        v_grad_lnps = cp.stack(advs)
+        g_full = cp.stack(gs)
+
+        dlnps_dt = column_mass_tendency(self.sigma, g_full)
+        sigma_dot = interface_sigma_dot(self.sigma, g_full)
+        phi_surface = sh_p.inv_transform(self.phi_surface_lm).real
+        phi_full, _ = hydrostatic_geopotential(
+            self.sigma, temperature, phi_surface, self.r_dry)
+        wp = omega_over_p(self.sigma, g_full, v_grad_lnps)
+
+        fields = {
+            "u": u,
+            "v": v,
+            "zeta": cp.stack(zetas),
+            "delta": cp.stack(deltas),
+            "temperature": temperature,
+            "lnps": sh_p.inv_transform(lnps_c).real,
+            "lnps_lam": lnps_lam,
+            "lnps_snt": lnps_snt,
+            "grad_lnps_u": lnps_lam / coslat,
+            "grad_lnps_v": -lnps_snt / coslat,
+            "v_grad_lnps": v_grad_lnps,
+            "g_full": g_full,
+            "dlnps_dt": dlnps_dt,
+            "sigma_dot": sigma_dot,
+            "phi_full": phi_full,
+            "phi_surface": phi_surface,
+            "omega_over_p": wp,
+            "sigma_dot_dU": vertical_advection(self.sigma, sigma_dot, u),
+            "sigma_dot_dV": vertical_advection(self.sigma, sigma_dot, v),
+            "sigma_dot_dT": vertical_advection(self.sigma, sigma_dot,
+                                               temperature),
+            "coslat": coslat,
+        }
+        return fields
+
+    def _truncate(self, coeffs: cp.ndarray) -> cp.ndarray:
+        """2/3-rule spectral truncation of an analyzed product (in place)."""
+        cut = self._trunc_cut
+        coeffs[cut + 1:, :] = 0.0
+        coeffs[:, cut + 1:] = 0.0
+        return coeffs
+
+    def _thermo_mass_tendencies(self, coeffs: cp.ndarray, fields: dict
+                                ) -> tuple[cp.ndarray, cp.ndarray]:
+        """Spectral thermodynamic and surface-pressure tendencies.
+
+        Thermodynamic equation, per level on the product grid (design doc
+        Section 1; fully explicit, full T — no T_ref split):
+
+            dT/dt = -V . grad(T) - V_adv(T) + kappa T (omega/p)
+
+        All three terms use the mutually consistent product-grid fields of
+        ``fields`` (one reconstruction); their sum is analyzed ONCE per
+        level and truncated ONCE (2/3 rule). Surface pressure:
+
+            d(ln p_s)/dt = -sum_k G_k Dsigma_k
+
+        analyzed once, truncated once. NEITHER monopole is zeroed: the
+        global-mean temperature evolves through the conversion term and
+        the global-mean ln p_s through the mass divergence (its drift is
+        the monitored diagnostic, design doc Section 9).
+
+        Returns ``(t_dot_lm, lnps_dot_lm)`` with shapes
+        ``(nlev, l_max+1, l_max+1)`` and ``(l_max+1, l_max+1)``.
+        """
+        K = self.nlev
+        temp_c = coeffs[2 * K:3 * K]
+        sh_p = self._ps.sh
+        coslat = fields["coslat"]
+
+        t_dots = []
+        for k in range(K):
+            t_lam, t_snt = self._deriv_fields(sh_p, temp_c[k])
+            adv = (fields["u"][k] * t_lam
+                   - fields["v"][k] * t_snt) / coslat
+            t_dot_g = (-adv - fields["sigma_dot_dT"][k]
+                       + self.kappa * fields["temperature"][k]
+                       * fields["omega_over_p"][k])
+            t_dots.append(self._truncate(sh_p.transform(t_dot_g)))
+
+        lnps_dot = self._truncate(sh_p.transform(fields["dlnps_dt"]))
+        return cp.stack(t_dots), lnps_dot
+
+    def _momentum_tendencies(self, coeffs: cp.ndarray, fields: dict
+                             ) -> tuple[cp.ndarray, cp.ndarray]:
+        """Spectral zeta and delta tendencies (vector-invariant form).
+
+        Design doc Section 1, fully explicit (full T, no T_ref split).
+        With eta = zeta + f and the nonlinear residual vector
+
+            Z_k = (sigma_dot dV/dsigma)_k + R_d T_k grad(ln p_s)
+
+        the per-level tendencies are
+
+            d(zeta_k)/dt  = -div(eta_k V_k) - k . curl(Z_k)
+            d(delta_k)/dt =  k . curl(eta_k V_k) - div(Z_k)
+                             - lap(Phi_k + E_k)
+
+        Term treatment:
+
+        * ``eta V`` uses the SWE's tested pointwise expansions
+          (div(eta V) = u.grad(eta) + eta*delta, k.curl(eta V) =
+          eta*zeta + (grad(eta) x V).k), which preserve the exact
+          BVE-degeneracy property;
+        * ``Z`` (no pointwise expansion exists) goes through the
+          production weak-form vector analysis
+          (SpectralOperators.vector_curl_div_spectral, design doc
+          Section 8a); a bitwise-zero Z analyzes to bitwise zero, so the
+          BVE degeneracy survives this pathway exactly;
+        * ``-lap(Phi + E)`` is an exact diagonal spectral operation:
+          Phi_lm comes from the hydrostatic recursion applied directly to
+          the spectral T (linear, hence exact — tested against the grid
+          path), E = |V|^2/2 is analyzed once and truncated once;
+        * one 2/3 truncation per assembled nonlinear quantity; the l = 0
+          rows of BOTH outputs are hard-zeroed (per-level circulation and
+          integrated divergence are conserved exactly). T and ln p_s
+          monopoles are handled in _thermo_mass_tendencies (NOT zeroed).
+        """
+        K = self.nlev
+        zeta_c = coeffs[0:K]
+        temp_c = coeffs[2 * K:3 * K]
+        sh_p = self._ps.sh
+        coslat = fields["coslat"]
+
+        # Exact spectral hydrostatic Phi from spectral T (linear).
+        phi_full_lm, _ = hydrostatic_geopotential(
+            self.sigma, temp_c, self.phi_surface_lm, self.r_dry)
+
+        zeta_dots, delta_dots = [], []
+        for k in range(K):
+            eta_c = zeta_c[k] + self.f_lm
+            eta_lam, eta_snt = self._deriv_fields(sh_p, eta_c)
+            eta_g = sh_p.inv_transform(eta_c).real
+            u = fields["u"][k]
+            v = fields["v"][k]
+
+            # div(eta V) and k.curl(eta V), SWE pointwise expansions.
+            adv_eta = (u * eta_lam - v * eta_snt) / coslat
+            div_eta_v = adv_eta + eta_g * fields["delta"][k]
+            curl_eta_v = eta_g * fields["zeta"][k] \
+                + (v * eta_lam + u * eta_snt) / coslat
+
+            # Z: vertical momentum transport + full R_d T grad(ln p_s).
+            rt = self.r_dry * fields["temperature"][k]
+            z_east = fields["sigma_dot_dU"][k] + rt * fields["grad_lnps_u"]
+            z_north = fields["sigma_dot_dV"][k] + rt * fields["grad_lnps_v"]
+            curl_z, div_z = self.so.vector_curl_div_spectral(
+                z_east, z_north, truncate=False)
+
+            # Kinetic energy: analyzed once, truncated once.
+            kinetic_c = self._truncate(
+                sh_p.transform(0.5 * (u * u + v * v)))
+
+            zeta_dot = self._truncate(
+                sh_p.transform(-div_eta_v) - curl_z)
+            delta_dot = self._truncate(
+                sh_p.transform(curl_eta_v) - div_z) \
+                - self.lap_eigs[:, None] * (kinetic_c + phi_full_lm[k])
+            zeta_dots.append(zeta_dot)
+            delta_dots.append(delta_dot)
+
+        zeta_dot = cp.stack(zeta_dots)
+        delta_dot = cp.stack(delta_dots)
+        # Conserve per-level circulation and integrated divergence exactly.
+        zeta_dot[:, 0, :] = 0.0
+        delta_dot[:, 0, :] = 0.0
+        return zeta_dot, delta_dot
+
+    # ------------------------------------------------------------------
+    # Public tendency (the first true nonlinear dry hydrostatic PE
+    # tendency; exposed only behind the Phase-6 verification battery)
+    # ------------------------------------------------------------------
+
+    def tendency(self, coeffs: cp.ndarray) -> cp.ndarray:
+        """d/dt of the (3K+1, l_max+1, l_max+1) prognostic stack.
+
+        Fully explicit, unsplit dry hydrostatic primitive equations in
+        vorticity–divergence form (design doc Section 1): no T_ref split,
+        no semi-implicit terms, full T in R_d T grad(ln p_s), no
+        hyperdiffusion. Row layout matches the state:
+        ``[zeta_1..zeta_K, delta_1..delta_K, T_1..T_K, ln p_s]``.
+
+        Takes and returns raw coefficient stacks so it plugs directly
+        into ``run.engine.rk4_step_array`` (use ``validate_state`` wrapped
+        as the ``stage_validator``, as ``run/swe/runner.py`` does).
+
+        All nonlinear terms are evaluated on the backend product sampling
+        via one shared reconstruction (:meth:`_tendency_product_fields`);
+        every quantity in the continuity and energy-exchange identities
+        derives from the same product-grid G and sigma_dot. Exact
+        properties (tested): an isothermal resting atmosphere returns
+        exactly zero; the BVE-degenerate state reproduces the barotropic
+        tendency per level; zeta/delta monopole rows are bitwise zero;
+        T and ln p_s monopoles evolve freely.
+        """
+        fields = self._tendency_product_fields(coeffs)
+        t_dot, lnps_dot = self._thermo_mass_tendencies(coeffs, fields)
+        zeta_dot, delta_dot = self._momentum_tendencies(coeffs, fields)
+        return cp.concatenate(
+            [zeta_dot, delta_dot, t_dot, lnps_dot[None]], axis=0)
+
+    def tendency_state(self, state: PrimitiveEquationsState
+                       ) -> PrimitiveEquationsState:
+        """Dataclass-in, dataclass-out convenience wrapper over tendency()."""
+        return PrimitiveEquationsState(self.tendency(state.coeffs))
 
     # ------------------------------------------------------------------
     # Characteristic speed (design doc Section 10)

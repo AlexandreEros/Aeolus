@@ -1,16 +1,19 @@
 # Dry Hydrostatic Primitive Equations — Design (Foundation Milestone)
 
-Status: **foundation only**. This document specifies the formulation for the
-future dry hydrostatic primitive-equation (PE) core and the exact scope of
-the first milestone: vertical-grid metadata, the spectral state
-representation, state validation, hydrostatic geopotential reconstruction,
-the discrete column continuity operator (surface-pressure tendency and
-interface sigma-velocity), and the column mass-closure diagnostics.
-
-**No prognostic tendency is implemented in this milestone.** The model class
-deliberately has no `tendency()` method; nothing silently returns zero.
-Every discretization stated here as "deferred" is a documented decision
-point, not an implemented default.
+Status: **foundation + explicit nonlinear tendency**. This document
+specifies the formulation of the dry hydrostatic primitive-equation (PE)
+core: vertical-grid metadata, the spectral state representation, state
+validation, hydrostatic geopotential reconstruction, the discrete column
+continuity operator (surface-pressure tendency and interface
+sigma-velocity), the column mass-closure diagnostics, and — as of the
+tendency milestone — the first true nonlinear tendency
+(`PrimitiveEquationsModel.tendency`): fully explicit, unsplit (no `T_ref`
+split, no semi-implicit terms, full `T` in `R_d T grad(ln p_s)`, no
+hyperdiffusion), with all nonlinear terms evaluated on the backend product
+sampling and the vector curl/divergence pathway resolved by measurement
+(Section 8a). Still absent by design: runner/CLI/config, forcing,
+topography experiments, semi-implicit scheme, long integrations
+(Section 12).
 
 Notation: `a` planetary radius, `Omega` rotation rate, `f = 2*Omega*sin(lat)`,
 `k` local vertical unit vector, `V = (u, v)` horizontal velocity (eastward,
@@ -384,6 +387,95 @@ errors do not cancel (the classic sigma-coordinate PGF error). This is a
 non-issue while `Phi_s = 0`; it must be re-examined before topography is
 enabled (Section 12).
 
+## 8a. Vector curl/divergence analysis (RESOLVED; tendency milestone)
+
+The momentum tendency contains grid-space horizontal vectors with no
+scalar-flux pointwise expansion (component-wise vertical momentum
+transport, `R_d T grad(ln p_s)`). Mapping such a product-sampled tangent
+vector `F = (F_u east, F_v north)` to the spectra of `k.curl(F)` and
+`div(F)` is done by the **weak-form (Bourke-style) vector analysis**,
+production on BOTH backends (`SpectralOperators.vector_curl_div_spectral`).
+
+Derivation (all in the repository's conventions: latitude `phi`,
+colatitude `theta`, analysis = quadrature inner product
+`a_lm = sum_i w_i Y*_lm(x_i) f_i` on every backend). Integration by parts
+on the closed sphere moves the derivatives onto the basis:
+
+    (div F)_lm  = Int Y*_lm div F dOmega = -Int grad(Y*_lm) . F dOmega
+    (curl F)_lm = (div F')_lm   with F' = (F_v, -F_u)
+
+and the two basis identities, which hold POINTWISE at every sampling
+point,
+
+    dY_lm/dlambda        = i m Y_lm
+    sin(theta) dY_lm/dtheta = C+_lm Y_{l+1,m} + C-_lm Y_{l-1,m}
+
+turn the weak integrals into exact coefficient-space operations on the
+half-metric analyses `a = analysis(F_u / cos phi)`,
+`b = analysis(F_v / cos phi)`:
+
+    div_lm  = (i m / R) a_lm + (1/R) (S^T b)_lm
+    curl_lm = (i m / R) b_lm - (1/R) (S^T a)_lm
+
+where `(S^T x)_{l,m} = C+_{l,m} x_{l+1,m} + C-_{l,m} x_{l-1,m}` is the
+TRANSPOSE (= complex adjoint; the C are real) of the synthesis-side
+`sin_theta_d_theta` coupling — implemented as
+`SpectralOperators.adjoint_sin_theta_d_theta_coeffs` and verified by an
+inner-product adjoint identity test.
+
+**One-degree-extended analysis.** The half-metric components of a field
+built from degree-`l_max` potentials carry degree `l_max + 1` content, and
+the `l = l_max` output row reads `a/b_{l_max+1,m}`; the production
+operator therefore analyzes `F_u/cos`, `F_v/cos` with a basis extended by
+one degree on the same points and quadrature weights (Bourke 1974's
+`U, V` at degree N+1), with the true (unclipped) `C+` at `l_max`. Without
+the extension the top output row is structurally incomplete (measured as
+up to O(1) spurious top-row content); with it, recovery is exact through
+`l = l_max` for exactly-sampled fields.
+
+The ONLY continuous step is the integration by parts; every discrete
+operation equals the backend quadrature applied to the exact continuous
+weak integrand. There is NO claim of an exact discrete
+summation-by-parts on the geodesic co-grid — the geodesic error below is
+the measured quadrature error, not assumed away.
+
+Measured analytic-recovery errors, fields `F = k x grad(psi) + grad(chi)`
+from known potentials (exact answers `curl = lap psi`, `div = lap chi`),
+2026-07:
+
+* **Gauss lat-lon** (32x64, l_max 15, 3/2-rule product grid): < 1e-12
+  relative for potentials of any degree `<= l_max - 1`, all mode families
+  (zonal, nonzonal, at the 2/3 cut), pure and mixed. At degree exactly
+  `l_max` the WIND SYNTHESIS (not the operator) is the limit: the
+  repository's Helmholtz reconstruction clips the degree-(l_max+1)
+  component of `sin_theta d_theta psi` (storage is (l_max+1)^2 with
+  `C+[l_max] = 0` — the same convention the BVE/SWE winds use), so the
+  sampled field is already a truncated vector field; the deviation
+  (percent-level to ~40% for single top-degree modes, confined to the
+  same zonal wavenumber) is a property of the given field, and the
+  clipped wind is genuinely not nondivergent either. Characterized by
+  test, accepted (tendency products are truncated at 2*l_max/3 anyway).
+* **Geodesic** (res 3, l_max 10, fine res-4 co-grid): 1.0e-3 .. 1.9e-2
+  relative across single modes l = 1..9 (worst at l = 1), 3.3e-3 for the
+  mixed acceptance case.
+
+Reference pathway (kept, NOT production):
+`SpectralOperators.vector_curl_div_roundtrip` — analyze the components as
+scalars, differentiate the projections, assemble grid curl/div, re-analyze.
+Scalar components of a band-limited vector field are not band-limited
+scalars (spin-1 tail; solid-body `u = u0 cos(lat)` already has an infinite
+zonal Legendre series), so this pathway carries a representation error
+that survives exact Gauss quadrature: measured 3.1e-2 (low-degree
+rotational) to 4.2e-1 (modes at l_max) on lat-lon, and 4.6e-2 .. 3.0e-1 on
+the geodesic backend — one to two orders worse than the weak form
+everywhere. It also costs a second transform round trip.
+
+**Backend policy (decided on this evidence): the weak-form vector
+analysis is the production pathway on both the Gauss lat-lon and geodesic
+backends; the scalar round trip is retained only as an independently
+implemented cross-validation reference.** No silent fallback exists; the
+geodesic residuals above are the documented accuracy envelope.
+
 ## 9. Expected invariants and validation rules
 
 Hard validation (raise `PrimitiveEquationsStateError`; checked on the
@@ -463,19 +555,25 @@ the linear gravity-wave terms is the documented escape hatch, deferred.
 
 Deferred (in intended order):
 
-1. nonlinear tendency (separate commit series, only after this foundation's
-   tests pass);
+1. `PERunConfig` / PE runner / `aeolus run pe` CLI, run capsules and
+   diagnostics recording;
 2. semi-implicit gravity-wave treatment and the `T_ref(sigma)` profile;
 3. scale-selective hyperdiffusion (same `nabla^4` machinery as the SWE);
 4. topography (`Phi_s != 0`) and the PGF-error re-examination;
 5. Held–Suarez forcing, any moisture/radiation/convection/drag;
-6. mass fixer for the `ln p_s` drift.
+6. mass fixer for the `ln p_s` drift;
+7. linearized normal-mode verification against the discrete K-level
+   vertical-structure matrix, and short-run invariant-drift measurements
+   (the prerequisite for any energy-conservation claim about the
+   assembled tendency).
 
-(The energy-conserving discrete `omega/p` and the vertical-transport
-operators, deferred when this document was first written, are now RESOLVED
-and implemented — Sections 7b and 7a. Still open within the tendency
-milestone: the spectral curl/divergence pathway for assembled nonlinear
-grid vectors — see docs/PRIMITIVE_EQUATIONS_TENDENCY_HANDOFF.md.)
+(The energy-conserving discrete `omega/p`, the vertical-transport
+operators, the spectral curl/divergence pathway, and the assembled
+explicit nonlinear tendency itself are RESOLVED and implemented —
+Sections 7a, 7b, 8a, and the tendency milestone. No total-energy
+conservation claim is made for the assembled tendency: the column-local
+exchange identities close to round-off by construction and test, but
+global drift has not been measured — item 7.)
 
 Known numerical risks (accepted and recorded, not hidden):
 
