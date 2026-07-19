@@ -202,6 +202,13 @@ class PrimitiveEquationsModel:
         l = cp.arange(self.l_max + 1, dtype=cp.float64)
         self.lap_eigs = -l * (l + 1.0) / self.R**2
 
+        # Exact spectral planetary vorticity: f = 2*Omega*sin(lat) is the
+        # pure (1,0) mode (same construction as BVE/SWE; avoids the lossy
+        # grid round trip, R-5).
+        n_f = self.l_max + 1
+        self.f_lm = cp.zeros((n_f, n_f), dtype=cp.complex128)
+        self.f_lm[1, 0] = 2.0 * self.Omega * math.sqrt(4.0 * math.pi / 3.0)
+
         # Product space: same object the BVE Jacobian and SWE tendency use.
         self._ps = self.so.backend.product_space(self.so.product_quadrature)
 
@@ -589,6 +596,91 @@ class PrimitiveEquationsModel:
 
         lnps_dot = self._truncate(sh_p.transform(fields["dlnps_dt"]))
         return cp.stack(t_dots), lnps_dot
+
+    def _momentum_tendencies(self, coeffs: cp.ndarray, fields: dict
+                             ) -> tuple[cp.ndarray, cp.ndarray]:
+        """Spectral zeta and delta tendencies (vector-invariant form).
+
+        Design doc Section 1, fully explicit (full T, no T_ref split).
+        With eta = zeta + f and the nonlinear residual vector
+
+            Z_k = (sigma_dot dV/dsigma)_k + R_d T_k grad(ln p_s)
+
+        the per-level tendencies are
+
+            d(zeta_k)/dt  = -div(eta_k V_k) - k . curl(Z_k)
+            d(delta_k)/dt =  k . curl(eta_k V_k) - div(Z_k)
+                             - lap(Phi_k + E_k)
+
+        Term treatment:
+
+        * ``eta V`` uses the SWE's tested pointwise expansions
+          (div(eta V) = u.grad(eta) + eta*delta, k.curl(eta V) =
+          eta*zeta + (grad(eta) x V).k), which preserve the exact
+          BVE-degeneracy property;
+        * ``Z`` (no pointwise expansion exists) goes through the
+          production weak-form vector analysis
+          (SpectralOperators.vector_curl_div_spectral, design doc
+          Section 8a); a bitwise-zero Z analyzes to bitwise zero, so the
+          BVE degeneracy survives this pathway exactly;
+        * ``-lap(Phi + E)`` is an exact diagonal spectral operation:
+          Phi_lm comes from the hydrostatic recursion applied directly to
+          the spectral T (linear, hence exact — tested against the grid
+          path), E = |V|^2/2 is analyzed once and truncated once;
+        * one 2/3 truncation per assembled nonlinear quantity; the l = 0
+          rows of BOTH outputs are hard-zeroed (per-level circulation and
+          integrated divergence are conserved exactly). T and ln p_s
+          monopoles are handled in _thermo_mass_tendencies (NOT zeroed).
+        """
+        K = self.nlev
+        zeta_c = coeffs[0:K]
+        temp_c = coeffs[2 * K:3 * K]
+        sh_p = self._ps.sh
+        coslat = fields["coslat"]
+
+        # Exact spectral hydrostatic Phi from spectral T (linear).
+        phi_full_lm, _ = hydrostatic_geopotential(
+            self.sigma, temp_c, self.phi_surface_lm, self.r_dry)
+
+        zeta_dots, delta_dots = [], []
+        for k in range(K):
+            eta_c = zeta_c[k] + self.f_lm
+            eta_lam, eta_snt = self._deriv_fields(sh_p, eta_c)
+            eta_g = sh_p.inv_transform(eta_c).real
+            u = fields["u"][k]
+            v = fields["v"][k]
+
+            # div(eta V) and k.curl(eta V), SWE pointwise expansions.
+            adv_eta = (u * eta_lam - v * eta_snt) / coslat
+            div_eta_v = adv_eta + eta_g * fields["delta"][k]
+            curl_eta_v = eta_g * fields["zeta"][k] \
+                + (v * eta_lam + u * eta_snt) / coslat
+
+            # Z: vertical momentum transport + full R_d T grad(ln p_s).
+            rt = self.r_dry * fields["temperature"][k]
+            z_east = fields["sigma_dot_dU"][k] + rt * fields["grad_lnps_u"]
+            z_north = fields["sigma_dot_dV"][k] + rt * fields["grad_lnps_v"]
+            curl_z, div_z = self.so.vector_curl_div_spectral(
+                z_east, z_north, truncate=False)
+
+            # Kinetic energy: analyzed once, truncated once.
+            kinetic_c = self._truncate(
+                sh_p.transform(0.5 * (u * u + v * v)))
+
+            zeta_dot = self._truncate(
+                sh_p.transform(-div_eta_v) - curl_z)
+            delta_dot = self._truncate(
+                sh_p.transform(curl_eta_v) - div_z) \
+                - self.lap_eigs[:, None] * (kinetic_c + phi_full_lm[k])
+            zeta_dots.append(zeta_dot)
+            delta_dots.append(delta_dot)
+
+        zeta_dot = cp.stack(zeta_dots)
+        delta_dot = cp.stack(delta_dots)
+        # Conserve per-level circulation and integrated divergence exactly.
+        zeta_dot[:, 0, :] = 0.0
+        delta_dot[:, 0, :] = 0.0
+        return zeta_dot, delta_dot
 
     # ------------------------------------------------------------------
     # Characteristic speed (design doc Section 10)

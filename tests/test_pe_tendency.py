@@ -780,6 +780,121 @@ def test_thermo_lnps_monopoles_evolve_and_boundaries_stay_pinned(
     assert float(cp.abs(fields["sigma_dot"][-1]).max()) == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Phase 5 — momentum (zeta / delta) tendencies
+# ---------------------------------------------------------------------------
+
+def _momentum(model, state):
+    fields = model._tendency_product_fields(state.coeffs)
+    zeta_dot, delta_dot = model._momentum_tendencies(state.coeffs, fields)
+    return fields, zeta_dot, delta_dot
+
+
+def test_momentum_tendencies_zero_at_isothermal_rest(latlon_planet):
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _rest_state(model)
+    _, zeta_dot, delta_dot = _momentum(model, state)
+    assert float(cp.abs(zeta_dot).max()) == 0.0
+    assert float(cp.abs(delta_dot).max()) == 0.0
+
+
+def _bve_degeneracy_errors(planet, nlev=4):
+    """Max relative error of the per-level PE zeta tendency against the
+    BVE tendency for delta = 0, per-level horizontally uniform T, uniform
+    ln p_s (sigma_dot = 0). Returns (err, scale, max |extra| rows)."""
+    import cupy as cp
+    from planetary_sandbox.physics.barotropic import (
+        BarotropicState, BarotropicVorticity)
+    from planetary_sandbox.run.bve.initial_conditions import make_ic
+
+    model = _make_model(planet, nlev=nlev)
+    zeta_lm = planet.sh.transform(make_ic("rh4", planet))
+    zeta_lm[0, :] = 0.0
+
+    state = _rest_state(model)
+    for k in range(model.nlev):
+        state.zeta[k] += zeta_lm
+        state.temperature[k, 0, 0] = (T0 - 6.0 * k) * SQRT4PI
+
+    bve = BarotropicVorticity(planet, viscosity=0.0)
+    bve_dot = bve.tendency(BarotropicState(zeta_lm), None)
+
+    _, zeta_dot, _ = _momentum(model, state)
+    err = max(float(cp.abs(zeta_dot[k] - bve_dot).max())
+              for k in range(model.nlev))
+    scale = float(cp.abs(bve_dot).max())
+    return err, scale
+
+
+def test_bve_degeneracy_latlon(latlon_planet):
+    """The acceptance invariant: with delta = 0, horizontally uniform T,
+    uniform ln p_s (so sigma_dot = 0 and Z = 0 bitwise), the PE zeta
+    tendency at every level reproduces BarotropicVorticity.tendency —
+    only round-off (division association) separates the two paths."""
+    err, scale = _bve_degeneracy_errors(latlon_planet)
+    assert err <= 1e-12 * scale
+
+
+def test_bve_degeneracy_geodesic(geodesic_planet):
+    """Same pointwise path on the geodesic backend: the SWE precedent
+    shows the two evaluations differ only by round-off there too."""
+    err, scale = _bve_degeneracy_errors(geodesic_planet)
+    assert err <= 1e-12 * scale
+
+
+def test_zero_flow_structured_T_gives_hydrostatic_pgf_divergence(
+        latlon_planet):
+    """Zero flow + structured T + uniform ln p_s: the zeta tendency is
+    bitwise zero and the delta tendency is exactly the diagonal spectral
+    -lap(Phi) of the hydrostatic geopotential of that T field (E = 0, all
+    nonlinear vectors bitwise zero) — the analytically expected
+    pressure-gradient response, verified against an independent spectral
+    hydrostatic reconstruction in the test."""
+    import cupy as cp
+    from planetary_sandbox.physics.sigma_coordinate import (
+        hydrostatic_geopotential)
+    model = _make_model(latlon_planet)
+    state = _rest_state(model)
+    for k in range(model.nlev):
+        state.temperature[k, 0, 0] = (T0 - 7.0 * k) * SQRT4PI
+        state.temperature[k, 4, 2] = 3.0 - 1.0j
+        state.temperature[k, 2, 0] = 1.5 * (k + 1)
+    _, zeta_dot, delta_dot = _momentum(model, state)
+
+    assert float(cp.abs(zeta_dot).max()) == 0.0
+
+    phi_full_lm, _ = hydrostatic_geopotential(
+        model.sigma, state.temperature, model.phi_surface_lm, model.r_dry)
+    expected = -model.lap_eigs[:, None] * phi_full_lm
+    scale = float(cp.abs(expected).max())
+    assert scale > 0.0
+    assert float(cp.abs(delta_dot - expected).max()) < 1e-12 * scale
+
+
+def test_momentum_monopole_rows_are_bitwise_zero(latlon_planet):
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _band_limited_state(model, seed=47)
+    _, zeta_dot, delta_dot = _momentum(model, state)
+    assert float(cp.abs(zeta_dot[:, 0, :]).max()) == 0.0
+    assert float(cp.abs(delta_dot[:, 0, :]).max()) == 0.0
+    # Not vacuous: the tendencies themselves are nonzero.
+    assert float(cp.abs(zeta_dot).max()) > 0.0
+    assert float(cp.abs(delta_dot).max()) > 0.0
+
+
+def test_momentum_tendencies_finite_on_geodesic(geodesic_planet):
+    import cupy as cp
+    model = _make_model(geodesic_planet)
+    state = _band_limited_state(model, seed=53)
+    _, zeta_dot, delta_dot = _momentum(model, state)
+    assert bool(cp.isfinite(zeta_dot).all())
+    assert bool(cp.isfinite(delta_dot).all())
+    assert float(cp.abs(zeta_dot[:, 0, :]).max()) == 0.0
+    assert float(cp.abs(delta_dot[:, 0, :]).max()) == 0.0
+
+
 def test_product_fields_on_geodesic_are_finite_and_structural(geodesic_planet):
     """The same reconstruction runs on the geodesic backend: finite fields,
     structural sigma_dot zeros, round-off layer closure."""
