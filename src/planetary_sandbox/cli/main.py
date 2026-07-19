@@ -279,13 +279,14 @@ examples:
   aeolus run swe --backend gauss-latlon --nlat 32 --nlon 64 --l-max 15
   aeolus run swe --scenario gravity_wave --day-hours inf --mean-depth 1000
   aeolus run swe --days 5 --n-snapshots 11 --no-plots
+  aeolus run swe --topography mountain --mountain-height-m 2000 --days 2
 """
 
 
 def add_swe_arguments(parser: argparse.ArgumentParser) -> None:
     """All `run swe` options. Every default is None (resolution applies them)."""
     from planetary_sandbox.run.swe.config import (  # import-light
-        SWE_PLOT_TYPES, SWE_SCENARIOS)
+        SWE_PLOT_TYPES, SWE_SCENARIOS, SWE_TOPOGRAPHIES)
 
     parser.add_argument(
         "--backend", "--grid", dest="grid", choices=list(BACKEND_CHOICES),
@@ -336,6 +337,32 @@ def add_swe_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--scenario", choices=sorted(SWE_SCENARIOS), default=None,
         help="Initial-condition scenario [default: williamson2].")
+    parser.add_argument(
+        "--topography", choices=sorted(SWE_TOPOGRAPHIES), default=None,
+        help="Fixed bottom topography [default: flat]. 'mountain' is one "
+             "smooth Gaussian mountain, band-limited at the model "
+             "truncation; its resolved parameters participate in the "
+             "scientific run identity.")
+    parser.add_argument(
+        "--mountain-height-m", dest="mountain_height_m", type=float,
+        metavar="METERS", default=None,
+        help="Mountain peak elevation in meters [default: 2000]. "
+             "Requires --topography mountain.")
+    parser.add_argument(
+        "--mountain-lat-deg", dest="mountain_lat_deg", type=float,
+        metavar="DEG", default=None,
+        help="Mountain center latitude in degrees [-90, 90] [default: 30]. "
+             "Requires --topography mountain.")
+    parser.add_argument(
+        "--mountain-lon-deg", dest="mountain_lon_deg", type=float,
+        metavar="DEG", default=None,
+        help="Mountain center longitude in degrees [default: 90]. "
+             "Requires --topography mountain.")
+    parser.add_argument(
+        "--mountain-width-deg", dest="mountain_width_deg", type=float,
+        metavar="DEG", default=None,
+        help="Mountain Gaussian e-folding half-width in degrees (0, 90] "
+             "[default: 20]. Requires --topography mountain.")
     plot_group = parser.add_mutually_exclusive_group()
     plot_group.add_argument(
         "--plot", dest="plots", action="append", metavar="TYPE",
@@ -361,8 +388,9 @@ def add_swe_arguments(parser: argparse.ArgumentParser) -> None:
 _SWE_EXPLICIT_KEYS = (
     "lmax", "grid", "resolution", "nlat", "nlon", "day_hours",
     "radius_earth_units", "duration_days", "gravity", "mean_depth_m",
-    "scenario", "n_snapshots", "dt_snapshots", "plots", "no_plots", "out",
-    "experiment", "overwrite")
+    "scenario", "topography", "mountain_height_m", "mountain_lat_deg",
+    "mountain_lon_deg", "mountain_width_deg", "n_snapshots", "dt_snapshots",
+    "plots", "no_plots", "out", "experiment", "overwrite")
 
 
 def _cmd_run_swe(args: argparse.Namespace) -> int:
@@ -521,6 +549,16 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         show("grid", f"{grid} r{run_config.get('resolution')}")
     show("l_max", run_config.get("lmax"))
     show("scenario", run_config.get("scenario"))
+    if run_config.get("solver") == "swe":
+        # Additive schema: manifests without a topography key are flat runs.
+        if run_config.get("topography", "flat") == "mountain":
+            show("topography",
+                 f"mountain (h={run_config.get('mountain_height_m')} m at "
+                 f"lat {run_config.get('mountain_lat_deg')} deg, "
+                 f"lon {run_config.get('mountain_lon_deg')} deg, "
+                 f"width {run_config.get('mountain_width_deg')} deg)")
+        else:
+            show("topography", "flat")
     day_hours = run_config.get("day_hours")
     if day_hours is not None:
         show("day length", "non-rotating" if day_hours in (float("inf"), "Infinity")

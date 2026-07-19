@@ -4,6 +4,28 @@ Each scenario returns a :class:`ShallowWaterState` built *spectrally* (no
 grid round trip), so the states are exactly monopole-free and exactly
 band-limited. The available scenarios are the minimal set required by the
 first shallow-water milestone (see run/swe/config.SWE_SCENARIOS).
+
+Topography-aware construction
+-----------------------------
+Every scenario specifies a velocity field and a FREE-SURFACE geopotential
+anomaly ``phi_fs'`` (both monopole-free); the prognostic thickness
+perturbation is then
+
+    phi = phi_fs' - phi_s'
+
+where ``phi_s'`` is the mean-removed surface geopotential of the model's
+fixed bottom topography (exactly zero for a flat bottom, so every flat-
+bottom state is bit-for-bit identical to the historical construction).
+This makes each scenario well-defined over terrain: ``rest`` is the exact
+lake-at-rest state (constant free surface, zero velocity), and the flowing
+scenarios launch their historical wind/free-surface pair over the mountain
+(for ``williamson2`` that is a mountain-flow experiment, not the flat-
+bottom steady solution). The global-mean thickness is exactly the model's
+``mean_depth`` in every case.
+
+Every scenario validates its state before returning, so terrain that
+protrudes through the fluid layer fails here — before integration — with
+the model's explicit thickness-collapse diagnosis.
 """
 from __future__ import annotations
 
@@ -16,33 +38,51 @@ from planetary_sandbox.physics.shallow_water import (ShallowWaterModel,
 
 
 def _rest(model: ShallowWaterModel) -> ShallowWaterState:
-    return ShallowWaterState.zeros(model.l_max)
+    """Exact resting state: zero velocity, constant free surface.
+
+    Over a flat bottom this is the all-zero state; over topography the
+    thickness perturbation is -phi_s', giving spatially varying thickness
+    under a spatially constant free-surface geopotential.
+    """
+    state = ShallowWaterState.zeros(model.l_max)
+    if model.has_topography:  # keep the flat state exactly all-(+0.0)
+        state.coeffs[2] = -model.phi_s_anom_lm
+    model.validate_state(state, context="rest initial condition")
+    return state
 
 
 def _gravity_wave(model: ShallowWaterModel) -> ShallowWaterState:
-    """Small-amplitude Y_4^2 perturbation of the geopotential, fluid at rest.
+    """Small-amplitude Y_4^2 free-surface perturbation, fluid at rest.
 
-    On a non-rotating planet this oscillates at
-    omega^2 = Phi0 * l(l+1) / a^2 (the verified dispersion relation); on a
-    rotating one it is simply a small gravity-wave demo state.
+    On a non-rotating planet with a flat bottom this oscillates at
+    omega^2 = Phi0 * l(l+1) / a^2 (the verified dispersion relation); over
+    topography it is the same free-surface bump launched on the lake-at-
+    rest state.
     """
     l, m = 4, 2
     if model.l_max < l:
         raise ValueError(
             f"gravity_wave scenario needs l_max >= {l}, got {model.l_max}")
     state = ShallowWaterState.zeros(model.l_max)
-    state.coeffs[2, l, m] = 1e-3 * model.phi0
+    if model.has_topography:  # keep the flat state bit-identical to history
+        state.coeffs[2] = -model.phi_s_anom_lm
+    state.coeffs[2, l, m] += 1e-3 * model.phi0
+    model.validate_state(state, context="gravity_wave initial condition")
     return state
 
 
 def _williamson2(model: ShallowWaterModel) -> ShallowWaterState:
-    """Williamson et al. (1992) case 2 (alpha = 0), an exact steady solution.
+    """Williamson et al. (1992) case 2 (alpha = 0) wind/free-surface pair.
 
-    u = u0*cos(lat) with u0 = 2*pi*a/(12 days); the balanced total
-    geopotential is Phi0 + C*(1/3 - sin^2 lat) with C = a*Omega*u0 + u0^2/2.
-    Valid for any configured mean depth as long as the total geopotential
-    stays positive (validated); the canonical g*h0 = 2.94e4 configuration
-    corresponds to mean depth (2.94e4 - C/3)/g.
+    u = u0*cos(lat) with u0 = 2*pi*a/(12 days); the balanced free-surface
+    geopotential anomaly is C*(1/3 - sin^2 lat) with C = a*Omega*u0 +
+    u0^2/2. Over a flat bottom this is the exact steady solution for any
+    configured mean depth as long as the fluid thickness stays positive
+    (validated); the canonical g*h0 = 2.94e4 configuration corresponds to
+    mean depth (2.94e4 - C/3)/g. Over non-flat topography the same wind and
+    free surface are launched above the terrain — a smooth mountain-flow
+    experiment (NOT the steady solution, and NOT Williamson case 5, whose
+    mountain is conical).
     """
     a = model.R
     omega = model.Omega
@@ -52,9 +92,11 @@ def _williamson2(model: ShallowWaterModel) -> ShallowWaterState:
     state = ShallowWaterState.zeros(model.l_max)
     # zeta = (2*u0/a) sin(lat): pure (1,0); sin(lat) = sqrt(4*pi/3) Y_1^0.
     state.coeffs[0, 1, 0] = (2.0 * u0 / a) * math.sqrt(4.0 * math.pi / 3.0)
-    # phi' = C*(1/3 - sin^2 lat) = -(2C/3) P2: pure (2,0) with
+    # phi_fs' = C*(1/3 - sin^2 lat) = -(2C/3) P2: pure (2,0) with
     # P2 = sqrt(4*pi/5) Y_2^0.
-    state.coeffs[2, 2, 0] = -(4.0 * C / 3.0) * math.sqrt(math.pi / 5.0)
+    if model.has_topography:  # keep the flat state bit-identical to history
+        state.coeffs[2] = -model.phi_s_anom_lm
+    state.coeffs[2, 2, 0] += -(4.0 * C / 3.0) * math.sqrt(math.pi / 5.0)
     model.validate_state(state, context="williamson2 initial condition")
     return state
 

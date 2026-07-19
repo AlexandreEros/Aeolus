@@ -1,58 +1,149 @@
 # The Rotating Shallow-Water Core
 
-This document describes the flat-bottom, inviscid rotating shallow-water
-dynamical core added in `physics/shallow_water.py` + `run/swe/`. It coexists
-with the barotropic-vorticity (BVE) core: both share the spherical-harmonic
+This document describes the inviscid rotating shallow-water dynamical core
+added in `physics/shallow_water.py` + `run/swe/`, including its optional
+fixed bottom topography (`physics/topography.py`). It coexists with the
+barotropic-vorticity (BVE) core: both share the spherical-harmonic
 transforms, the pseudo-spectral product machinery, the model-independent
 integration engine (`run/engine.py`), and the run/provenance system.
 
-## Prognostic variables
+## Prognostic variables and vertical geometry
 
 | Variable | Meaning | Units |
 |---|---|---|
 | `ζ`  | relative vorticity (`k·∇×u`) | s⁻¹ |
 | `δ`  | horizontal divergence (`∇·u`) | s⁻¹ |
-| `φ`  | **perturbation** geopotential | m² s⁻² |
+| `φ`  | **perturbation thickness** geopotential | m² s⁻² |
 
 All three are held as spectral coefficients in the repository's standard
 dense `(l_max+1, l_max+1)` complex layout (orthonormal complex spherical
 harmonics, m ≥ 0, real fields implied), stacked into one
 `(3, l_max+1, l_max+1)` array (`ShallowWaterState`).
 
-## Perturbation geopotential
+The fixed vertical geometry distinguishes three quantities (each with an
+elevation form in metres and a geopotential form in m²/s²):
 
-The total geopotential is
+| Quantity | Elevation (m) | Geopotential (m² s⁻²) |
+|---|---|---|
+| bottom / surface topography (fixed) | `h_s` | `φ_s = g·h_s` |
+| fluid thickness (prognostic) | `h` | `Φ = g·h = Φ₀ + φ` |
+| free surface | `η_fs = h_s + h` | `φ_s + Φ` |
+
+## Perturbation thickness geopotential
+
+The layer-thickness geopotential is
 
 ```
-Φ = Φ₀ + φ,      Φ₀ = g·H  (constant resting geopotential)
+Φ = g·h = Φ₀ + φ,      Φ₀ = g·H  (constant mean-thickness geopotential)
 ```
 
-with gravity `g` and mean fluid depth `H` fixed model parameters. The global
-mean of `Φ` is represented **entirely by `Φ₀`**: the prognostic `φ` has zero
-monopole (`φ₀₀ = 0`), which is enforced at initialization and preserved
-exactly because every tendency's l = 0 row is hard-zeroed (the same
-mechanism that pins circulation in the BVE). Consequently total layer mass
-`∮ Φ dA` is conserved to the last bit. The total geopotential must remain
-strictly positive; a state where `min(Φ₀ + φ) ≤ 0` fails validation
-explicitly (see below).
+with gravity `g` and global-mean fluid thickness `H` fixed model
+parameters. The global mean of `Φ` is represented **entirely by `Φ₀`**: the
+prognostic `φ` has zero monopole (`φ₀₀ = 0`), which is enforced at
+initialization and preserved exactly because every tendency's l = 0 row is
+hard-zeroed (the same mechanism that pins circulation in the BVE).
+Consequently total layer mass `∮ Φ dA` is conserved to the last bit —
+bottom topography is not fluid and never enters this integral. The
+thickness must remain strictly positive; a state where `min(Φ₀ + φ) ≤ 0`
+fails validation explicitly (see below).
+
+Over a flat bottom the thickness geopotential and the free-surface
+geopotential coincide, which is why the pre-topography code (and its
+persisted artifacts) never had to distinguish them; the stored prognostic's
+meaning is unchanged.
 
 ## Governing equations (vector-invariant form)
 
 With `η = ζ + f`, `f = 2Ω sin φ_lat` (held spectrally as the exact (1,0)
-mode `2Ω√(4π/3)`), and `K = |u|²/2`:
+mode `2Ω√(4π/3)`), `K = |u|²/2`, and fixed surface geopotential `φ_s`
+(zero for a flat bottom):
 
 ```
 ∂ζ/∂t = −∇·(η u)
-∂δ/∂t =  k·∇×(η u) − ∇²(K + φ)
+∂δ/∂t =  k·∇×(η u) − ∇²(K + φ + φ_s)
 ∂φ/∂t = −Φ₀ δ − ∇·(φ u)
 ```
 
 This is the standard spectral transform formulation (Williamson et al. 1992;
-Hack & Jakob 1992), restricted to a flat bottom and no forcing/dissipation.
+Hack & Jakob 1992) with fixed bottom topography and no
+forcing/dissipation. Topography enters **only** the divergence tendency:
+the pressure force is the gradient of the free-surface geopotential
+`Φ + φ_s` (curl-free, so the ζ equation is untouched), while continuity
+transports the fluid thickness. Since `φ_s` is time-independent and
+band-limited, `−∇²φ_s` is a constant, exact, diagonal spectral term that is
+precomputed once — the flat-bottom code path is bit-for-bit unchanged.
+
 An optional scale-selective hyperdiffusion `−ν₄∇⁴` (constructor parameter,
-default 0) may be applied to all three prognostics; its eigenvalue
-`−ν₄ (l(l+1)/a²)²` is exactly zero at l = 0, so it can never modify the
-conserved monopoles.
+default 0, not exposed on the CLI) may be applied to all three prognostics;
+its eigenvalue `−ν₄ (l(l+1)/a²)²` is exactly zero at l = 0, so it can never
+modify the conserved monopoles. With a non-flat bottom the φ component
+damps the **free-surface anomaly** `φ + φ_s'` (φ_s' = mean-removed φ_s)
+rather than the thickness perturbation alone, so damping relaxes toward
+the lake-at-rest state instead of eroding it; over a flat bottom the two
+definitions coincide exactly.
+
+## Bottom topography representation
+
+`physics/topography.py` provides an immutable `Topography` holding the
+spectral coefficients of the surface **elevation** `h_s` (metres) at
+exactly the model truncation, resident on the GPU for the model's
+lifetime. The model derives `φ_s = g·h_s` and everything the per-step
+tendency needs once at construction; integration performs **no
+host-device topography transfers** and no per-step synthesis.
+
+Two deterministic analytic presets exist:
+
+- `flat` — all coefficients exactly zero (canonical default). A model
+  given a flat topography is bit-for-bit identical to one given none.
+- `mountain` — one smooth isolated Gaussian mountain
+  `h_s(x) = h₀ · exp(−(d/σ)²)` (`d` = great-circle distance from the
+  center, `σ` = e-folding width). It is **defined analytically on the
+  state grid and projected onto the truncation by the backend's own
+  analysis transform** (not constructed directly in spectral space). The
+  projection is validated: the quadrature-weighted relative L2 residual
+  between the analytic field and its band-limited synthesis must not
+  exceed 0.2, otherwise construction fails with instructions to widen the
+  mountain or raise `l_max`. The projected terrain necessarily carries
+  Gibbs-type ripples (including small negative overshoots around the
+  mountain); the residual bound quantifies them, and the stored spectral
+  field — not the analytic formula — **is** the model's terrain,
+  identically on every sampling (state and product grids) via exact basis
+  evaluation. Nothing about the terrain bypasses the model's dealiasing:
+  φ_s enters only linearly, where no truncation is needed.
+
+Because the terrain is deterministic given the resolved configuration and
+backend, runs persist **no terrain arrays**: the topography is
+reconstructed from `config.json`/`manifest.json` (whose topography keys
+participate in the scientific hash). This keeps snapshots small and makes
+the configuration the single source of truth.
+
+### Resting balance (lake at rest)
+
+The resting state over terrain is zero velocity with a spatially constant
+free surface: `ζ = δ = 0`, `φ = −φ_s'`. Then `φ + φ_s` is spatially
+uniform (purely l = 0), and in spectral space the entire divergence
+tendency is annihilated **exactly**: the l = 0 Laplacian eigenvalue is
+exactly zero, every other coefficient of `∇²(φ + φ_s)` cancels bitwise,
+and every tendency's l = 0 row is hard-zeroed. All other tendency terms
+vanish pointwise because `u = 0` and `δ = 0` on the grid. The discrete
+lake-at-rest state is therefore preserved exactly (verified to `== 0.0`
+per tendency evaluation and through RK4 steps), not merely to a loose
+tolerance — this holds because `φ_s` is band-limited at the truncation, so
+`φ = −φ_s'` is exactly representable. The construction keeps the
+global-mean thickness exactly `H` (`--mean-depth` retains its meaning) and
+puts the constant free surface at elevation `H + mean(h_s)`.
+
+### Positivity over terrain
+
+The positivity constraint is on the **actual fluid thickness**
+`h = (Φ₀ + φ)/g` — never on the free surface or on whichever variable is
+stored — and is checked over every sampling the model evaluates on (state
+and product grids), at the initial condition, after every accepted step,
+and at every RK4 intermediate stage. A mountain that protrudes through
+the fluid layer therefore fails at initial-condition validation with an
+explicit diagnosis (terrain summary, max surface elevation vs mean
+thickness) rather than producing negative depth, NaNs, or silent clipping.
+There is no clipping or damping anywhere in the topographic path.
 
 ## Velocity reconstruction (Helmholtz decomposition)
 
@@ -109,7 +200,8 @@ After every accepted step the state is validated; violations raise
 
 - any NaN/Inf coefficient;
 - a nonzero ζ, δ, or φ monopole (relative tolerance 1e−10);
-- non-positive total geopotential `min(Φ₀ + φ) ≤ 0` (collapsed fluid depth),
+- non-positive fluid thickness `min(Φ₀ + φ) ≤ 0` (collapsed fluid depth;
+  `Φ₀ + φ` is the thickness geopotential with or without topography),
   where the minimum is taken over **every sampling the model evaluates on**
   — the state grid *and* the product grid, since a high-degree φ mode can be
   positive at every state point yet negative where the nonlinear products
@@ -134,22 +226,34 @@ model-specific. The shallow-water model supplies
 s_max = max|u| + sqrt( max(Φ₀ + φ) )
 ```
 
-— the advective speed plus the **total-geopotential** gravity-wave speed
-(never `sqrt(φ)` of the perturbation), with the geopotential maximum taken
-over the same state+product-grid envelope the validator checks (the
-sum-of-maxima form is conservative). The ceiling is recomputed from every
-accepted state, exactly as for the BVE.
+— the advective speed plus the gravity-wave speed of the **local fluid
+thickness** (`Φ₀ + φ` is the thickness geopotential, so `sqrt(max(Φ₀+φ))`
+is `sqrt(g·h)` at the deepest point of the layer — never `sqrt(φ)` of the
+perturbation and never the free-surface geopotential), with the maximum
+taken over the same state+product-grid envelope the validator checks (the
+sum-of-maxima form is conservative). Topography needs no separate CFL
+term: it only redistributes thickness, and the thickness envelope already
+reflects that (e.g. the lake-at-rest state over a mountain has its wave
+speed set by the deepest fluid, exactly as it should). The ceiling is
+recomputed from every accepted state, exactly as for the BVE.
 
 ## Initial conditions
 
+Every scenario specifies a velocity field and a **free-surface**
+geopotential anomaly `φ_fs'`; the prognostic thickness perturbation is
+`φ = φ_fs' − φ_s'`. For a flat bottom (`φ_s' = 0`) this reproduces the
+historical states bit-for-bit; over terrain each scenario is well-defined
+relative to the lake-at-rest state.
+
 | Scenario | Description |
 |---|---|
-| `rest` | `ζ = δ = φ = 0`; all tendencies are exactly zero. |
-| `gravity_wave` | Small-amplitude `Y₄²` geopotential perturbation at rest; on a non-rotating planet it oscillates at `ω² = Φ₀ l(l+1)/a²`. |
-| `williamson2` | Williamson et al. (1992) case 2 (α = 0): steady nonlinear zonal geostrophic flow, `u = u₀ cos φ_lat`, `u₀ = 2πa/(12 days)`, balanced `φ = C(1/3 − sin²φ_lat)`, `C = aΩu₀ + u₀²/2`. Exact steady solution for any positive mean depth; the canonical `g·h₀ = 2.94×10⁴ m²/s²` case corresponds to mean depth `(2.94×10⁴ − C/3)/g`. |
+| `rest` | Zero velocity, constant free surface. Flat bottom: `ζ = δ = φ = 0`; over terrain: `φ = −φ_s'` (the exact lake-at-rest state). All tendencies are exactly zero either way. |
+| `gravity_wave` | Small-amplitude `Y₄²` **free-surface** perturbation at rest; on a non-rotating flat-bottom planet it oscillates at `ω² = Φ₀ l(l+1)/a²`. |
+| `williamson2` | Williamson et al. (1992) case 2 (α = 0) wind/free-surface pair: `u = u₀ cos φ_lat`, `u₀ = 2πa/(12 days)`, `φ_fs' = C(1/3 − sin²φ_lat)`, `C = aΩu₀ + u₀²/2`. Over a flat bottom: the exact steady solution for any positive mean depth (canonical `g·h₀ = 2.94×10⁴ m²/s²` ↔ mean depth `(2.94×10⁴ − C/3)/g`). Over a mountain: the same wind and free surface launched above the terrain — a smooth mountain-flow experiment (NOT steady, and NOT Williamson case 5, whose mountain is conical and whose `u₀` is 20 m/s). |
 
 All scenarios are built spectrally (no grid round trip), so they are exactly
-monopole-free and band-limited.
+monopole-free and band-limited, and each validates its state before
+returning (protruding terrain fails here, before integration).
 
 ## Minimal CLI example
 
@@ -161,13 +265,24 @@ aeolus run swe
 # Gauss lat-lon backend, gravity-wave test on a non-rotating planet:
 aeolus run swe --backend gauss-latlon --nlat 32 --nlon 64 --l-max 15 `
                --scenario gravity_wave --day-hours inf --mean-depth 1000
+
+# Mountain-flow demonstration: the Williamson-2 zonal jet impinging on a
+# 2000 m Gaussian mountain (default position lat 30, lon 90, width 20 deg).
+# Deterministic, inviscid, positive-depth; fits comfortably on the MX110.
+aeolus run swe --topography mountain --mean-depth 5960 --days 2
 ```
 
 Options: `--gravity`, `--mean-depth`, `--day-hours`, `--radius-earth-units`,
 `--l-max`, `--resolution` / `--nlat`+`--nlon`, `--days`, `--n-snapshots` /
-`--snapshot-interval-seconds`, `--scenario`, repeatable `--plot TYPE`,
-`--no-plots`, `--out`,
-`--experiment`, `--overwrite`. Run capsules carry the same provenance as BVE
+`--snapshot-interval-seconds`, `--scenario`, `--topography flat|mountain`
+with `--mountain-height-m`, `--mountain-lat-deg`, `--mountain-lon-deg`,
+`--mountain-width-deg` (defaults 2000 m, 30°, 90°, 20°; only valid with
+`--topography mountain`), repeatable `--plot TYPE`, `--no-plots`, `--out`,
+`--experiment`, `--overwrite`. Flat topography is the default, keeps the
+historical config schema (no topography keys are emitted), and therefore
+preserves every existing flat-bottom run identity; non-flat terrain
+parameters participate fully in the scientific hash and are shown by
+`aeolus inspect`. Run capsules carry the same provenance as BVE
 runs (`config.json`, `manifest.json` with status lifecycle,
 `latest_run.txt`); stored artifacts are `swe_coeffs.npy`
 (`(N, 3, l_max+1, l_max+1)` spectral snapshots), `swe_snapshot_times.npy`,
@@ -181,17 +296,32 @@ from that persisted state's Helmholtz decomposition. Spectral frames show the
 persisted relative-vorticity, horizontal-divergence, and perturbation-
 geopotential coefficient magnitudes. Each field keeps one normalization
 across the complete timeline.
+For a non-flat bottom, physical frames and the summary gain a
+"Topography & free surface" row with two panels: the **free-surface
+anomaly** `η' = (φ + φ_s')/g` (signed, symmetric run-wide normalization —
+the dynamic field) and the static band-limited **surface elevation**
+`h_s` (own sequential colors, so terrain never recolors or obscures the
+dynamic fields; both panels in metres). The prognostic thickness-anomaly
+panel `h' = Φ'/g` is unchanged, so thickness and free surface are shown
+as explicitly distinct fields. The flat case renders exactly the
+historical figures.
 A selected-product rendering failure marks the capsule failed and prevents
 publication through `latest_run.txt`.
 
 ## Diagnostics
 
 Per accepted step (`diagnostics/timeseries.csv`): time, dt, step, max wind
-speed, max characteristic speed, CFL number, min/max total geopotential
+speed, max characteristic speed, CFL number, min/max thickness geopotential
 (over the state+product-grid envelope), total mass `∮(Φ₀+φ) dA` (computed
 **spectrally** as `a²[4πΦ₀ + √(4π)·Re φ₀₀]`, i.e. the conserved quantity
-itself, exact by monopole pinning), total energy `∮[Φ|u|²/2 + Φ²/2] dA`
-(grid quadrature), and spectral L2 norms of ζ, δ, φ.
+itself, exact by monopole pinning; terrain never enters), total energy
+`∮[Φ|u|²/2 + Φ²/2 + Φ·φ_s] dA` (grid quadrature; the `Φ·φ_s` term is the
+topographic potential energy and is identically absent for a flat bottom),
+minimum fluid thickness `h_min_m`, free-surface anomaly extrema
+`eta_min_m`/`eta_max_m`, maximum terrain height `terrain_max_m` (constant
+per run, 0 when flat), and spectral L2 norms of ζ, δ, φ. The rendered
+figures add a thickness/free-surface envelope plot (metres) alongside the
+historical invariant-drift, CFL, and norm figures.
 
 ## Verification status (tests)
 
@@ -207,14 +337,35 @@ itself, exact by monopole pinning), total energy `∮[Φ|u|²/2 + Φ²/2] dA`
   Gauss lat-lon backend; ~7e−5 of the term scale on geodesic = transform
   quadrature error); 1-day lat-lon integration steady to ~1e−15 with exactly
   zero energy/mass drift; geodesic 6 h run bounded by transform error.
+- Topography (tests/test_swe_topography.py): flat-bottom bit-identity
+  (model with flat topography == model without, tendencies and states);
+  exact lake-at-rest preservation over a mountain on both backends
+  (tendency `== 0`, state and mass unchanged through RK4 steps); uniform
+  bottom+free-surface offset invariance; mountain parameter/projection
+  validation incl. protruding-terrain failure; exact mass conservation in
+  a mountain-flow run; 4th-order timestep convergence of a mountain-flow
+  case; no host-device topography transfers in the tendency loop.
 
 ## Current limitations
 
-- Flat bottom only: no topography, forcing, radiative relaxation, or
-  multilayer/primitive-equation structure.
+- Topography is SWE-only: the primitive-equation core is untouched by this
+  feature. `Topography.surface_geopotential_lm(g)` deliberately matches
+  the `surface_geopotential_lm` input the PE constructor already reserves
+  (same dense spectral layout, m²/s²), so a later PE coupling is a data
+  handoff — but no such coupling exists or is claimed yet, and the PE
+  sigma-coordinate pressure-gradient error over terrain
+  (docs/PRIMITIVE_EQUATIONS_DESIGN.md §8) must be re-examined first.
+- Terrain is limited to the two analytic presets (flat, one Gaussian
+  mountain); no raster/NetCDF/real-Earth data, no interpolation, no
+  time-dependent terrain.
+- The projected mountain carries Gibbs-type ripples (bounded by the 0.2
+  projection-residual gate); narrow mountains at low `l_max` are rejected
+  rather than smoothed.
 - No semi-implicit gravity-wave treatment: explicit RK4 with the gravity-wave
   CFL, so deep layers cost proportionally smaller timesteps.
-- Williamson cases 1 and 3–7 are not implemented in this milestone.
+- Williamson cases 1 and 3–7 are not implemented; in particular the
+  mountain-flow demonstration is NOT Williamson case 5 (different mountain
+  shape, different jet speed, different mean depth unless configured).
 - The geodesic backend's transform is inexact (see docs/MATHEMATICAL_MODEL.md
   §4.1); steady-state residuals there are set by quadrature error, not by
   the formulation.

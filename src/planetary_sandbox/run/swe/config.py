@@ -1,13 +1,23 @@
 """Resolved shallow-water (swe) run configuration.
 
-Deliberately minimal (the spec for the first shallow-water milestone):
-gravity, planetary radius, rotation rate, mean fluid depth, spectral
-resolution, duration, and the snapshot schedule. No presets, no topography,
-no forcing, no expression-based initial conditions. Import-light (stdlib
-only) so ``--help`` and validation never touch CuPy.
+Deliberately minimal: gravity, planetary radius, rotation rate, mean fluid
+depth, spectral resolution, duration, the snapshot schedule, and fixed
+analytic bottom topography (flat by default, or one Gaussian mountain). No
+presets, no forcing, no expression-based initial conditions, no terrain
+files. Import-light (stdlib only) so ``--help`` and validation never touch
+CuPy.
 
 Snapshot semantics are shared with the BVE (count mode canonical, interval
 mode supported); the schedule machinery lives in ``run.engine``.
+
+Topography config schema (additive)
+-----------------------------------
+``to_run_config_dict()`` emits the topography keys (``topography`` plus the
+four ``mountain_*`` parameters) ONLY when the resolved topography is not
+``flat``. A flat-bottom run therefore produces exactly the historical
+config dict — and thus exactly the historical scientific hash and run id —
+while any non-flat terrain participates fully in the scientific identity.
+Old manifests without a ``topography`` key are unambiguously flat.
 """
 from __future__ import annotations
 
@@ -15,8 +25,9 @@ import math
 from dataclasses import dataclass
 from typing import Mapping, Optional
 
-from ..engine import (SECONDS_PER_DAY, _require_finite_positive,
-                      count_snapshot_times, interval_snapshot_times)
+from ..engine import (SECONDS_PER_DAY, _require_finite_number,
+                      _require_finite_positive, count_snapshot_times,
+                      interval_snapshot_times)
 from ..bve.config import (GRID_TYPES, MIN_NLAT, MIN_NLON,
                           scientific_config_subset)
 
@@ -44,12 +55,34 @@ DEFAULT_N_SNAPSHOTS = 5
 #: initial_conditions.SWE_INITIAL_CONDITIONS; kept as a plain mapping here
 #: because that module imports CuPy at import time).
 SWE_SCENARIOS = {
-    "rest": "Resting atmosphere: zeta = delta = phi = 0 (all tendencies zero).",
-    "gravity_wave": "Small-amplitude Y_4^2 geopotential perturbation "
+    "rest": "Resting atmosphere: zero velocity, constant free surface "
+            "(exact lake-at-rest over topography; all tendencies zero).",
+    "gravity_wave": "Small-amplitude Y_4^2 free-surface perturbation "
                     "(linear gravity-wave test).",
     "williamson2": "Williamson et al. (1992) case 2: steady nonlinear "
-                   "zonal geostrophic flow.",
+                   "zonal geostrophic flow (over a mountain: a smooth "
+                   "mountain-flow experiment, not steady).",
 }
+
+#: Available bottom-topography presets (must match
+#: physics/topography.TOPOGRAPHY_PRESETS; duplicated here because that
+#: module imports CuPy at import time).
+SWE_TOPOGRAPHIES = {
+    "flat": "Flat bottom (canonical default; identical to the historical "
+            "flat-bottom solver).",
+    "mountain": "One smooth isolated Gaussian mountain, band-limited at "
+                "the model truncation.",
+}
+
+#: Default Gaussian-mountain parameters, applied when --topography mountain
+#: is selected and a parameter is not given explicitly.
+DEFAULT_MOUNTAIN_HEIGHT_M = 2000.0
+DEFAULT_MOUNTAIN_LAT_DEG = 30.0
+DEFAULT_MOUNTAIN_LON_DEG = 90.0
+DEFAULT_MOUNTAIN_WIDTH_DEG = 20.0
+
+_MOUNTAIN_PARAM_FIELDS = ("mountain_height_m", "mountain_lat_deg",
+                          "mountain_lon_deg", "mountain_width_deg")
 
 _MAX_T_END_SECONDS = 1e12
 
@@ -65,6 +98,11 @@ SWE_BASE_DEFAULTS: dict = {
     "gravity": DEFAULT_GRAVITY,
     "mean_depth_m": DEFAULT_MEAN_DEPTH_M,
     "scenario": "williamson2",
+    "topography": "flat",
+    "mountain_height_m": None,
+    "mountain_lat_deg": None,
+    "mountain_lon_deg": None,
+    "mountain_width_deg": None,
     "out": "runs",
     "experiment": None,
     "overwrite": False,
@@ -86,6 +124,11 @@ class SWERunConfig:
     gravity: float = DEFAULT_GRAVITY
     mean_depth_m: float = DEFAULT_MEAN_DEPTH_M
     scenario: str = "williamson2"
+    topography: str = "flat"
+    mountain_height_m: Optional[float] = None
+    mountain_lat_deg: Optional[float] = None
+    mountain_lon_deg: Optional[float] = None
+    mountain_width_deg: Optional[float] = None
     dt_snapshots: Optional[float] = None
     snapshot_mode: str = "count"
     n_snapshots: Optional[int] = DEFAULT_N_SNAPSHOTS
@@ -115,6 +158,43 @@ class SWERunConfig:
             raise ValueError(
                 f"unknown swe scenario {self.scenario!r}; choose from "
                 f"{', '.join(sorted(SWE_SCENARIOS))}")
+
+        if self.topography not in SWE_TOPOGRAPHIES:
+            raise ValueError(
+                f"unknown topography {self.topography!r}; choose from "
+                f"{', '.join(sorted(SWE_TOPOGRAPHIES))}")
+        if self.topography == "flat":
+            given = [name for name in _MOUNTAIN_PARAM_FIELDS
+                     if getattr(self, name) is not None]
+            if given:
+                raise ValueError(
+                    f"mountain parameter(s) {given} require "
+                    "topography='mountain' (the default topography is flat)")
+        else:  # mountain: every parameter must be resolved and valid
+            missing = [name for name in _MOUNTAIN_PARAM_FIELDS
+                       if getattr(self, name) is None]
+            if missing:
+                raise ValueError(
+                    f"topography='mountain' requires resolved parameter(s) "
+                    f"{missing} (SWERunConfig.resolve applies the defaults)")
+            _require_finite_positive("mountain_height_m",
+                                     self.mountain_height_m)
+            _require_finite_positive("mountain_width_deg",
+                                     self.mountain_width_deg)
+            if self.mountain_width_deg > 90.0:
+                raise ValueError(
+                    f"mountain_width_deg must be <= 90, got "
+                    f"{self.mountain_width_deg}")
+            lat = _require_finite_number("mountain_lat_deg",
+                                         self.mountain_lat_deg)
+            if not -90.0 <= lat <= 90.0:
+                raise ValueError(
+                    f"mountain_lat_deg must be in [-90, 90], got {lat}")
+            lon = _require_finite_number("mountain_lon_deg",
+                                         self.mountain_lon_deg)
+            if not -360.0 <= lon <= 360.0:
+                raise ValueError(
+                    f"mountain_lon_deg must be in [-360, 360], got {lon}")
 
         duration = _require_finite_positive("duration_days", self.duration_days)
         t_end = duration * SECONDS_PER_DAY
@@ -179,6 +259,28 @@ class SWERunConfig:
                          if k in SWE_BASE_DEFAULTS})
         if settings["grid"] == "gauss-latlon":  # user-facing alias
             settings["grid"] = "latlon"
+
+        # Resolve the mountain parameters: defaults apply only when the
+        # mountain preset is selected; supplying them with a flat bottom is
+        # an error (caught by __post_init__, with an early clear message
+        # here for the common CLI path).
+        if settings["topography"] == "mountain":
+            mountain_defaults = {
+                "mountain_height_m": DEFAULT_MOUNTAIN_HEIGHT_M,
+                "mountain_lat_deg": DEFAULT_MOUNTAIN_LAT_DEG,
+                "mountain_lon_deg": DEFAULT_MOUNTAIN_LON_DEG,
+                "mountain_width_deg": DEFAULT_MOUNTAIN_WIDTH_DEG,
+            }
+            for name, default in mountain_defaults.items():
+                if settings[name] is None:
+                    settings[name] = default
+        else:
+            given = [name for name in _MOUNTAIN_PARAM_FIELDS
+                     if settings[name] is not None]
+            if given:
+                raise ValueError(
+                    f"mountain parameter(s) {given} require "
+                    "--topography mountain")
 
         duration_days = _require_finite_positive(
             "duration_days", settings["duration_days"])
@@ -253,8 +355,15 @@ class SWERunConfig:
         return scientific_config_subset(self.to_run_config_dict())
 
     def to_run_config_dict(self) -> dict:
-        """Config dict for make_run_id, config.json, and manifest.json."""
-        return {
+        """Config dict for make_run_id, config.json, and manifest.json.
+
+        The topography keys are ADDITIVE and emitted only for a non-flat
+        bottom (module docstring): a flat run's dict — and therefore its
+        scientific hash and run id — is exactly the historical one, while
+        resolved terrain parameters participate fully in the scientific
+        identity of every non-flat run.
+        """
+        config = {
             "solver": "swe",
             "lmax": self.lmax,
             "grid": self.grid,
@@ -279,6 +388,13 @@ class SWERunConfig:
             "snapshot_times": self.snapshot_times_seconds(),
             "plots": list(self.plots),
         }
+        if self.topography != "flat":
+            config["topography"] = self.topography
+            config["mountain_height_m"] = self.mountain_height_m
+            config["mountain_lat_deg"] = self.mountain_lat_deg
+            config["mountain_lon_deg"] = self.mountain_lon_deg
+            config["mountain_width_deg"] = self.mountain_width_deg
+        return config
 
     def summary_lines(self) -> list[str]:
         """Concise resolved-configuration summary (no CUDA involved)."""
@@ -303,9 +419,17 @@ class SWERunConfig:
         else:
             lines.append(f"  nlat x nlon         {self.nlat} x {self.nlon} "
                          "(Gauss-Legendre latitudes x uniform longitudes)")
+        if self.topography == "mountain":
+            topo = (f"mountain (h={self.mountain_height_m:g} m at "
+                    f"lat {self.mountain_lat_deg:g} deg, "
+                    f"lon {self.mountain_lon_deg:g} deg, "
+                    f"width {self.mountain_width_deg:g} deg)")
+        else:
+            topo = "flat"
         lines += [
             f"  l_max               {self.lmax}",
             f"  scenario            {self.scenario}",
+            f"  topography          {topo}",
             f"  day length          {day}",
             f"  radius              {self.radius_earth_units:g} Earth radii",
             f"  gravity             {self.gravity:g} m/s^2",

@@ -37,8 +37,10 @@ _SNAPSHOT_FRAME_RE = re.compile(r".+_t\d{13}\.\d{9}s\.png\Z")
 #: Manifest notes describing the shallow-water solver.
 SWE_MANIFEST_NOTES = {
     "equations": "rotating shallow-water equations (vorticity-divergence "
-                 "form, perturbation geopotential; see "
-                 "physics/shallow_water.py and docs/MATHEMATICAL_MODEL.md)",
+                 "form, perturbation thickness geopotential, optional fixed "
+                 "bottom topography entering the divergence tendency as "
+                 "-laplacian(phi_s); see physics/shallow_water.py and "
+                 "docs/SHALLOW_WATER.md)",
     "timestep_policy": "state-adaptive CFL ceiling "
                        "0.5*cfl_length_scale/max(|u|+sqrt(Phi0+phi)) "
                        "recomputed from every accepted state; steps shorten "
@@ -92,6 +94,7 @@ def _execute_solver(cfg: "SWERunConfig", run_dir, run_config: dict) -> None:
     """Heavy numerical portion of a run: build planet + model, drive the solver."""
     from planetary_sandbox.planet import Planet, PlanetaryParameters
     from planetary_sandbox.physics.shallow_water import ShallowWaterModel
+    from planetary_sandbox.physics.topography import Topography
     from planetary_sandbox.run.bve.io import (RUN_STATUS_RUNNING,
                                               write_run_manifest)
     from planetary_sandbox.run.swe.initial_conditions import make_swe_ic
@@ -109,8 +112,21 @@ def _execute_solver(cfg: "SWERunConfig", run_dir, run_config: dict) -> None:
         nlat=cfg.nlat,
         nlon=cfg.nlon,
     )
+    # Topography is reconstructed deterministically from the resolved
+    # configuration (which participates in the scientific hash), so no
+    # terrain arrays need to be persisted with the run.
+    if cfg.topography == "mountain":
+        topography = Topography.mountain(
+            planet,
+            height_m=cfg.mountain_height_m,
+            lat_deg=cfg.mountain_lat_deg,
+            lon_deg=cfg.mountain_lon_deg,
+            width_deg=cfg.mountain_width_deg)
+    else:
+        topography = None
     model = ShallowWaterModel(planet, gravity=cfg.gravity,
-                              mean_depth=cfg.mean_depth_m)
+                              mean_depth=cfg.mean_depth_m,
+                              topography=topography)
     state0 = make_swe_ic(cfg.scenario, model)
 
     # Rewrite manifest now that we know the backend/product-sampling
