@@ -275,6 +275,134 @@ def test_product_fields_uniform_pressure_kill_mass_terms(latlon_planet):
     assert float(cp.abs(f["g_full"] - delta_g).max()) == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Phase 2a — scalar-round-trip curl/divergence REFERENCE pathway
+# ---------------------------------------------------------------------------
+#
+# The reference analyzes the vector components as scalars, differentiates
+# their projections spectrally, and assembles grid-space curl/div. Component
+# fields of a band-limited vector field are NOT band-limited scalars (they
+# carry spin-1 structure; e.g. solid-body u = u0*cos(lat) has an infinite
+# zonal Legendre expansion), so this pathway has an inherent representation
+# error even on the exact-quadrature Gauss backend. Tolerances below are
+# therefore measured envelopes for low-degree potentials, not round-off;
+# that inherent error is exactly why this is a reference, not production.
+
+def _potential_coeffs(l_max, modes):
+    """Complex (l_max+1)^2 coefficient array with the given (l, m, value)."""
+    import cupy as cp
+    out = cp.zeros((l_max + 1, l_max + 1), dtype=cp.complex128)
+    for l, m, val in modes:
+        out[l, m] = val
+    return out
+
+
+def _vector_from_potentials(planet, psi_lm, chi_lm):
+    """F = k x grad(psi) + grad(chi) evaluated on the product sampling."""
+    so = planet.so
+    ps = so.backend.product_space(so.product_quadrature)
+    sh_p = ps.sh
+    R = so.R
+    coslat = ps.coslat
+
+    def _derivs(c_lm):
+        lam = sh_p.inv_transform(so.d_lambda_coeffs(c_lm)).real
+        snt = sh_p.inv_transform(so.sin_theta_d_theta_coeffs(c_lm)).real / R
+        return lam, snt
+
+    psi_lam, psi_snt = _derivs(psi_lm)
+    chi_lam, chi_snt = _derivs(chi_lm)
+    f_east = (psi_snt + chi_lam) / coslat
+    f_north = (psi_lam - chi_snt) / coslat
+    return f_east, f_north
+
+
+def _exact_curl_div(planet, psi_lm, chi_lm):
+    """curl(F) = lap(psi), div(F) = lap(chi) in spectral space."""
+    import cupy as cp
+    l = cp.arange(planet.sh.l_max + 1, dtype=cp.float64)
+    lap = (-l * (l + 1.0) / planet.so.R**2)[:, None]
+    return lap * psi_lm, lap * chi_lm
+
+
+def _rel_err(got, want, scale=None):
+    import cupy as cp
+    if scale is None:
+        scale = float(cp.abs(want).max())
+    return float(cp.abs(got - want).max()) / scale
+
+
+#: Measured Gauss-backend envelope for the round-trip reference on
+#: low-degree (l <= 4) potentials at l_max = 15. Measured 2026-07: curl
+#: recovery errors 3.1e-2 (rotational), 9.2e-2 curl-leakage (divergent),
+#: 1.8e-1 (mixed); errors reach 4.2e-1 at l = l_max. The error is the
+#: spin-1 representation tail of the scalar component analysis, not
+#: quadrature — it does NOT vanish on the exact Gauss backend, which is
+#: exactly why this pathway is a reference, not production.
+ROUNDTRIP_LOW_DEGREE_RTOL = 0.2
+
+
+def test_roundtrip_rotational_field_latlon(latlon_planet):
+    """Pure rotational low-degree field: curl recovered within the measured
+    envelope, divergence stays small on that same scale, output finite."""
+    import cupy as cp
+    l_max = latlon_planet.sh.l_max
+    psi_lm = _potential_coeffs(l_max, [(2, 0, 3.0e7), (3, 2, 1.0e7 - 5.0e6j)])
+    chi_lm = cp.zeros_like(psi_lm)
+    f_east, f_north = _vector_from_potentials(latlon_planet, psi_lm, chi_lm)
+    curl_lm, div_lm = latlon_planet.so.vector_curl_div_roundtrip(
+        f_east, f_north, truncate=False)
+    curl_exact, _ = _exact_curl_div(latlon_planet, psi_lm, chi_lm)
+
+    assert bool(cp.isfinite(curl_lm).all()) and bool(cp.isfinite(div_lm).all())
+    scale = float(cp.abs(curl_exact).max())
+    assert _rel_err(curl_lm, curl_exact, scale) < ROUNDTRIP_LOW_DEGREE_RTOL
+    assert float(cp.abs(div_lm).max()) / scale < ROUNDTRIP_LOW_DEGREE_RTOL
+
+
+def test_roundtrip_divergent_field_latlon(latlon_planet):
+    """Pure divergent low-degree field: div recovered, curl small."""
+    import cupy as cp
+    l_max = latlon_planet.sh.l_max
+    chi_lm = _potential_coeffs(l_max, [(2, 1, 2.0e7 + 1.0e7j), (4, 0, 1.5e7)])
+    psi_lm = cp.zeros_like(chi_lm)
+    f_east, f_north = _vector_from_potentials(latlon_planet, psi_lm, chi_lm)
+    curl_lm, div_lm = latlon_planet.so.vector_curl_div_roundtrip(
+        f_east, f_north, truncate=False)
+    _, div_exact = _exact_curl_div(latlon_planet, psi_lm, chi_lm)
+
+    scale = float(cp.abs(div_exact).max())
+    assert _rel_err(div_lm, div_exact, scale) < ROUNDTRIP_LOW_DEGREE_RTOL
+    assert float(cp.abs(curl_lm).max()) / scale < ROUNDTRIP_LOW_DEGREE_RTOL
+
+
+def test_roundtrip_mixed_field_latlon(latlon_planet):
+    """Mixed field: both spectra recovered within the documented envelope."""
+    l_max = latlon_planet.sh.l_max
+    psi_lm = _potential_coeffs(l_max, [(3, 1, 2.0e7 - 1.0e7j)])
+    chi_lm = _potential_coeffs(l_max, [(2, 2, 1.0e7 + 4.0e6j)])
+    f_east, f_north = _vector_from_potentials(latlon_planet, psi_lm, chi_lm)
+    curl_lm, div_lm = latlon_planet.so.vector_curl_div_roundtrip(
+        f_east, f_north, truncate=False)
+    curl_exact, div_exact = _exact_curl_div(latlon_planet, psi_lm, chi_lm)
+
+    assert _rel_err(curl_lm, curl_exact) < ROUNDTRIP_LOW_DEGREE_RTOL
+    assert _rel_err(div_lm, div_exact) < ROUNDTRIP_LOW_DEGREE_RTOL
+
+
+def test_roundtrip_zero_field_is_bitwise_zero(latlon_planet):
+    """A zero vector field analyzes to exactly zero spectra (the BVE-
+    degeneracy prerequisite for any pathway)."""
+    import cupy as cp
+    ps = latlon_planet.so.backend.product_space(
+        latlon_planet.so.product_quadrature)
+    npts = ps.coslat.shape[0]
+    zero = cp.zeros(npts, dtype=cp.float64)
+    curl_lm, div_lm = latlon_planet.so.vector_curl_div_roundtrip(zero, zero)
+    assert float(cp.abs(curl_lm).max()) == 0.0
+    assert float(cp.abs(div_lm).max()) == 0.0
+
+
 def test_product_fields_on_geodesic_are_finite_and_structural(geodesic_planet):
     """The same reconstruction runs on the geodesic backend: finite fields,
     structural sigma_dot zeros, round-off layer closure."""

@@ -290,6 +290,80 @@ class SpectralOperators:
         return self.sh.inv_transform(self.sin_theta_d_theta_coeffs(coeffs))
 
 
+    # ------------------------------------------------------------------
+    # Vector curl/divergence analysis (tangent field -> spectra)
+    # ------------------------------------------------------------------
+
+    def _truncate_product(self, coeffs: cp.ndarray) -> cp.ndarray:
+        """2/3-rule truncation of an analyzed product (in place)."""
+        cut = (2 * self.l_max) // 3
+        coeffs[cut + 1:, :] = 0.0
+        coeffs[:, cut + 1:] = 0.0
+        return coeffs
+
+    def vector_curl_div_roundtrip(self, f_east: cp.ndarray,
+                                  f_north: cp.ndarray, *,
+                                  truncate: bool = True
+                                  ) -> tuple[cp.ndarray, cp.ndarray]:
+        """REFERENCE scalar-round-trip curl/divergence of a tangent vector.
+
+        Input: eastward/northward components sampled on the backend's
+        product sampling (the same points `product_space` synthesizes to).
+        Returns ``(curl_lm, div_lm)`` — spectral coefficients of
+        ``k . curl(F)`` and ``div(F)``.
+
+        Pathway (handoff Section 1.4b): analyze each component as a scalar,
+        synthesize the spectral derivatives of those projections, assemble
+        the grid-space curl/divergence with the repository metric
+        conventions (q_lam = (1/R) dq/dlambda, q_snt = (1/R) sin(theta)
+        dq/dtheta; latitude phi, colatitude theta):
+
+            div(F)      = (fu_lam - fv_snt)/cos(phi)
+                          - (sin(phi)/(R cos(phi))) * F_v
+            k . curl(F) = (fu_snt + fv_lam)/cos(phi)
+                          + (sin(phi)/(R cos(phi))) * F_u
+
+        and analyze once more (with one 2/3 truncation when ``truncate``).
+        The undifferentiated metric terms use the ROUND-TRIPPED component
+        fields so every term derives from one spectral representation.
+
+        KNOWN LIMITATIONS (why this is a reference, not production): the
+        scalar components of even a band-limited vector field are not
+        band-limited scalars — they carry spin-1 structure and are
+        multivalued at the poles (solid-body u = u0*cos(lat) already has an
+        infinite zonal Legendre series). Analyzing them at l_max truncates
+        that spin tail, so the result carries a representation error that
+        does NOT vanish on the exact-quadrature Gauss backend and grows
+        toward the truncation limit; it also costs a second full transform
+        round trip. Use :meth:`vector_curl_div_spectral` for production.
+        """
+        ps = self._product_space
+        sh_p = ps.sh
+        coslat = ps.coslat
+        sinlat = cp.sin(cp.asarray(sh_p.latitudes, cp.float64))
+
+        fu_lm = sh_p.transform(f_east)
+        fv_lm = sh_p.transform(f_north)
+        fu_lam = sh_p.inv_transform(self.d_lambda_coeffs(fu_lm)).real
+        fu_snt = sh_p.inv_transform(
+            self.sin_theta_d_theta_coeffs(fu_lm)).real / self.R
+        fv_lam = sh_p.inv_transform(self.d_lambda_coeffs(fv_lm)).real
+        fv_snt = sh_p.inv_transform(
+            self.sin_theta_d_theta_coeffs(fv_lm)).real / self.R
+        fu_rt = sh_p.inv_transform(fu_lm).real
+        fv_rt = sh_p.inv_transform(fv_lm).real
+
+        tan_over_R = sinlat / (self.R * coslat)
+        div_g = (fu_lam - fv_snt) / coslat - tan_over_R * fv_rt
+        curl_g = (fu_snt + fv_lam) / coslat + tan_over_R * fu_rt
+
+        curl_lm = sh_p.transform(curl_g)
+        div_lm = sh_p.transform(div_g)
+        if truncate:
+            self._truncate_product(curl_lm)
+            self._truncate_product(div_lm)
+        return curl_lm, div_lm
+
     def _get_differential_ops(self, grid) -> DifferentialOperatorsSpherical:
         grid_id = id(grid)
         if self._diff_ops is None or self._diff_ops_grid_id != grid_id:
