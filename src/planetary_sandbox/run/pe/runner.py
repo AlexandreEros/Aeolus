@@ -73,7 +73,7 @@ def run_pe(model: PrimitiveEquationsModel,
     state = PrimitiveEquationsState(cp.array(state0.coeffs, copy=True))
 
     recorder = PEDiagnosticsRecorder(model, out_dir)
-    recorder.record(0.0, state, dt=0.0, step=0)
+    last_row = recorder.record(0.0, state, dt=0.0, step=0)
 
     step = 0
     snapshots: list[np.ndarray] = []
@@ -96,7 +96,7 @@ def run_pe(model: PrimitiveEquationsModel,
 
     def do_step(t_before: float, t_after: float, dt_step: float,
                 step_index: int) -> None:
-        nonlocal state, step
+        nonlocal state, step, last_row
         state = PrimitiveEquationsState(
             rk4_step_array(model.tendency, state.coeffs, t_before, dt_step,
                            stage_validator=validate_stage))
@@ -105,7 +105,7 @@ def run_pe(model: PrimitiveEquationsModel,
         # conservation, positive temperature, finite p_s — loud, not silent.
         model.validate_state(
             state, context=f"at t={t_after:g} s (step {step_index})")
-        recorder.record(t_after, state, dt=dt_step, step=step_index)
+        last_row = recorder.record(t_after, state, dt=dt_step, step=step_index)
 
     # Fixed-step driver: the scheduler is asked for one event at a time with a
     # CONSTANT ceiling, so it never adapts the step; count mode still clips the
@@ -138,6 +138,16 @@ def run_pe(model: PrimitiveEquationsModel,
     np.save(out_dir / "pe_coeffs.npy", coeffs_stack)
     np.save(out_dir / "pe_snapshot_times.npy",
             np.asarray(stored_times, dtype=np.float64))
+
+    # Final run summary: stored-snapshot count and the last diagnostic row, so
+    # the CLI reports what actually happened without re-reading the capsule.
+    print(f"Stored {len(stored_times)} snapshot(s) over "
+          f"{step_index} fixed {dt_seconds:g} s step(s).")
+    print(f"Final diagnostics @ t={last_row['time_s'] / 3600.0:.3f} h: "
+          f"T[min,max]=[{last_row['t_min']:.2f}, {last_row['t_max']:.2f}] K, "
+          f"p_s[min,max]=[{last_row['ps_min']:.1f}, {last_row['ps_max']:.1f}] Pa, "
+          f"max|V|={last_row['max_wind_ms']:.3g} m/s, "
+          f"mass drift={last_row['mass_rel_drift']:.2e}")
 
     if "diagnostics" in plots:
         try:
