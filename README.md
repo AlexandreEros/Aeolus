@@ -212,7 +212,7 @@ discussion and provenance are in [docs/VALIDATION.md](docs/VALIDATION.md).*
 | RH4 geodesic, 5 days (res-4 state, res-5 fine product grid) | relative energy drift **−4.4555×10⁻⁴** |
 | RH4 Gauss lat–lon, matched timestep (`32 × 64`) | energy drift **−1.34×10⁻¹⁰** |
 | Transform round trip, `L=21` (geodesic vs Gauss) | relative L2 residual **1.04×10⁻²** vs **6.84×10⁻¹⁵** |
-| Test suite (Python 3.12.12, CuPy 13.4.0, MX110; GPU-guarded tests skipped without CUDA) | **465 passed** |
+| Test suite (Python 3.12.12, CuPy 13.4.0, MX110; GPU-guarded tests skipped without CUDA) | **571 passed** |
 
 The five-day geodesic energy number is locked by
 `test_prediction_p1_5day_energy_drift`. Full tables, conservation diagnostics,
