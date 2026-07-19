@@ -262,6 +262,89 @@ def test_divergent_flow_mass_closure_geodesic(geodesic_planet):
 
 
 # ---------------------------------------------------------------------------
+# Simmons–Burridge energy exchange on the sphere
+# ---------------------------------------------------------------------------
+
+def test_resting_atmosphere_exchanges_no_energy(latlon_planet):
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _rest_state(model)
+    ex = model.energy_exchange_diagnostics(state)
+    assert float(cp.abs(ex["omega_over_p"]).max()) == 0.0
+    assert float(cp.abs(ex["heating"]).max()) == 0.0
+    assert float(cp.abs(ex["conversion"]).max()) == 0.0
+    assert float(cp.abs(ex["work"]).max()) == 0.0
+    assert ex["max_abs_energy_residual"] == 0.0
+
+
+def _check_energy_identity(planet, seed):
+    import cupy as cp
+    model = _make_model(planet)
+    state = _divergent_state(model, seed=seed)
+    diag = model.continuity_diagnostics(state)
+    ex = model.energy_exchange_diagnostics(state, continuity=diag)
+
+    scale = max(float(cp.abs(ex["conversion"]).max()),
+                float(cp.abs(ex["work"]).max()))
+    assert scale > 0.0  # the test is not vacuous
+    assert ex["max_abs_energy_residual"] < 1e-12 * scale
+
+    # Heating is exactly kappa * T * (omega/p), pointwise.
+    T = model.temperature_on_state_grid(state)
+    err = cp.abs(ex["heating"] - model.kappa * T * ex["omega_over_p"])
+    assert float(err.max()) == 0.0
+    return model, state, ex
+
+
+def test_energy_exchange_identity_latlon(latlon_planet):
+    _check_energy_identity(latlon_planet, seed=3)
+
+
+def test_energy_exchange_identity_geodesic(geodesic_planet):
+    _check_energy_identity(geodesic_planet, seed=9)
+
+
+def test_energy_identity_with_topography(latlon_planet):
+    """Phi_s != 0 shifts Phi but the (Phi - Phi_s) identity still closes."""
+    import cupy as cp
+    n = latlon_planet.sh.l_max + 1
+    phi_s_lm = cp.zeros((n, n), dtype=cp.complex128)
+    phi_s_lm[0, 0] = 800.0 * SQRT4PI
+    phi_s_lm[2, 1] = 40.0          # a little structure, not just a constant
+    model = _make_model(latlon_planet, surface_geopotential_lm=phi_s_lm)
+    state = _divergent_state(model, seed=13)
+    ex = model.energy_exchange_diagnostics(state)
+    scale = max(float(cp.abs(ex["conversion"]).max()),
+                float(cp.abs(ex["work"]).max()))
+    assert ex["max_abs_energy_residual"] < 1e-12 * scale
+
+
+def test_uniform_pressure_divergent_flow_energy_bookkeeping(latlon_planet):
+    """ln p_s uniform: A = 0 exactly, so omega/p is pure column integral
+    and the conversion equals -sum Dsigma (Phi - Phi_s) G computed
+    independently from the geopotential fields."""
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _divergent_state(model, seed=17)
+    state.ln_ps[:] = 0.0
+    state.ln_ps[0, 0] = math.log(PS0) * SQRT4PI
+    diag = model.continuity_diagnostics(state)
+    assert float(cp.abs(diag["v_grad_lnps"]).max()) == 0.0
+
+    ex = model.energy_exchange_diagnostics(state, continuity=diag)
+    phi = model.geopotential_fields(state)
+    manual = None
+    for k in range(model.nlev):
+        term = -model.sigma.thickness[k] * (
+            (phi["phi_full"][k] - phi["phi_surface"]) * diag["g_full"][k])
+        manual = term if manual is None else manual + term
+    scale = float(cp.abs(manual).max())
+    assert scale > 0.0
+    assert float(cp.abs(ex["work"] - manual).max()) < 1e-12 * scale
+    assert float(cp.abs(ex["conversion"] - manual).max()) < 1e-12 * scale
+
+
+# ---------------------------------------------------------------------------
 # Characteristic speed
 # ---------------------------------------------------------------------------
 

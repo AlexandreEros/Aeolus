@@ -34,9 +34,11 @@ from dataclasses import dataclass
 import cupy as cp
 
 from planetary_sandbox.planet import Planet
-from .sigma_coordinate import (SigmaGrid, column_mass_tendency,
+from .sigma_coordinate import (SigmaGrid, column_energy_conversion,
+                               column_mass_tendency, column_pressure_work,
                                hydrostatic_geopotential,
-                               interface_sigma_dot, layer_mass_residual)
+                               interface_sigma_dot, layer_mass_residual,
+                               omega_over_p)
 
 #: Dry-air constants (design doc Section 1; fixed so tests cannot drift).
 R_DRY = 287.04          # J kg^-1 K^-1
@@ -301,11 +303,13 @@ class PrimitiveEquationsModel:
         """
         lnps_lam, lnps_snt = self._deriv_fields(self.sh, state.ln_ps)
         u, v = self.wind_on_state_grid(state)
-        gs = []
+        advs, gs = [], []
         for k in range(self.nlev):
             adv = (u[k] * lnps_lam - v[k] * lnps_snt) / self._state_coslat
             delta_g = self.sh.inv_transform(state.delta[k]).real
+            advs.append(adv)
             gs.append(delta_g + adv)
+        v_grad_lnps = cp.stack(advs)
         g_full = cp.stack(gs)
 
         dlnps_dt = column_mass_tendency(self.sigma, g_full)
@@ -313,10 +317,57 @@ class PrimitiveEquationsModel:
         residual = layer_mass_residual(self.sigma, g_full)
         return {
             "g_full": g_full,
+            "v_grad_lnps": v_grad_lnps,
             "dlnps_dt": dlnps_dt,
             "sigma_dot": sigma_dot,
             "layer_residual": residual,
             "max_abs_layer_residual": float(cp.abs(residual).max()),
+        }
+
+    def energy_exchange_diagnostics(self, state: PrimitiveEquationsState,
+                                    continuity: dict | None = None) -> dict:
+        """Simmons–Burridge energy conversion and the exchange identity.
+
+        Evaluates, on the state grid, the Section-7b operators against this
+        state's discrete hydrostatic geopotential:
+
+        * ``omega_over_p``       (nlev, ...) the energy-conserving
+                                 (omega/p)_k (s^-1)
+        * ``heating``            (nlev, ...) the thermodynamic-equation term
+                                 (kappa T omega/p)_k (K/s)
+        * ``conversion``         column integral sum Dsigma R_d T (omega/p)
+                                 (m^2 s^-3 per unit column mass fraction)
+        * ``work``               column-local pressure work
+                                 sum Dsigma [R_d T A - (Phi - Phi_s) G]
+        * ``energy_residual``    conversion - work (round-off by
+                                 construction; the identity E_d)
+        * ``max_abs_energy_residual``  scalar closure diagnostic
+
+        ``continuity`` may pass a precomputed :meth:`continuity_diagnostics`
+        result to avoid recomputing winds; it must belong to the same state.
+        """
+        diag = (self.continuity_diagnostics(state) if continuity is None
+                else continuity)
+        g_full = diag["g_full"]
+        v_grad_lnps = diag["v_grad_lnps"]
+        T = self.temperature_on_state_grid(state)
+        phi = self.geopotential_fields(state)
+
+        wp = omega_over_p(self.sigma, g_full, v_grad_lnps)
+        heating = self.kappa * T * wp
+        conversion = column_energy_conversion(
+            self.sigma, T, g_full, v_grad_lnps, self.r_dry)
+        work = column_pressure_work(
+            self.sigma, T, phi["phi_full"], phi["phi_surface"], g_full,
+            v_grad_lnps, self.r_dry)
+        residual = conversion - work
+        return {
+            "omega_over_p": wp,
+            "heating": heating,
+            "conversion": conversion,
+            "work": work,
+            "energy_residual": residual,
+            "max_abs_energy_residual": float(cp.abs(residual).max()),
         }
 
     def surface_pressure_on_state_grid(self, state: PrimitiveEquationsState

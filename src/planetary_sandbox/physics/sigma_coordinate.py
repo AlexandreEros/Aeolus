@@ -248,6 +248,99 @@ def interface_sigma_dot(grid: SigmaGrid, g_full):
     return sigma_dot
 
 
+# ---------------------------------------------------------------------------
+# Simmons–Burridge energy-conversion term and exchange identity (Section 7b)
+# ---------------------------------------------------------------------------
+
+def omega_over_p(grid: SigmaGrid, g_full, v_grad_lnps):
+    """Energy-conserving discrete (omega/p)_k (design doc Section 7b, eq. W).
+
+        (omega/p)_k = A_k - (beta_k / Dsigma_k) * P_{k-1} - alpha_k * G_k
+
+    with ``A_k = V_k . grad(ln p_s)`` (``v_grad_lnps``, shape (nlev, ...)),
+    ``P_k`` the cumulative thickness-weighted sum of ``G`` and ``beta_k``
+    the interface log ratio. The k = 1 beta-term is structurally absent
+    (P_0 = 0), so the infinite top-layer ``beta_1`` is never touched.
+
+    This is the UNIQUE choice for which the discrete column energy-exchange
+    identity (E_d) holds exactly against the Simmons–Burridge geopotential
+    of :func:`hydrostatic_geopotential` — see :func:`energy_exchange`.
+    """
+    weighted = _thickness_weighted(grid, g_full)
+    A = _require_level_stack(grid, v_grad_lnps, "v_grad_lnps")
+    partial = weighted.cumsum(axis=0)
+
+    out = weighted * 0.0
+    out[0] = A[0] - grid.alpha[0] * g_full[0]
+    for k in range(1, grid.nlev):
+        out[k] = (A[k]
+                  - (grid.interface_log_ratios[k] / grid.thickness[k])
+                  * partial[k - 1]
+                  - grid.alpha[k] * g_full[k])
+    return out
+
+
+def column_energy_conversion(grid: SigmaGrid, temperature, g_full,
+                             v_grad_lnps, r_dry: float):
+    """Left side of (E_d): sum_k Dsigma_k R_d T_k (omega/p)_k.
+
+    The column heating input to internal energy (per unit p_s/g column
+    mass), using the Section-7b ``(omega/p)_k``. Shape: trailing dims.
+    """
+    T = _require_level_stack(grid, temperature, "temperature")
+    wp = omega_over_p(grid, g_full, v_grad_lnps)
+    out = (T[0] * wp[0]) * (float(r_dry) * grid.thickness[0])
+    for k in range(1, grid.nlev):
+        out = out + (T[k] * wp[k]) * (float(r_dry) * grid.thickness[k])
+    return out
+
+
+def column_pressure_work(grid: SigmaGrid, temperature, phi_full,
+                         phi_surface, g_full, v_grad_lnps, r_dry: float):
+    """Right side of (E_d): sum_k Dsigma_k [R_d T_k A_k - (Phi_k - Phi_s) G_k].
+
+    The column-local part of the work the pressure-gradient force extracts
+    from kinetic energy (the remainder is the horizontal flux divergence
+    div(Phi V) and the Phi_s surface term, which vanish under global
+    mass-weighted integration — design doc Section 7b). ``phi_full`` must
+    be the Simmons–Burridge geopotential of the SAME temperature and
+    ``phi_surface``; otherwise the identity has no reason to close.
+    """
+    T = _require_level_stack(grid, temperature, "temperature")
+    phi = _require_level_stack(grid, phi_full, "phi_full")
+    G = _require_level_stack(grid, g_full, "g_full")
+    A = _require_level_stack(grid, v_grad_lnps, "v_grad_lnps")
+    r = float(r_dry)
+    out = grid.thickness[0] * (r * T[0] * A[0]
+                               - (phi[0] - phi_surface) * G[0])
+    for k in range(1, grid.nlev):
+        out = out + grid.thickness[k] * (r * T[k] * A[k]
+                                         - (phi[k] - phi_surface) * G[k])
+    return out
+
+
+def energy_exchange(grid: SigmaGrid, temperature, phi_surface, g_full,
+                    v_grad_lnps, r_dry: float) -> dict:
+    """Both sides of the discrete energy-exchange identity and its residual.
+
+    Self-contained: recomputes the Simmons–Burridge geopotential from
+    ``temperature`` and ``phi_surface`` so conversion and work are
+    guaranteed to be evaluated against the consistent Phi. Returns
+    ``conversion`` (E_d left side), ``work`` (E_d right side), and
+    ``residual = conversion - work`` — round-off by construction; any
+    future change that breaks the alpha/beta consistency between the
+    hydrostatic and omega/p operators is caught by this diagnostic.
+    """
+    phi_full, _ = hydrostatic_geopotential(grid, temperature, phi_surface,
+                                           r_dry)
+    conversion = column_energy_conversion(grid, temperature, g_full,
+                                          v_grad_lnps, r_dry)
+    work = column_pressure_work(grid, temperature, phi_full, phi_surface,
+                                g_full, v_grad_lnps, r_dry)
+    return {"conversion": conversion, "work": work,
+            "residual": conversion - work}
+
+
 def layer_mass_residual(grid: SigmaGrid, g_full):
     """Per-layer discrete mass-budget residual (should be round-off).
 

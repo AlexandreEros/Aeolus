@@ -15,8 +15,10 @@ import numpy as np
 import pytest
 
 from planetary_sandbox.physics.sigma_coordinate import (
-    SigmaGrid, SigmaGridError, column_mass_tendency,
-    hydrostatic_geopotential, interface_sigma_dot, layer_mass_residual)
+    SigmaGrid, SigmaGridError, column_energy_conversion,
+    column_mass_tendency, column_pressure_work, energy_exchange,
+    hydrostatic_geopotential, interface_sigma_dot, layer_mass_residual,
+    omega_over_p)
 
 R_DRY = 287.04
 
@@ -210,6 +212,115 @@ def test_continuity_rejects_wrong_level_axis():
 
 
 # ---------------------------------------------------------------------------
+# Simmons–Burridge omega/p and the discrete energy-exchange identity
+# ---------------------------------------------------------------------------
+
+def test_omega_over_p_is_finite_and_exact_for_uniform_g():
+    """G independent of level: (omega/p)_k = A_k - c exactly below the top
+    layer (the alpha/beta terms telescope to the continuous value); the top
+    layer gives the known SB approximation A_1 - c*ln(2). No Inf/NaN from
+    the formally infinite top-layer beta."""
+    grid = NONUNIFORM
+    c = 4.0e-6
+    G = np.full((grid.nlev, 7), c)
+    A = np.zeros((grid.nlev, 7))
+    wp = omega_over_p(grid, G, A)
+    assert np.all(np.isfinite(wp))
+    assert wp[0] == pytest.approx(-c * math.log(2.0), rel=1e-14)
+    for k in range(1, grid.nlev):
+        np.testing.assert_allclose(wp[k], -c, rtol=1e-12)
+
+
+def test_omega_over_p_reduces_to_advection_without_mass_flux():
+    grid = SigmaGrid.uniform(5)
+    rng = np.random.default_rng(41)
+    A = rng.standard_normal((grid.nlev, 6)) * 1e-6
+    wp = omega_over_p(grid, np.zeros_like(A), A)
+    np.testing.assert_array_equal(wp, A)
+
+
+def test_omega_over_p_rejects_wrong_shapes():
+    grid = SigmaGrid.uniform(4)
+    with pytest.raises(ValueError):
+        omega_over_p(grid, np.ones((3, 2)), np.ones((3, 2)))
+    with pytest.raises(ValueError):
+        omega_over_p(grid, np.ones((4, 2)), np.ones((3, 2)))
+
+
+def test_energy_exchange_identity_closes_to_round_off():
+    """(E_d): conversion == column-local pressure work, per column."""
+    grid = NONUNIFORM
+    rng = np.random.default_rng(43)
+    T = 210.0 + 80.0 * rng.random((grid.nlev, 50))
+    G = rng.standard_normal((grid.nlev, 50)) * 1e-5
+    A = rng.standard_normal((grid.nlev, 50)) * 1e-6
+    phi_s = 500.0 * rng.random((50,))
+    out = energy_exchange(grid, T, phi_s, G, A, R_DRY)
+    scale = max(np.abs(out["conversion"]).max(), np.abs(out["work"]).max())
+    assert scale > 0.0
+    assert np.abs(out["residual"]).max() < 1e-12 * scale
+
+
+def test_energy_exchange_identity_single_layer():
+    """K = 1 degenerate column: both sides equal R T (A - ln2 G)."""
+    grid = SigmaGrid.uniform(1)
+    T = np.array([260.0])
+    G = np.array([2.0e-6])
+    A = np.array([5.0e-7])
+    out = energy_exchange(grid, T, 0.0, G, A, R_DRY)
+    expected = R_DRY * T[0] * (A[0] - math.log(2.0) * G[0])
+    assert out["conversion"] == pytest.approx(expected, rel=1e-13)
+    assert out["work"] == pytest.approx(expected, rel=1e-13)
+    assert abs(out["residual"]) < 1e-12 * abs(expected)
+
+
+def test_energy_exchange_isothermal_uniform_hand_value():
+    """Closed form: T = T0, G = c, A = a uniform =>
+    conversion = R T0 [(a - c) + c * Dsigma_1 * (1 - ln 2)]."""
+    grid = NONUNIFORM
+    T0, c, a = 250.0, 3.0e-6, 1.0e-6
+    ncol = 4
+    T = np.full((grid.nlev, ncol), T0)
+    G = np.full((grid.nlev, ncol), c)
+    A = np.full((grid.nlev, ncol), a)
+    out = energy_exchange(grid, T, 777.0, G, A, R_DRY)
+    expected = R_DRY * T0 * ((a - c)
+                             + c * grid.thickness[0] * (1.0 - math.log(2.0)))
+    np.testing.assert_allclose(out["conversion"], expected, rtol=1e-12)
+    np.testing.assert_allclose(out["work"], expected, rtol=1e-12)
+
+
+def test_pressure_work_requires_consistent_geopotential():
+    """Feeding a NON-Simmons-Burridge Phi must break the identity — the
+    closure is a property of the consistent pair, not of any Phi."""
+    grid = NONUNIFORM
+    rng = np.random.default_rng(47)
+    T = 210.0 + 80.0 * rng.random((grid.nlev, 10))
+    G = rng.standard_normal((grid.nlev, 10)) * 1e-5
+    A = np.zeros((grid.nlev, 10))
+    phi_full, _ = hydrostatic_geopotential(grid, T, 0.0, R_DRY)
+    conversion = column_energy_conversion(grid, T, G, A, R_DRY)
+    good = column_pressure_work(grid, T, phi_full, 0.0, G, A, R_DRY)
+    scale = np.abs(conversion).max()
+    assert np.abs(conversion - good).max() < 1e-12 * scale
+    # Perturb Phi at one level: the identity must visibly fail.
+    bad_phi = phi_full.copy()
+    bad_phi[2] *= 1.01
+    bad = column_pressure_work(grid, T, bad_phi, 0.0, G, A, R_DRY)
+    assert np.abs(conversion - bad).max() > 1e-6 * scale
+
+
+def test_resting_column_exchanges_no_energy():
+    grid = SigmaGrid.uniform(6)
+    T = np.full((grid.nlev, 3), 260.0)
+    zeros = np.zeros((grid.nlev, 3))
+    out = energy_exchange(grid, T, 0.0, zeros, zeros, R_DRY)
+    assert np.all(out["conversion"] == 0.0)
+    assert np.all(out["work"] == 0.0)
+    assert np.all(out["residual"] == 0.0)
+
+
+# ---------------------------------------------------------------------------
 # Backend-independent array semantics (CuPy parity; CUDA-gated)
 # ---------------------------------------------------------------------------
 
@@ -254,3 +365,20 @@ def test_column_operators_are_backend_independent():
     sdot_cp = interface_sigma_dot(grid, G_cp)
     assert bool((sdot_cp[0] == 0.0).all())
     assert bool((sdot_cp[-1] == 0.0).all())
+
+    # Energy operators: same parity contract.
+    A_np = rng.standard_normal(G_np.shape) * 1e-6
+    A_cp = cp.asarray(A_np)
+    wp_np = omega_over_p(grid, G_np, A_np)
+    wp_cp = omega_over_p(grid, G_cp, A_cp)
+    assert isinstance(wp_cp, cp.ndarray)
+    np.testing.assert_allclose(cp.asnumpy(wp_cp), wp_np, rtol=1e-14)
+    ex_np = energy_exchange(grid, T_np, phis_np, G_np, A_np, R_DRY)
+    ex_cp = energy_exchange(grid, T_cp, phis_cp, G_cp, A_cp, R_DRY)
+    scale = float(np.abs(ex_np["conversion"]).max())
+    for key in ("conversion", "work"):
+        assert isinstance(ex_cp[key], cp.ndarray), key
+        np.testing.assert_allclose(cp.asnumpy(ex_cp[key]), ex_np[key],
+                                   rtol=1e-12, atol=1e-15 * scale)
+    # The identity must close on the GPU independently of the CPU result.
+    assert float(cp.abs(ex_cp["residual"]).max()) < 1e-12 * scale
