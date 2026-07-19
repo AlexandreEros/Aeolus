@@ -199,7 +199,9 @@ This holds to round-off by construction; the diagnostic reports the maximum
 absolute residual per column so any future refactoring that breaks the
 telescoping is caught immediately.
 
-## 7. Vertical-advection discretization and boundary behavior (deferred)
+## 7. Vertical-advection discretization and boundary behavior
+
+### 7a. Vertical advection (deferred)
 
 Documented now, implemented with the tendency. Energy-conserving centered
 (second-order) form on the Lorenz grid, for any full-level quantity `X`:
@@ -212,11 +214,66 @@ Boundary behavior: the `k = 1` term multiplying `sigma_dot_{1/2}` and the
 boundary sigma-velocities are structurally zero (Section 6). No ghost
 levels, no extrapolated `X_0` or `X_{K+1}` values, are ever required.
 
-The `kappa T omega/p` energy-conversion term must use the Simmons–Burridge
-discrete `(omega/p)_k` built from the same `alpha_k` as Section 4 so that
-the discrete PGF work and heating terms compensate (total-energy
-conservation). Its exact discrete form is **unresolved by this milestone**
-and is recorded as an open decision, not silently chosen.
+### 7b. Energy-conversion term `kappa T omega/p` (RESOLVED; implemented)
+
+Notation: `beta_k = ln(sigma_{k+1/2} / sigma_{k-1/2})` (the Section-4
+interface log ratio; `beta_1` is formally infinite and never used),
+`P_k = Sum_{j<=k} G_j Dsigma_j` the discrete partial column integral
+(`P_0 = 0`), `A_k = V_k . grad(ln p_s)`.
+
+Continuous derivation. Using continuity, `omega/p` reduces to the pure
+column form
+
+    omega/p = V . grad(ln p_s) - (1/sigma) Integral_0^sigma G dsigma' .
+
+Hydrostatic balance `dPhi/dsigma = -R_d T / sigma` and integration by parts
+give the column-local ENERGY-EXCHANGE IDENTITY (valid at every instant,
+before any horizontal integration; the `p_s` mass factor is common to all
+terms):
+
+    Integral_0^1 R_d T (omega/p) dsigma
+        = Integral_0^1 [ R_d T A - (Phi - Phi_s) G ] dsigma .        (E)
+
+Globally mass-weighted, `-Integral (Phi - Phi_s) G p_s dsigma dA` turns
+into `Integral p_s V . grad(Phi)` plus the `Phi_s dp_s/dt` surface
+potential-energy term, so (E) is exactly the kinetic <-> total-potential
+energy exchange bookkeeping: heating input to `c_p T` equals the column-
+local part of the work extracted from kinetic energy by the PGF.
+
+Discrete requirement: (E) must hold EXACTLY (round-off only) with `Phi_k`
+the Section-4 Simmons–Burridge geopotential. Substituting
+`Phi_k - Phi_s = R_d (Sum_{j>k} beta_j T_j + alpha_k T_k)` into the
+discrete right side and swapping the double sum
+(`Sum_k Dsigma_k G_k Sum_{j>k} beta_j T_j = Sum_j beta_j T_j P_{j-1}`)
+forces the unique choice
+
+    (omega/p)_k = A_k - (beta_k / Dsigma_k) P_{k-1} - alpha_k G_k ,     (W)
+
+i.e. the Simmons & Burridge (1981) energy-conserving form. The `k = 1`
+beta-term is absent (`P_0 = 0`), so the infinite `beta_1` is never
+multiplied by anything — same structural rule as the hydrostatic recursion.
+With (W) the discrete identity
+
+    Sum_k Dsigma_k R_d T_k (omega/p)_k
+        = Sum_k Dsigma_k [ R_d T_k A_k - (Phi_k - Phi_s) G_k ]        (E_d)
+
+holds per column to round-off, and is enforced by tests via the
+`energy_exchange` residual diagnostics.
+
+Properties (tested):
+
+* For level-independent `G_k = c`, (W) gives `(omega/p)_k = A_k - c`
+  EXACTLY for every `k >= 2` (the alpha/beta terms telescope) — the
+  continuous value; the top layer gives `A_1 - c ln 2`, the known SB
+  top-layer approximation (alpha_1 = ln 2 is fixed by hydrostatic/energy
+  consistency, not by pointwise accuracy at k = 1).
+* `G == 0` implies `(omega/p)_k = A_k`; a resting atmosphere gives
+  exactly zero conversion and zero pressure work.
+
+The heating term entering the thermodynamic equation is
+`(kappa T omega/p)_k = kappa * T_k * (omega/p)_k` (K/s), with the SAME
+`(omega/p)_k`; this is what makes the future tendency's PGF work and
+heating compensate discretely.
 
 ## 8. Horizontal pressure-gradient formulation
 
@@ -265,6 +322,9 @@ Monitored invariants (diagnostics, not hard failures):
   cost; drift is the monitored quantity);
 * column mass closure — the Section 6 layer-budget residual, expected at
   round-off always;
+* column energy-exchange closure — the Section 7b identity (E_d) residual
+  (conversion minus column-local pressure work), expected at round-off
+  always;
 * global dry total energy `Integral (c_p T + Phi_s + E) dm` and global
   angular momentum — defined with the tendency milestone;
 * `sigma_dot_{1/2} = sigma_dot_{K+1/2} = 0` exactly (tested, and structural).
@@ -320,8 +380,10 @@ Deferred (in intended order):
 3. scale-selective hyperdiffusion (same `nabla^4` machinery as the SWE);
 4. topography (`Phi_s != 0`) and the PGF-error re-examination;
 5. Held–Suarez forcing, any moisture/radiation/convection/drag;
-6. mass fixer for the `ln p_s` drift;
-7. energy-conserving discrete `omega/p` (open decision, Section 7).
+6. mass fixer for the `ln p_s` drift.
+
+(The energy-conserving discrete `omega/p`, deferred when this document was
+first written, is now RESOLVED and implemented — Section 7b.)
 
 Known numerical risks (accepted and recorded, not hidden):
 
