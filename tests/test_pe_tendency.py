@@ -403,6 +403,220 @@ def test_roundtrip_zero_field_is_bitwise_zero(latlon_planet):
     assert float(cp.abs(div_lm).max()) == 0.0
 
 
+# ---------------------------------------------------------------------------
+# Phase 2b — weak-form (Bourke-style) vector spectral analysis: PRODUCTION
+# ---------------------------------------------------------------------------
+#
+# (div F)_lm = (im/R) a_lm + (1/R)(C+_lm b_{l+1,m} + C-_lm b_{l-1,m})
+# (curl F)_lm = (im/R) b_lm - (1/R)(C+_lm a_{l+1,m} + C-_lm a_{l-1,m})
+# with a = analysis(F_u/cos(lat)), b = analysis(F_v/cos(lat)). The
+# meridional coupling is the TRANSPOSE (adjoint) of the synthesis-side
+# sin(theta) d/dtheta coupling. Only the integration by parts is a
+# continuous step; every discrete operation afterward is pointwise-exact,
+# so on the Gauss backend (exact product quadrature for these integrands)
+# recovery of analytic curl/div spectra is round-off.
+
+def test_adjoint_sin_theta_matches_inner_product(latlon_planet):
+    """<S c, d> == <c, S^T d> for the meridional coupling operator: the
+    adjoint identity that justifies moving the derivative onto the basis."""
+    import numpy as np
+    import cupy as cp
+    so = latlon_planet.so
+    n = so.l_max + 1
+    rng = np.random.default_rng(31)
+    mask = np.tril(np.ones((n, n)))
+    c = cp.asarray((rng.standard_normal((n, n))
+                    + 1j * rng.standard_normal((n, n))) * mask)
+    d = cp.asarray((rng.standard_normal((n, n))
+                    + 1j * rng.standard_normal((n, n))) * mask)
+
+    lhs = complex(cp.sum(so.sin_theta_d_theta_coeffs(c) * cp.conj(d)))
+    rhs = complex(cp.sum(c * cp.conj(so.adjoint_sin_theta_d_theta_coeffs(d))))
+    scale = max(abs(lhs), abs(rhs), 1e-30)
+    assert abs(lhs - rhs) < 1e-12 * scale
+
+
+def _weak_form_errors(planet, psi_modes, chi_modes, truncate=False):
+    import cupy as cp
+    l_max = planet.sh.l_max
+    psi_lm = _potential_coeffs(l_max, psi_modes)
+    chi_lm = _potential_coeffs(l_max, chi_modes)
+    f_east, f_north = _vector_from_potentials(planet, psi_lm, chi_lm)
+    curl_lm, div_lm = planet.so.vector_curl_div_spectral(
+        f_east, f_north, truncate=truncate)
+    curl_exact, div_exact = _exact_curl_div(planet, psi_lm, chi_lm)
+    if truncate:
+        cut = (2 * l_max) // 3
+        curl_exact = curl_exact.copy()
+        div_exact = div_exact.copy()
+        curl_exact[cut + 1:, :] = 0.0
+        div_exact[cut + 1:, :] = 0.0
+    scale = max(float(cp.abs(curl_exact).max()),
+                float(cp.abs(div_exact).max()))
+    curl_err = float(cp.abs(curl_lm - curl_exact).max()) / scale
+    div_err = float(cp.abs(div_lm - div_exact).max()) / scale
+    return curl_err, div_err, curl_lm, div_lm
+
+
+def test_weak_form_rotational_field_latlon_is_exact(latlon_planet):
+    """Pure rotational field (zonal + nonzonal, low and near-cut modes):
+    curl recovered to round-off, divergence round-off on the same scale."""
+    curl_err, div_err, _, _ = _weak_form_errors(
+        latlon_planet,
+        [(1, 0, 4.0e7), (3, 2, 1.0e7 - 5.0e6j), (10, 7, 6.0e6 + 2.0e6j)],
+        [])
+    assert curl_err < 1e-12
+    assert div_err < 1e-12
+
+
+def test_weak_form_divergent_field_latlon_is_exact(latlon_planet):
+    """Pure divergent field: div recovered to round-off, curl round-off."""
+    curl_err, div_err, _, _ = _weak_form_errors(
+        latlon_planet,
+        [],
+        [(2, 0, 3.0e7), (4, 1, 2.0e7 + 1.0e7j), (10, 10, 5.0e6 - 1.0e6j)])
+    assert curl_err < 1e-12
+    assert div_err < 1e-12
+
+
+def test_weak_form_mixed_field_latlon_full_band(latlon_planet):
+    """Mixed rotational+divergent field with modes up to l_max - 1: both
+    exact spectra recovered to round-off UNtruncated on the exact-
+    quadrature Gauss product grid. (l_max - 1, not l_max, is the exact
+    envelope: see test_weak_form_top_degree_is_wind_synthesis_limited.)"""
+    l_max = latlon_planet.sh.l_max
+    curl_err, div_err, _, _ = _weak_form_errors(
+        latlon_planet,
+        [(2, 1, 2.0e7 - 1.0e7j), (l_max - 1, 3, 4.0e6)],
+        [(3, 0, 1.5e7), (l_max - 1, l_max - 1, 3.0e6 + 2.0e6j)])
+    assert curl_err < 1e-12
+    assert div_err < 1e-12
+
+
+def test_weak_form_top_degree_is_wind_synthesis_limited(latlon_planet):
+    """CHARACTERIZATION: potentials at l = l_max do NOT recover exactly —
+    and the defect belongs to the repository's Helmholtz wind synthesis,
+    not to the vector operator. sin_theta_d_theta_coeffs clips the
+    degree-(l_max+1) component of the meridional derivative (its storage
+    is (l_max+1)^2; C+ at l_max is zeroed), so the synthesized wind of an
+    l_max-degree potential is already a truncated vector field before any
+    curl/div analysis happens — a pre-existing convention shared with the
+    BVE/SWE wind reconstruction. The operator faithfully analyzes the
+    field it is GIVEN; measured deviation at l_max = 15 is a few percent
+    up to ~40% depending on the mode (recorded in the design doc). This
+    test pins the l_max-1 exactness boundary and documents that the
+    l_max-mode deviation is bounded and confined to the same zonal
+    wavenumber."""
+    import cupy as cp
+    l_max = latlon_planet.sh.l_max
+    # Exact at l_max - 1 ...
+    curl_err, _, _, _ = _weak_form_errors(
+        latlon_planet, [(l_max - 1, 3, 1.0e7)], [])
+    assert curl_err < 1e-12
+    # ... measurably inexact at l_max, bounded, and m-confined. The
+    # clipped wind field is no longer exactly nondivergent either (its
+    # dropped degree-(l_max+1) meridional-derivative part carried both
+    # rotational and divergent projections), so BOTH spectra deviate.
+    curl_err, div_err, curl_lm, div_lm = _weak_form_errors(
+        latlon_planet, [(l_max, 3, 1.0e7)], [])
+    assert 1e-6 < curl_err < 0.5
+    assert 1e-6 < div_err < 0.5
+    for out in (curl_lm, div_lm):
+        other_m = cp.abs(out).sum() - cp.abs(out[:, 3]).sum()
+        assert float(other_m) < 1e-12 * float(cp.abs(out).max())
+
+
+def test_weak_form_truncation_and_m_le_l_structure(latlon_planet):
+    """The truncated call zeroes l > cut rows/cols and never produces
+    invalid m > l content (checked untruncated too)."""
+    import numpy as np
+    import cupy as cp
+    l_max = latlon_planet.sh.l_max
+    cut = (2 * l_max) // 3
+    for truncate in (False, True):
+        _, _, curl_lm, div_lm = _weak_form_errors(
+            latlon_planet,
+            [(2, 1, 2.0e7), (cut, 4, 8.0e6)],
+            [(3, 3, 1.0e7)],
+            truncate=truncate)
+        upper = cp.asarray(np.triu(np.ones((l_max + 1, l_max + 1)), k=1))
+        assert float(cp.abs(curl_lm * upper).max()) == 0.0
+        assert float(cp.abs(div_lm * upper).max()) == 0.0
+        if truncate:
+            assert float(cp.abs(curl_lm[cut + 1:, :]).max()) == 0.0
+            assert float(cp.abs(div_lm[cut + 1:, :]).max()) == 0.0
+            assert float(cp.abs(curl_lm[:, cut + 1:]).max()) == 0.0
+            assert float(cp.abs(div_lm[:, cut + 1:]).max()) == 0.0
+
+
+def test_weak_form_zero_field_is_bitwise_zero(latlon_planet):
+    import cupy as cp
+    ps = latlon_planet.so.backend.product_space(
+        latlon_planet.so.product_quadrature)
+    zero = cp.zeros(ps.coslat.shape[0], dtype=cp.float64)
+    curl_lm, div_lm = latlon_planet.so.vector_curl_div_spectral(zero, zero)
+    assert float(cp.abs(curl_lm).max()) == 0.0
+    assert float(cp.abs(div_lm).max()) == 0.0
+
+
+def test_weak_form_agrees_with_roundtrip_within_reference_envelope(
+        latlon_planet):
+    """Cross-validation of the two pathways: they must agree within the
+    round-trip's own documented representation envelope (the round-trip is
+    the one carrying the error; the weak form is exact here)."""
+    import cupy as cp
+    l_max = latlon_planet.sh.l_max
+    psi_lm = _potential_coeffs(l_max, [(3, 1, 2.0e7 - 1.0e7j)])
+    chi_lm = _potential_coeffs(l_max, [(2, 2, 1.0e7 + 4.0e6j)])
+    f_east, f_north = _vector_from_potentials(latlon_planet, psi_lm, chi_lm)
+    curl_w, div_w = latlon_planet.so.vector_curl_div_spectral(
+        f_east, f_north, truncate=False)
+    curl_r, div_r = latlon_planet.so.vector_curl_div_roundtrip(
+        f_east, f_north, truncate=False)
+    scale = max(float(cp.abs(curl_w).max()), float(cp.abs(div_w).max()))
+    assert float(cp.abs(curl_w - curl_r).max()) / scale \
+        < ROUNDTRIP_LOW_DEGREE_RTOL
+    assert float(cp.abs(div_w - div_r).max()) / scale \
+        < ROUNDTRIP_LOW_DEGREE_RTOL
+
+
+#: Measured geodesic-backend envelope (res 3, l_max = 10, fine res-4
+#: co-grid product quadrature), 2026-07: weak-form recovery errors are
+#: 1.0e-3 .. 1.9e-2 relative across single modes l = 1..9 (worst at
+#: l = 1), 3.3e-3 for the mixed case below; the scalar round-trip on the
+#: same fields measures 4.6e-2 .. 3.0e-1 — one to two orders worse. The
+#: envelope asserts ~6x headroom over the measured mixed-case value.
+GEODESIC_WEAK_FORM_RTOL = 0.02
+
+
+def test_weak_form_geodesic_measured_envelope(geodesic_planet):
+    """Geodesic backend: the weak form's recovery error is the backend's
+    quadrature error. Assert the measured envelope and that the weak form
+    is not worse than the scalar round-trip reference on the same field."""
+    import cupy as cp
+    l_max = geodesic_planet.sh.l_max
+    psi_lm = _potential_coeffs(l_max, [(2, 0, 3.0e7), (3, 2, 1.0e7 - 5.0e6j)])
+    chi_lm = _potential_coeffs(l_max, [(2, 1, 2.0e7 + 1.0e7j), (4, 0, 1.5e7)])
+    f_east, f_north = _vector_from_potentials(geodesic_planet, psi_lm, chi_lm)
+    curl_exact, div_exact = _exact_curl_div(geodesic_planet, psi_lm, chi_lm)
+    scale = max(float(cp.abs(curl_exact).max()),
+                float(cp.abs(div_exact).max()))
+
+    curl_w, div_w = geodesic_planet.so.vector_curl_div_spectral(
+        f_east, f_north, truncate=False)
+    assert bool(cp.isfinite(curl_w).all()) and bool(cp.isfinite(div_w).all())
+    err_w = max(float(cp.abs(curl_w - curl_exact).max()),
+                float(cp.abs(div_w - div_exact).max())) / scale
+    assert err_w < GEODESIC_WEAK_FORM_RTOL
+
+    curl_r, div_r = geodesic_planet.so.vector_curl_div_roundtrip(
+        f_east, f_north, truncate=False)
+    err_r = max(float(cp.abs(curl_r - curl_exact).max()),
+                float(cp.abs(div_r - div_exact).max())) / scale
+    # The production pathway must not be worse than the reference.
+    assert err_w <= err_r * 1.5
+
+
 def test_product_fields_on_geodesic_are_finite_and_structural(geodesic_planet):
     """The same reconstruction runs on the geodesic backend: finite fields,
     structural sigma_dot zeros, round-off layer closure."""

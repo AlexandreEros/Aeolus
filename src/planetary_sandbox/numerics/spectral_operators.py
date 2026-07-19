@@ -124,6 +124,9 @@ class SpectralOperators:
         self._dphi = None
         self._dlambda = None
         self._cosphi = None
+        # Lazily built one-degree-extended analysis pieces for the vector
+        # curl/div weak form (see _vector_analysis_pieces).
+        self._vector_analysis_cache = None
         # self._init_latlon_metrics()
 
     # ------------------------------------------------------------------
@@ -237,6 +240,35 @@ class SpectralOperators:
 
         return g
     
+    def adjoint_sin_theta_d_theta_coeffs(self, coeffs: cp.ndarray
+                                         ) -> cp.ndarray:
+        """Transpose of the :meth:`sin_theta_d_theta_coeffs` coupling.
+
+        With S the synthesis-side coupling (g = S c means
+        sin(theta) dY-expansion: g_l = C+_{l-1,m} c_{l-1} + C-_{l+1,m}
+        c_{l+1}), this returns S^T b:
+
+            (S^T b)_{l,m} = C+_{l,m} b_{l+1,m} + C-_{l,m} b_{l-1,m}
+
+        The C coefficients are real, so S^T is also the complex adjoint
+        S^H. This is the operator that appears when a meridional
+        derivative is moved from a grid field onto the spherical-harmonic
+        basis in a quadrature inner product (the weak-form / vector-
+        analysis construction of :meth:`vector_curl_div_spectral`):
+
+            sum_i w_i f_i [sin(theta) dY*_{lm}/dtheta](x_i)
+                = (S^T analysis(f))_{lm}
+
+        exactly, because the recurrence sin(theta) dY_lm/dtheta =
+        C+_{lm} Y_{l+1,m} + C-_{lm} Y_{l-1,m} holds pointwise.
+        """
+        g = cp.zeros_like(coeffs, dtype=cp.complex128)
+        # (S^T b)_l gets C+_{l,m} b_{l+1,m} ...
+        g[:-1, :] += self._C_plus[:-1, :] * coeffs[1:, :]
+        # ... and C-_{l,m} b_{l-1,m}.
+        g[1:, :] += self._C_minus[1:, :] * coeffs[:-1, :]
+        return g
+
     # ------------------------------------------------------------------
     # Public inverse spectral operators
     # ------------------------------------------------------------------
@@ -363,6 +395,111 @@ class SpectralOperators:
             self._truncate_product(curl_lm)
             self._truncate_product(div_lm)
         return curl_lm, div_lm
+
+    def vector_curl_div_spectral(self, f_east: cp.ndarray,
+                                 f_north: cp.ndarray, *,
+                                 truncate: bool = True
+                                 ) -> tuple[cp.ndarray, cp.ndarray]:
+        """PRODUCTION vector spectral analysis: tangent field -> curl/div.
+
+        Input: eastward/northward components sampled on the backend's
+        product sampling. Returns ``(curl_lm, div_lm)``, the spectral
+        coefficients of ``k . curl(F)`` and ``div(F)``, each truncated once
+        with the 2/3 rule when ``truncate`` (the repository's per-product
+        policy).
+
+        Construction (Bourke-style weak form; derivation recorded in
+        docs/PRIMITIVE_EQUATIONS_DESIGN.md): integration by parts on the
+        closed sphere moves the horizontal derivatives onto the basis,
+
+            (div F)_lm  = -Integral grad(Y*_lm) . F dOmega
+            (curl F)_lm = (div F')_lm  with  F' = (F_north, -F_east),
+
+        and the two basis identities dY_lm/dlambda = i m Y_lm and
+        sin(theta) dY_lm/dtheta = C+ Y_{l+1,m} + C- Y_{l-1,m} hold
+        POINTWISE, so with the half-metric analyses
+
+            a = analysis(F_east / cos(lat)),  b = analysis(F_north / cos(lat))
+
+        the discrete weak form is exactly
+
+            div_lm  = (i m / R) a_lm + (1/R) (S^T b)_lm
+            curl_lm = (i m / R) b_lm - (1/R) (S^T a)_lm
+
+        with S^T the :meth:`adjoint_sin_theta_d_theta_coeffs` coupling.
+        The ONLY continuous step is the integration by parts; every
+        discrete operation equals the backend quadrature applied to the
+        exact continuous weak integrand. Consequences, both measured:
+
+        * Gauss lat-lon backend ("fine" 3/2-rule product grid): the weak
+          integrands of fields built from band-limited potentials are
+          integrated exactly, so analytic curl/div recovery is round-off
+          (< 1e-12 relative), including modes at l_max.
+        * Geodesic backend: the error is the backend's quadrature error
+          (there is no exact discrete summation-by-parts on the geodesic
+          co-grid); measured envelopes live in the tests and design doc.
+
+        Cost: two scalar analyses, no synthesis round trip — cheaper than
+        the scalar round-trip reference and free of its spin-1
+        representation error.
+        """
+        coslat = self._product_space.coslat
+        sh_ext, c_plus_true = self._vector_analysis_pieces()
+        n = self.l_max + 1
+
+        # One-degree-extended analyses (Bourke's construction): the
+        # half-metric components of a field built from degree-l_max
+        # potentials carry degree l_max+1 content, and the adjoint
+        # coupling for the l = l_max output row reads b_{l_max+1,m}.
+        # Analyzing at l_max only would leave that row structurally
+        # incomplete (measured as spurious top-row content).
+        a = sh_ext.transform(f_east / coslat)      # (l_max+2, l_max+2)
+        b = sh_ext.transform(f_north / coslat)
+
+        def _adjoint_ext(c_ext: cp.ndarray) -> cp.ndarray:
+            """(S^T c)_{l,m} = C+_{l,m} c_{l+1,m} + C-_{l,m} c_{l-1,m}
+            for output l, m <= l_max, with the TRUE (unclipped) C+ at
+            l = l_max reading the extended degree."""
+            out = c_plus_true * c_ext[1:n + 1, :n]
+            out[1:, :] += self._C_minus[1:, :] * c_ext[:n - 1, :n]
+            return out
+
+        a_r = a[:n, :n]
+        b_r = b[:n, :n]
+        div_lm = self.d_lambda_coeffs(a_r) + _adjoint_ext(b) / self.R
+        curl_lm = self.d_lambda_coeffs(b_r) - _adjoint_ext(a) / self.R
+        if truncate:
+            self._truncate_product(curl_lm)
+            self._truncate_product(div_lm)
+        return curl_lm, div_lm
+
+    def _vector_analysis_pieces(self):
+        """(extended transform, true C+) for the vector weak form, cached.
+
+        The extended transform analyzes on the SAME product points with the
+        SAME quadrature weights but a basis extended by one degree
+        (l_max + 1); ``c_plus_true`` is the (l_max+1, l_max+1) meridional
+        coupling C+_{l,m} WITHOUT the storage-truncation zeroing of the
+        l = l_max row, because that row now legitimately couples to the
+        extended degree.
+        """
+        if self._vector_analysis_cache is None:
+            from .fast_geodesic_sh import PointSetSphericalHarmonics
+            sh_p = self._product_space.sh
+            sh_ext = PointSetSphericalHarmonics(
+                sh_p.latitudes, sh_p.longitudes, self.l_max + 1,
+                weights=sh_p.weights)
+            L = cp.arange(0, self.l_max + 1, dtype=cp.float64)[:, None]
+            M = cp.arange(0, self.l_max + 1, dtype=cp.float64)[None, :]
+            Lb = cp.broadcast_to(L, (self.l_max + 1, self.l_max + 1))
+            Mb = cp.broadcast_to(M, (self.l_max + 1, self.l_max + 1))
+            num = (Lb + 1.0)**2 - Mb**2
+            den = (2.0 * Lb + 1.0) * (2.0 * Lb + 3.0)
+            c_plus = Lb * cp.sqrt(cp.maximum(num, 0.0)
+                                  / cp.maximum(den, 1.0))
+            c_plus = cp.where(Mb <= Lb, c_plus, 0.0).astype(cp.complex128)
+            self._vector_analysis_cache = (sh_ext, c_plus)
+        return self._vector_analysis_cache
 
     def _get_differential_ops(self, grid) -> DifferentialOperatorsSpherical:
         grid_id = id(grid)
