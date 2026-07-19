@@ -211,6 +211,10 @@ class PrimitiveEquationsModel:
             coslat = cp.cos(cp.asarray(self.grid.point_latitudes))
         self._state_coslat = cp.maximum(cp.asarray(coslat, cp.float64), 1e-8)
 
+        # 2/3-rule truncation cut for analyzed nonlinear products (the
+        # SWE policy, applied once per combined quantity).
+        self._trunc_cut = (2 * self.l_max) // 3
+
     # ------------------------------------------------------------------
     # Per-level horizontal helpers (SWE conventions, level-looped)
     # ------------------------------------------------------------------
@@ -512,7 +516,7 @@ class PrimitiveEquationsModel:
             self.sigma, temperature, phi_surface, self.r_dry)
         wp = omega_over_p(self.sigma, g_full, v_grad_lnps)
 
-        return {
+        fields = {
             "u": u,
             "v": v,
             "zeta": cp.stack(zetas),
@@ -536,6 +540,55 @@ class PrimitiveEquationsModel:
                                                temperature),
             "coslat": coslat,
         }
+        return fields
+
+    def _truncate(self, coeffs: cp.ndarray) -> cp.ndarray:
+        """2/3-rule spectral truncation of an analyzed product (in place)."""
+        cut = self._trunc_cut
+        coeffs[cut + 1:, :] = 0.0
+        coeffs[:, cut + 1:] = 0.0
+        return coeffs
+
+    def _thermo_mass_tendencies(self, coeffs: cp.ndarray, fields: dict
+                                ) -> tuple[cp.ndarray, cp.ndarray]:
+        """Spectral thermodynamic and surface-pressure tendencies.
+
+        Thermodynamic equation, per level on the product grid (design doc
+        Section 1; fully explicit, full T — no T_ref split):
+
+            dT/dt = -V . grad(T) - V_adv(T) + kappa T (omega/p)
+
+        All three terms use the mutually consistent product-grid fields of
+        ``fields`` (one reconstruction); their sum is analyzed ONCE per
+        level and truncated ONCE (2/3 rule). Surface pressure:
+
+            d(ln p_s)/dt = -sum_k G_k Dsigma_k
+
+        analyzed once, truncated once. NEITHER monopole is zeroed: the
+        global-mean temperature evolves through the conversion term and
+        the global-mean ln p_s through the mass divergence (its drift is
+        the monitored diagnostic, design doc Section 9).
+
+        Returns ``(t_dot_lm, lnps_dot_lm)`` with shapes
+        ``(nlev, l_max+1, l_max+1)`` and ``(l_max+1, l_max+1)``.
+        """
+        K = self.nlev
+        temp_c = coeffs[2 * K:3 * K]
+        sh_p = self._ps.sh
+        coslat = fields["coslat"]
+
+        t_dots = []
+        for k in range(K):
+            t_lam, t_snt = self._deriv_fields(sh_p, temp_c[k])
+            adv = (fields["u"][k] * t_lam
+                   - fields["v"][k] * t_snt) / coslat
+            t_dot_g = (-adv - fields["sigma_dot_dT"][k]
+                       + self.kappa * fields["temperature"][k]
+                       * fields["omega_over_p"][k])
+            t_dots.append(self._truncate(sh_p.transform(t_dot_g)))
+
+        lnps_dot = self._truncate(sh_p.transform(fields["dlnps_dt"]))
+        return cp.stack(t_dots), lnps_dot
 
     # ------------------------------------------------------------------
     # Characteristic speed (design doc Section 10)

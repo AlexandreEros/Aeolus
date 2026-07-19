@@ -617,6 +617,169 @@ def test_weak_form_geodesic_measured_envelope(geodesic_planet):
     assert err_w <= err_r * 1.5
 
 
+# ---------------------------------------------------------------------------
+# Phases 3 + 4 — thermodynamic and surface-pressure tendencies
+# ---------------------------------------------------------------------------
+
+def _thermo_mass(model, state):
+    fields = model._tendency_product_fields(state.coeffs)
+    t_dot, lnps_dot = model._thermo_mass_tendencies(state.coeffs, fields)
+    return fields, t_dot, lnps_dot
+
+
+def test_thermo_and_lnps_tendencies_zero_at_isothermal_rest(latlon_planet):
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _rest_state(model)
+    _, t_dot, lnps_dot = _thermo_mass(model, state)
+    assert float(cp.abs(t_dot).max()) == 0.0
+    assert float(cp.abs(lnps_dot).max()) == 0.0
+
+
+def test_thermo_and_lnps_tendencies_zero_for_structured_T_at_rest(
+        latlon_planet):
+    """Zero flow + structured T: no advection, no conversion (omega/p = 0
+    bitwise), no mass flux — the thermodynamic and ln p_s tendencies are
+    exactly zero. (The T structure's pressure-gradient response lives in
+    the delta tendency, not here.)"""
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _rest_state(model)
+    for k in range(model.nlev):
+        state.temperature[k, 0, 0] = (T0 - 8.0 * k) * SQRT4PI
+        state.temperature[k, 3, 2] = 2.5 + 0.5 * k
+    _, t_dot, lnps_dot = _thermo_mass(model, state)
+    assert float(cp.abs(t_dot).max()) == 0.0
+    assert float(cp.abs(lnps_dot).max()) == 0.0
+
+
+def test_uniform_temperature_feels_only_conversion(latlon_planet):
+    """Uniform T in genuine flow: horizontal and vertical temperature
+    advection are bitwise zero, so the assembled T tendency equals the
+    analyzed conversion term alone — bitwise, not approximately."""
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _band_limited_state(model, seed=23)
+    state.temperature[:] = 0.0
+    state.temperature[:, 0, 0] = T0 * SQRT4PI     # uniform T everywhere
+    fields, t_dot, lnps_dot = _thermo_mass(model, state)
+
+    assert float(cp.abs(fields["sigma_dot_dT"]).max()) == 0.0
+    sh_p = model._ps.sh
+    for k in range(model.nlev):
+        conv_only = model._truncate(sh_p.transform(
+            model.kappa * fields["temperature"][k]
+            * fields["omega_over_p"][k]))
+        assert float(cp.abs(t_dot[k] - conv_only).max()) == 0.0
+    # Conversion is genuinely nonzero here (the test is not vacuous).
+    assert float(cp.abs(t_dot).max()) > 0.0
+
+
+def test_energy_exchange_identity_from_tendency_path_fields(latlon_planet):
+    """The Simmons–Burridge exchange identity, both sides INDEPENDENTLY
+    assembled in the test from the tendency-path product fields (no calls
+    into column_energy_conversion / column_pressure_work): conversion
+    equals column-local pressure work to round-off on the product grid."""
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _band_limited_state(model, seed=29)
+    fields, _, _ = _thermo_mass(model, state)
+
+    conv = None
+    work = None
+    for k in range(model.nlev):
+        dsig = model.sigma.thickness[k]
+        c_term = dsig * model.r_dry * fields["temperature"][k] \
+            * fields["omega_over_p"][k]
+        w_term = dsig * (model.r_dry * fields["temperature"][k]
+                         * fields["v_grad_lnps"][k]
+                         - (fields["phi_full"][k] - fields["phi_surface"])
+                         * fields["g_full"][k])
+        conv = c_term if conv is None else conv + c_term
+        work = w_term if work is None else work + w_term
+    scale = max(float(cp.abs(conv).max()), float(cp.abs(work).max()))
+    assert scale > 0.0
+    assert float(cp.abs(conv - work).max()) < 1e-12 * scale
+
+
+def test_energy_exchange_identity_from_tendency_path_geodesic(
+        geodesic_planet):
+    import cupy as cp
+    model = _make_model(geodesic_planet)
+    state = _band_limited_state(model, seed=31)
+    fields, _, _ = _thermo_mass(model, state)
+    conv = None
+    work = None
+    for k in range(model.nlev):
+        dsig = model.sigma.thickness[k]
+        c_term = dsig * model.r_dry * fields["temperature"][k] \
+            * fields["omega_over_p"][k]
+        w_term = dsig * (model.r_dry * fields["temperature"][k]
+                         * fields["v_grad_lnps"][k]
+                         - (fields["phi_full"][k] - fields["phi_surface"])
+                         * fields["g_full"][k])
+        conv = c_term if conv is None else conv + c_term
+        work = w_term if work is None else work + w_term
+    scale = max(float(cp.abs(conv).max()), float(cp.abs(work).max()))
+    assert scale > 0.0
+    assert float(cp.abs(conv - work).max()) < 1e-12 * scale
+
+
+def test_lnps_tendency_matches_independent_product_reference(latlon_planet):
+    """Continuity consistency: the spectral ln p_s tendency equals the
+    analysis of a reference -sum G dsigma assembled in the test from the
+    reconstruction's primitive ingredients (u, v, lnps derivatives, delta
+    fields), analyzed once and truncated once."""
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _band_limited_state(model, seed=37)
+    fields, _, lnps_dot = _thermo_mass(model, state)
+
+    g_ref = None
+    dlnps_ref = None
+    for k in range(model.nlev):
+        adv = (fields["u"][k] * fields["lnps_lam"]
+               - fields["v"][k] * fields["lnps_snt"]) / fields["coslat"]
+        g_k = fields["delta"][k] + adv
+        term = -model.sigma.thickness[k] * g_k
+        dlnps_ref = term if dlnps_ref is None else dlnps_ref + term
+    ref_lm = model._truncate(model._ps.sh.transform(dlnps_ref))
+    scale = float(cp.abs(ref_lm).max())
+    assert scale > 0.0
+    assert float(cp.abs(lnps_dot - ref_lm).max()) < 1e-12 * scale
+
+
+def test_lnps_tendency_band_limited_matches_state_diagnostic(latlon_planet):
+    """Band-limited Gauss case: the product-path spectral tendency and the
+    analysis of the state-grid diagnostic dlnps_dt agree to round-off
+    (both quadratures are exact for this integrand)."""
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _band_limited_state(model, seed=41)
+    _, _, lnps_dot = _thermo_mass(model, state)
+    diag = model.continuity_diagnostics(state)
+    ref_lm = model._truncate(model.sh.transform(diag["dlnps_dt"]))
+    scale = float(cp.abs(ref_lm).max())
+    assert scale > 0.0
+    assert float(cp.abs(lnps_dot - ref_lm).max()) < 1e-11 * scale
+
+
+def test_thermo_lnps_monopoles_evolve_and_boundaries_stay_pinned(
+        latlon_planet):
+    """The T and ln p_s tendency monopoles are NOT zeroed (global-mean T
+    evolves through conversion; global-mean ln p_s through the mass
+    divergence), and the structural sigma_dot boundary zeros survive the
+    tendency-path evaluation."""
+    import cupy as cp
+    model = _make_model(latlon_planet)
+    state = _band_limited_state(model, seed=43)
+    fields, t_dot, lnps_dot = _thermo_mass(model, state)
+    assert float(cp.abs(lnps_dot[0, 0])) > 0.0
+    assert max(float(cp.abs(t_dot[k, 0, 0])) for k in range(model.nlev)) > 0.0
+    assert float(cp.abs(fields["sigma_dot"][0]).max()) == 0.0
+    assert float(cp.abs(fields["sigma_dot"][-1]).max()) == 0.0
+
+
 def test_product_fields_on_geodesic_are_finite_and_structural(geodesic_planet):
     """The same reconstruction runs on the geodesic backend: finite fields,
     structural sigma_dot zeros, round-off layer closure."""
