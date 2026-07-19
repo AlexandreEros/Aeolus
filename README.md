@@ -128,6 +128,22 @@ options — gravity, mean depth, rotation, radius, resolution, duration, and
 the snapshot schedule; the model and its verification are documented in
 [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md).
 
+The first runnable dry **primitive-equation** experiment (hydrostatic,
+sigma-coordinate, fixed-step RK4; no forcing, diffusion, or semi-implicit
+terms) is exposed the same way:
+
+```powershell
+aeolus run pe                                  # tiny thermal_wave demo
+aeolus run pe --scenario isothermal_rest       # verify the exact-rest property
+aeolus run pe --backend gauss-latlon --nlat 32 --nlon 64 --l-max 15
+```
+
+`aeolus run pe --help` lists the options — backend/resolution, `--levels` or
+explicit `--sigma-interfaces`, the dry gas constants, the initial-condition
+preset and its temperature/pressure/amplitude, the **fixed** `--dt-seconds`
+step, duration, and the snapshot schedule; the runner is documented in
+[docs/PRIMITIVE_EQUATIONS_RUNNER.md](docs/PRIMITIVE_EQUATIONS_RUNNER.md).
+
 ### Snapshots and plots
 
 Field-state storage and image generation are controlled independently:
@@ -211,6 +227,10 @@ and orientation/rotation-equivalence tests are in
 - [docs/MATHEMATICAL_MODEL.md](docs/MATHEMATICAL_MODEL.md) — equations and conventions.
 - [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md) — the rotating shallow-water
   core: prognostics, discretization, CFL, scenarios, verification status.
+- [docs/PRIMITIVE_EQUATIONS_DESIGN.md](docs/PRIMITIVE_EQUATIONS_DESIGN.md) and
+  [docs/PRIMITIVE_EQUATIONS_RUNNER.md](docs/PRIMITIVE_EQUATIONS_RUNNER.md) —
+  the dry hydrostatic primitive-equation core and its first runnable
+  fixed-step experiment (presets, capsule schema, diagnostics, results).
 - Deeper audit records: [docs/KNOWN_RISKS.md](docs/KNOWN_RISKS.md),
   [docs/VALIDATION_PLAN.md](docs/VALIDATION_PLAN.md),
   [docs/validation/](docs/validation/), and the current mermaid
