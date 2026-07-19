@@ -81,6 +81,11 @@ DEFAULT_MOUNTAIN_LAT_DEG = 30.0
 DEFAULT_MOUNTAIN_LON_DEG = 90.0
 DEFAULT_MOUNTAIN_WIDTH_DEG = 20.0
 
+#: Physical sanity cap shared with physics/topography.py. This module stays
+#: import-light so CLI validation and --help never import CuPy; keep the plain
+#: numeric constant synchronized with physics.topography.MAX_MOUNTAIN_HEIGHT_M.
+MAX_MOUNTAIN_HEIGHT_M = 1.0e5
+
 _MOUNTAIN_PARAM_FIELDS = ("mountain_height_m", "mountain_lat_deg",
                           "mountain_lon_deg", "mountain_width_deg")
 
@@ -177,8 +182,12 @@ class SWERunConfig:
                 raise ValueError(
                     f"topography='mountain' requires resolved parameter(s) "
                     f"{missing} (SWERunConfig.resolve applies the defaults)")
-            _require_finite_positive("mountain_height_m",
-                                     self.mountain_height_m)
+            height = _require_finite_positive("mountain_height_m",
+                                              self.mountain_height_m)
+            if height > MAX_MOUNTAIN_HEIGHT_M:
+                raise ValueError(
+                    f"mountain_height_m must be <= {MAX_MOUNTAIN_HEIGHT_M:g}, "
+                    f"got {height}")
             _require_finite_positive("mountain_width_deg",
                                      self.mountain_width_deg)
             if self.mountain_width_deg > 90.0:

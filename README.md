@@ -23,9 +23,10 @@ and the full 40-character configuration is in the tracked
 
 - A rotating-sphere **barotropic-vorticity solver** with RK4 and optional
   Laplacian viscosity, prognostic in relative vorticity.
-- A flat-bottom, inviscid **rotating shallow-water solver** prognostic in
-  vorticity, divergence, and perturbation geopotential, verified against the
-  linear gravity-wave dispersion relation and Williamson test case 2
+- An inviscid **rotating shallow-water solver** with optional fixed analytic
+  bottom topography, prognostic in vorticity, divergence, and perturbation
+  thickness geopotential, verified against the linear gravity-wave dispersion
+  relation, Williamson test case 2, and exact lake-at-rest balance over terrain
   (see [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md)).
 - GPU spherical-harmonic analysis/synthesis in `float64`/`complex128` using
   CuPy, custom CUDA basis kernels, and dense GPU matrix products.
@@ -39,10 +40,11 @@ and the full 40-character configuration is in the tracked
 ## What Aeolus is not
 
 Aeolus does **not** solve the primitive equations or any GCM / weather
-model. It has no vertical structure, topography entering the dynamics,
-forcing, moisture, or thermodynamics; the shallow-water core is flat-bottom
-and inviscid. Terrain generated elsewhere in the package is decorative and
-does not enter the dynamics. See
+model. It has no vertical structure, forcing, moisture, or thermodynamics.
+The shallow-water core is inviscid and supports only fixed analytic bottom
+topography (`flat` or one Gaussian mountain); the separate terrain generated
+by `Planet.generate` remains decorative, and no topography is coupled to the
+primitive-equation foundation. See
 [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
 ## Quick start
@@ -125,7 +127,8 @@ aeolus run swe --backend gauss-latlon --nlat 32 --nlon 64 --l-max 15
 
 `aeolus run swe --help` lists the (deliberately minimal) shallow-water
 options — gravity, mean depth, rotation, radius, resolution, duration, and
-the snapshot schedule; the model and its verification are documented in
+the snapshot schedule, plus optional fixed Gaussian-mountain topography; the
+model and its verification are documented in
 [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md).
 
 ### Snapshots and plots
@@ -193,7 +196,7 @@ discussion and provenance are in [docs/VALIDATION.md](docs/VALIDATION.md).*
 | RH4 geodesic, 5 days (res-4 state, res-5 fine product grid) | relative energy drift **−4.4555×10⁻⁴** |
 | RH4 Gauss lat–lon, matched timestep (`32 × 64`) | energy drift **−1.34×10⁻¹⁰** |
 | Transform round trip, `L=21` (geodesic vs Gauss) | relative L2 residual **1.04×10⁻²** vs **6.84×10⁻¹⁵** |
-| Test suite (Python 3.12.12, CuPy 13.4.0, MX110; GPU-guarded tests skipped without CUDA) | **310 passed** |
+| Test suite (Python 3.12.12, CuPy 13.4.0, MX110; GPU-guarded tests skipped without CUDA) | **465 passed** |
 
 The five-day geodesic energy number is locked by
 `test_prediction_p1_5day_energy_drift`. Full tables, conservation diagnostics,
@@ -218,8 +221,9 @@ and orientation/rotation-equivalence tests are in
 
 ## Current limitations
 
-- Single-layer dynamics only (BVE and flat-bottom shallow water): no
-  topography, forcing, or primitive-equation dynamics.
+- Single-layer dynamics only (BVE and shallow water with fixed analytic
+  topography): no time-dependent or data-driven terrain, forcing, or
+  primitive-equation topography coupling.
 - GPU/CuPy only: no production CPU fallback or CPU CI path.
 - The advective CFL ceiling is recomputed from every accepted state (genuine
   state-adaptive advective stepping), but explicit-viscosity (`ν∇²`) stability

@@ -653,8 +653,9 @@ def build_parser() -> argparse.ArgumentParser:
     swe_parser = solvers.add_parser(
         "swe", help="Rotating shallow-water equations.",
         description="Run the rotating shallow-water equations on a planet "
-                    "(flat bottom, inviscid; prognostics: vorticity, "
-                    "divergence, perturbation geopotential).",
+                    "(inviscid, with optional fixed bottom topography; "
+                    "prognostics: vorticity, divergence, perturbation "
+                    "thickness geopotential).",
         epilog=_SWE_EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     add_swe_arguments(swe_parser)

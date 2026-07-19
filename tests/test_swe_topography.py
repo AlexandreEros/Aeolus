@@ -113,6 +113,7 @@ def test_config_rejects_invalid_topography_settings():
         SWERunConfig.resolve({"topography": "flat",
                               "mountain_width_deg": 10.0})
     for bad in ({"mountain_height_m": -5.0}, {"mountain_height_m": math.nan},
+                {"mountain_height_m": 1e7},
                 {"mountain_width_deg": 0.0}, {"mountain_width_deg": 120.0},
                 {"mountain_lat_deg": 100.0}, {"mountain_lon_deg": 500.0}):
         with pytest.raises(ValueError):
