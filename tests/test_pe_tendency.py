@@ -1073,6 +1073,126 @@ def test_tendency_state_wrapper(latlon_planet):
     assert bool((out_state.coeffs == model.tendency(state.coeffs)).all())
 
 
+# ---------------------------------------------------------------------------
+# Stretch — linearized normal modes about isothermal rest (discrete K-level
+# vertical-structure matrix from the IMPLEMENTED operators)
+# ---------------------------------------------------------------------------
+
+def _probe_vertical_structure_matrices(model):
+    """Build the discrete vertical-structure pieces by PROBING the
+    implemented column operators with unit columns (never from continuous
+    formulas): H (Phi' = R_d H T'), M ((omega/p)' = M delta'), and
+    w (d ln p_s/dt = -w^T delta')."""
+    import numpy as np
+    from planetary_sandbox.physics.sigma_coordinate import (
+        column_mass_tendency, hydrostatic_geopotential, omega_over_p)
+    K = model.nlev
+    H = np.zeros((K, K))
+    M = np.zeros((K, K))
+    w = np.zeros(K)
+    for j in range(K):
+        e = np.zeros((K, 1))
+        e[j, 0] = 1.0
+        phi_full, _ = hydrostatic_geopotential(model.sigma, e, 0.0, 1.0)
+        H[:, j] = phi_full[:, 0]                      # r_dry = 1 -> pure H
+        M[:, j] = omega_over_p(model.sigma, e, e * 0.0)[:, 0]
+        w[j] = -float(column_mass_tendency(model.sigma, e)[0])
+    return H, M, w
+
+
+def _analytic_mode_frequencies(model, lap_eig):
+    """Frequencies of the K-level discrete system for one horizontal
+    eigenvalue lap_eig = -l(l+1)/R^2:
+
+        d(delta)/dt  = -lap_eig (R_d H T' + R_d T0 lnps')
+        d(T')/dt     = kappa T0 M delta
+        d(lnps')/dt  = -w^T delta
+
+    => d2(delta)/dt2 = lap_eig B delta,
+       B = R_d T0 (kappa H M - outer(1, w)); omega^2 = -lap_eig eig(B).
+    """
+    import numpy as np
+    H, M, w = _probe_vertical_structure_matrices(model)
+    K = model.nlev
+    B = model.r_dry * T0 * (model.kappa * (H @ M) - np.outer(np.ones(K), w))
+    eig = np.linalg.eigvals(B)
+    omega_sq = -lap_eig * eig
+    return np.sort(np.sqrt(np.abs(omega_sq.real)))
+
+
+def _fd_mode_frequencies(model, l, m, eps_scale=1e-4):
+    """Eigenfrequencies of the finite-difference linearization of the
+    ACTUAL nonlinear tendency about isothermal rest, restricted to the
+    (delta_k, T_k, lnps) block of one (l, m) harmonic."""
+    import numpy as np
+    import cupy as cp
+    K = model.nlev
+    rest = _rest_state(model).coeffs
+    rows = list(range(K, 2 * K)) + list(range(2 * K, 3 * K)) + [3 * K]
+    # Per-variable perturbation scales keep the FD well conditioned.
+    scales = [eps_scale * 1e-5] * K + [eps_scale * 10.0] * K + [eps_scale]
+    J = np.zeros((2 * K + 1, 2 * K + 1))
+    for j, (row_j, s_j) in enumerate(zip(rows, scales)):
+        pert = rest.copy()
+        pert[row_j, l, m] += s_j
+        dot = cp.asnumpy(model.tendency(pert))       # tendency(rest) == 0
+        for i, row_i in enumerate(rows):
+            J[i, j] = dot[row_i, l, m].real / s_j
+    freqs = np.linalg.eigvals(J)
+    gravity = np.sort(np.abs(freqs.imag))[1:]        # drop the zero mode
+    return gravity[::2]                              # +/- pairs -> K values
+
+
+def test_normal_modes_match_discrete_vertical_structure():
+    """The gravity/Lamb-mode frequencies of the finite-difference
+    linearization of the full nonlinear tendency about isothermal rest
+    match the analytic normal modes of the K-level DISCRETE system, with
+    the vertical-structure matrix probed from the same sigma metadata and
+    column operators the tendency uses. Non-rotating planet: the zeta
+    block decouples exactly, leaving pure gravity modes."""
+    import numpy as np
+    import cupy as cp
+    planet = _make_planet(day_hours=math.inf)
+    model = _make_model(planet, nlev=4)
+
+    for (l, m) in ((3, 2), (7, 0)):
+        lap_eig = float(-l * (l + 1) / model.R**2)
+        want = _analytic_mode_frequencies(model, lap_eig)
+        got = _fd_mode_frequencies(model, l, m)
+        assert got.shape == want.shape
+        # The tendency is LINEAR in each prognostic around exact rest
+        # (every neglected term is a product of two perturbations), so
+        # the finite difference is exact up to round-off — measured
+        # agreement is ~1e-15 relative, asserted at 1e-12.
+        rel = np.abs(got - want) / want
+        assert rel.max() < 1e-12, (l, m, got, want, rel)
+
+    # Physical sanity, reported not asserted tightly: the fastest mode is
+    # the discrete Lamb/external mode, near sqrt(gamma R T0) ~ 323 m/s.
+    lap_eig = float(-3 * 4 / model.R**2)
+    fastest = _analytic_mode_frequencies(model, lap_eig)[-1]
+    c_eff = fastest / math.sqrt(-lap_eig)
+    assert 250.0 < c_eff < 400.0
+
+
+def test_normal_mode_zeta_block_decouples_when_nonrotating():
+    """On the non-rotating planet, delta/T/lnps perturbations about rest
+    produce NO zeta tendency (the eta k x V term is second order without
+    f) — the decoupling assumption of the normal-mode test, verified."""
+    import cupy as cp
+    planet = _make_planet(day_hours=math.inf)
+    model = _make_model(planet, nlev=4)
+    state = _rest_state(model)
+    state.delta[1, 3, 2] += 1e-9
+    state.temperature[2, 3, 2] += 1e-3
+    state.ln_ps[3, 2] += 1e-4
+    out = model.tendency(state.coeffs)
+    zeta_rows = out[0:model.nlev]
+    scale = float(cp.abs(out).max())
+    assert scale > 0.0
+    assert float(cp.abs(zeta_rows).max()) <= 1e-12 * scale
+
+
 def test_product_fields_on_geodesic_are_finite_and_structural(geodesic_planet):
     """The same reconstruction runs on the geodesic backend: finite fields,
     structural sigma_dot zeros, round-off layer closure."""
