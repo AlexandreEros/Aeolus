@@ -17,8 +17,9 @@ import pytest
 from planetary_sandbox.physics.sigma_coordinate import (
     SigmaGrid, SigmaGridError, column_energy_conversion,
     column_mass_tendency, column_pressure_work, energy_exchange,
-    hydrostatic_geopotential, interface_sigma_dot, layer_mass_residual,
-    omega_over_p)
+    hydrostatic_geopotential, interface_mean, interface_sigma_dot,
+    layer_mass_residual, omega_over_p, vertical_advection,
+    vertical_flux_divergence, vertical_sbp)
 
 R_DRY = 287.04
 
@@ -321,6 +322,254 @@ def test_resting_column_exchanges_no_energy():
 
 
 # ---------------------------------------------------------------------------
+# Lorenz-grid vertical transport (Section 7a)
+# ---------------------------------------------------------------------------
+
+def _random_transport_inputs(grid, ncol, seed):
+    rng = np.random.default_rng(seed)
+    G = rng.standard_normal((grid.nlev, ncol)) * 1e-5
+    X = rng.standard_normal((grid.nlev, ncol))
+    Y = rng.standard_normal((grid.nlev, ncol))
+    return G, X, Y
+
+
+def test_interface_mean_values_and_shape():
+    grid = NONUNIFORM
+    X = np.arange(grid.nlev, dtype=np.float64)[:, None] * np.ones((1, 3))
+    xhat = interface_mean(grid, X)
+    assert xhat.shape == (grid.nlev - 1, 3)
+    for k in range(grid.nlev - 1):
+        np.testing.assert_array_equal(xhat[k], 0.5 * (X[k] + X[k + 1]))
+    # Linear-in-sigma field: exact at interior interfaces on a UNIFORM grid
+    # (the mean of full levels lands on the interface), second-order only
+    # on nonuniform grids.
+    uni = SigmaGrid.uniform(6)
+    lin = 2.0 - 3.0 * uni.full_levels_array()[:, None] * np.ones((1, 2))
+    lin_hat = interface_mean(uni, lin)
+    for k in range(uni.nlev - 1):
+        np.testing.assert_allclose(
+            lin_hat[k], 2.0 - 3.0 * uni.interfaces[k + 1], rtol=1e-15,
+            atol=1e-15)
+
+
+def test_vertical_advection_k2_hand_computed():
+    """K = 2: one interior interface; both levels assembled by hand."""
+    grid = SigmaGrid((0.0, 0.3, 1.0))       # Dsigma = (0.3, 0.7)
+    sdot = np.zeros((3, 2))
+    sdot[1] = np.array([1.5e-4, -2.0e-4])   # only the interior interface
+    X = np.array([[1.0, 2.0], [4.0, -1.0]])
+    out = vertical_advection(grid, sdot, X)
+    np.testing.assert_allclose(out[0], sdot[1] * (X[1] - X[0]) / (2 * 0.3),
+                               rtol=1e-15)
+    np.testing.assert_allclose(out[1], sdot[1] * (X[1] - X[0]) / (2 * 0.7),
+                               rtol=1e-15)
+    flux = vertical_flux_divergence(grid, sdot, X)
+    xhat = 0.5 * (X[0] + X[1])
+    np.testing.assert_allclose(flux[0], sdot[1] * xhat / 0.3, rtol=1e-15)
+    np.testing.assert_allclose(flux[1], -sdot[1] * xhat / 0.7, rtol=1e-15)
+
+
+def test_vertical_transport_k1_is_exactly_zero():
+    grid = SigmaGrid.uniform(1)
+    sdot = np.zeros((2, 4))
+    X = np.random.default_rng(3).standard_normal((1, 4))
+    assert np.all(vertical_advection(grid, sdot, X) == 0.0)
+    assert np.all(vertical_flux_divergence(grid, sdot, X) == 0.0)
+    assert interface_mean(grid, X).shape == (0, 4)
+    out = vertical_sbp(grid, np.full((1, 4), 2e-6), X, X)
+    assert np.all(out["lhs"] == 0.0)
+    assert np.all(out["rhs"] == 0.0)   # G + dlnps/dt == 0 bitwise for K = 1
+
+
+def test_boundary_sigma_dot_rows_are_never_read():
+    """Poisoned boundary rows must not leak into any transport output."""
+    grid = NONUNIFORM
+    G, X, _ = _random_transport_inputs(grid, 5, seed=51)
+    sdot = interface_sigma_dot(grid, G)
+    poisoned = sdot.copy()
+    poisoned[0] = np.nan
+    poisoned[-1] = np.inf
+    np.testing.assert_array_equal(vertical_advection(grid, poisoned, X),
+                                  vertical_advection(grid, sdot, X))
+    np.testing.assert_array_equal(
+        vertical_flux_divergence(grid, poisoned, X),
+        vertical_flux_divergence(grid, sdot, X))
+
+
+def test_constant_field_advection_is_bitwise_zero():
+    grid = NONUNIFORM
+    G, _, _ = _random_transport_inputs(grid, 20, seed=53)
+    sdot = interface_sigma_dot(grid, G)
+    const = np.full((grid.nlev, 20), 7.25)
+    assert np.all(vertical_advection(grid, sdot, const) == 0.0)
+
+
+def test_constant_field_flux_form_reduces_to_continuity():
+    """Identity (C): V_flux(c)_k == -c (G_k + dlnps_dt), with the right
+    side assembled independently from raw G arithmetic (no transport or
+    continuity-operator code)."""
+    grid = NONUNIFORM
+    G, _, _ = _random_transport_inputs(grid, 20, seed=59)
+    sdot = interface_sigma_dot(grid, G)
+    c = -3.5
+    const = np.full((grid.nlev, 20), c)
+    flux = vertical_flux_divergence(grid, sdot, const)
+    dsig = grid.thickness_array()[:, None]
+    dlnps_manual = -(dsig * G).sum(axis=0)       # raw arithmetic reference
+    expected = -c * (G + dlnps_manual[None, :])
+    np.testing.assert_allclose(flux, expected, rtol=0,
+                               atol=1e-15 * np.abs(expected).max())
+
+
+def test_linear_profile_uniform_grid_closed_form():
+    """X = a + b*sigma on a uniform grid: V_adv_k = b * mean of the two
+    adjacent interface sigma-dots (continuous form sigma_dot * b sampled
+    by the centered stencil) — an analytic reference independent of the
+    operator code."""
+    grid = SigmaGrid.uniform(8)
+    G, _, _ = _random_transport_inputs(grid, 6, seed=61)
+    sdot = interface_sigma_dot(grid, G)
+    a, b = 1.7, -4.2
+    X = a + b * grid.full_levels_array()[:, None] * np.ones((1, 6))
+    out = vertical_advection(grid, sdot, X)
+    for k in range(grid.nlev):
+        expected = b * 0.5 * (sdot[k] + sdot[k + 1])  # boundary rows = 0
+        np.testing.assert_allclose(out[k], expected, rtol=1e-12,
+                                   atol=1e-20)
+
+
+def test_flux_form_column_sum_is_conserved():
+    """Identity (B): thickness-weighted column sum of V_flux ~ 0."""
+    grid = NONUNIFORM
+    G, X, _ = _random_transport_inputs(grid, 40, seed=67)
+    sdot = interface_sigma_dot(grid, G)
+    flux = vertical_flux_divergence(grid, sdot, X)
+    total = (grid.thickness_array()[:, None] * flux).sum(axis=0)
+    scale = np.abs(grid.thickness_array()[:, None] * flux).max()
+    assert np.abs(total).max() < 1e-14 * scale
+
+
+def test_flux_advective_compatibility_identity():
+    """Identity (A), per level, assembled entirely in the test."""
+    grid = NONUNIFORM
+    G, X, _ = _random_transport_inputs(grid, 15, seed=71)
+    sdot = interface_sigma_dot(grid, G)
+    adv = vertical_advection(grid, sdot, X)
+    flux = vertical_flux_divergence(grid, sdot, X)
+    dsig = grid.thickness_array()[:, None]
+    reference = adv + X * (sdot[1:] - sdot[:-1]) / dsig
+    scale = np.abs(flux).max()
+    np.testing.assert_allclose(flux, reference, rtol=0, atol=1e-13 * scale)
+
+
+def test_sbp_identity_with_independent_reference():
+    """(SBP) with BOTH sides assembled in the test from raw arithmetic:
+    lhs from module V_adv but manual weighting/summation; rhs entirely
+    from G (no continuity-operator calls)."""
+    grid = NONUNIFORM
+    G, X, Y = _random_transport_inputs(grid, 30, seed=73)
+    sdot = interface_sigma_dot(grid, G)
+    adv_y = vertical_advection(grid, sdot, Y)
+    adv_x = vertical_advection(grid, sdot, X)
+    dsig = grid.thickness_array()[:, None]
+    lhs = (dsig * (X * adv_y + Y * adv_x)).sum(axis=0)
+    dlnps_manual = -(dsig * G).sum(axis=0)
+    rhs = (dsig * X * Y * (G + dlnps_manual[None, :])).sum(axis=0)
+    scale = np.abs(dsig * X * adv_y).sum(axis=0).max()
+    np.testing.assert_allclose(lhs, rhs, rtol=0, atol=1e-13 * scale)
+
+    # The module diagnostic must agree with the manual assembly.
+    out = vertical_sbp(grid, G, X, Y)
+    np.testing.assert_allclose(out["lhs"], lhs, rtol=1e-12,
+                               atol=1e-15 * scale)
+    assert np.abs(out["residual"]).max() < 1e-13 * scale
+
+
+def test_sbp_diagonal_is_variance_exchange():
+    """2<X, V_adv(X)> == sum Dsigma X^2 (G + dlnps): the KE/variance
+    exchange relation (diagonal of SBP)."""
+    grid = NONUNIFORM
+    G, X, _ = _random_transport_inputs(grid, 25, seed=79)
+    out = vertical_sbp(grid, G, X, X)
+    sdot = interface_sigma_dot(grid, G)
+    adv = vertical_advection(grid, sdot, X)
+    dsig = grid.thickness_array()[:, None]
+    manual_lhs = 2.0 * (dsig * X * adv).sum(axis=0)
+    np.testing.assert_allclose(out["lhs"], manual_lhs, rtol=1e-12,
+                               atol=1e-15 * np.abs(manual_lhs).max()
+                               if np.abs(manual_lhs).max() > 0 else 1e-30)
+    scale = max(np.abs(out["lhs"]).max(), np.abs(out["rhs"]).max())
+    assert np.abs(out["residual"]).max() < 1e-13 * scale
+
+
+def test_decentered_weights_break_sbp():
+    """Deliberate inconsistency: 0.55/0.45 de-centered advection weights
+    must visibly violate (SBP) — the identity is a property of the exact
+    centered stencil, not of any plausible-looking operator."""
+    grid = NONUNIFORM
+    G, X, Y = _random_transport_inputs(grid, 30, seed=83)
+    sdot = interface_sigma_dot(grid, G)
+    K = grid.nlev
+    dsig = grid.thickness_array()[:, None]
+
+    bad = np.zeros_like(X)
+    for k in range(K):
+        acc = np.zeros_like(X[0])
+        if k < K - 1:
+            acc = acc + 1.1 * sdot[k + 1] * (X[k + 1] - X[k])  # 0.55 weight
+        if k > 0:
+            acc = acc + 0.9 * sdot[k] * (X[k] - X[k - 1])      # 0.45 weight
+        bad[k] = acc / (2.0 * grid.thickness[k])
+    bad_y = np.zeros_like(Y)
+    for k in range(K):
+        acc = np.zeros_like(Y[0])
+        if k < K - 1:
+            acc = acc + 1.1 * sdot[k + 1] * (Y[k + 1] - Y[k])
+        if k > 0:
+            acc = acc + 0.9 * sdot[k] * (Y[k] - Y[k - 1])
+        bad_y[k] = acc / (2.0 * grid.thickness[k])
+
+    lhs_bad = (dsig * (X * bad_y + Y * bad)).sum(axis=0)
+    dlnps = -(dsig * G).sum(axis=0)
+    rhs = (dsig * X * Y * (G + dlnps[None, :])).sum(axis=0)
+    good = vertical_sbp(grid, G, X, Y)
+    scale = max(np.abs(good["lhs"]).max(), np.abs(good["rhs"]).max())
+    assert np.abs(lhs_bad - rhs).max() > 1e-3 * scale
+
+
+def test_vertical_transport_rejects_wrong_shapes():
+    grid = SigmaGrid.uniform(4)
+    sdot = np.zeros((5, 2))
+    with pytest.raises(ValueError):
+        vertical_advection(grid, sdot, np.ones((3, 2)))
+    with pytest.raises(ValueError):
+        vertical_advection(grid, np.zeros((4, 2)), np.ones((4, 2)))
+    with pytest.raises(ValueError):
+        vertical_flux_divergence(grid, np.zeros((6, 2)), np.ones((4, 2)))
+    with pytest.raises(ValueError):
+        interface_mean(grid, np.ones((5, 2)))
+
+
+def test_vertical_transport_preserves_float64_and_trailing_dims():
+    grid = NONUNIFORM
+    rng = np.random.default_rng(89)
+    G = rng.standard_normal((grid.nlev, 2, 3, 4)) * 1e-5
+    X = rng.standard_normal((grid.nlev, 2, 3, 4))
+    sdot = interface_sigma_dot(grid, G)
+    adv = vertical_advection(grid, sdot, X)
+    flux = vertical_flux_divergence(grid, sdot, X)
+    assert adv.shape == X.shape and flux.shape == X.shape
+    assert adv.dtype == np.float64 and flux.dtype == np.float64
+    out = vertical_sbp(grid, G, X, X)
+    assert out["residual"].shape == (2, 3, 4)
+    assert out["residual"].dtype == np.float64
+    # Column independence: one column recomputed alone matches.
+    adv1 = vertical_advection(
+        grid, interface_sigma_dot(grid, G[:, 1, 2, 3]), X[:, 1, 2, 3])
+    np.testing.assert_allclose(adv[:, 1, 2, 3], adv1, rtol=1e-15)
+
+
+# ---------------------------------------------------------------------------
 # Backend-independent array semantics (CuPy parity; CUDA-gated)
 # ---------------------------------------------------------------------------
 
@@ -373,6 +622,26 @@ def test_column_operators_are_backend_independent():
     wp_cp = omega_over_p(grid, G_cp, A_cp)
     assert isinstance(wp_cp, cp.ndarray)
     np.testing.assert_allclose(cp.asnumpy(wp_cp), wp_np, rtol=1e-14)
+    # Vertical-transport operators: same parity contract.
+    X_np = rng.standard_normal(G_np.shape)
+    X_cp = cp.asarray(X_np)
+    sdot_np = interface_sigma_dot(grid, G_np)
+    sdot_cp = interface_sigma_dot(grid, G_cp)
+    for op in (vertical_advection, vertical_flux_divergence):
+        o_np = op(grid, sdot_np, X_np)
+        o_cp = op(grid, sdot_cp, X_cp)
+        assert isinstance(o_cp, cp.ndarray), op.__name__
+        np.testing.assert_allclose(cp.asnumpy(o_cp), o_np, rtol=1e-13,
+                                   atol=1e-16 * np.abs(o_np).max())
+    sbp_np = vertical_sbp(grid, G_np, X_np, X_np)
+    sbp_cp = vertical_sbp(grid, G_cp, X_cp, X_cp)
+    sbp_scale = float(np.abs(sbp_np["lhs"]).max())
+    assert isinstance(sbp_cp["residual"], cp.ndarray)
+    np.testing.assert_allclose(cp.asnumpy(sbp_cp["lhs"]), sbp_np["lhs"],
+                               rtol=1e-12, atol=1e-15 * sbp_scale)
+    # The identity must close on the GPU independently of the CPU result.
+    assert float(cp.abs(sbp_cp["residual"]).max()) < 1e-13 * sbp_scale
+
     ex_np = energy_exchange(grid, T_np, phis_np, G_np, A_np, R_DRY)
     ex_cp = energy_exchange(grid, T_cp, phis_cp, G_cp, A_cp, R_DRY)
     scale = float(np.abs(ex_np["conversion"]).max())

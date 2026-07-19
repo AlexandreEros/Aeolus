@@ -249,6 +249,124 @@ def interface_sigma_dot(grid: SigmaGrid, g_full):
 
 
 # ---------------------------------------------------------------------------
+# Lorenz-grid vertical transport (design doc Section 7a)
+# ---------------------------------------------------------------------------
+
+def _require_interface_stack(grid: SigmaGrid, arr, name: str):
+    """Check that ``arr`` has the interface axis first (nlev+1 rows)."""
+    if getattr(arr, "ndim", 0) < 1 or arr.shape[0] != grid.nlev + 1:
+        raise ValueError(
+            f"{name} must have shape (nlev+1={grid.nlev + 1}, ...), got "
+            f"{getattr(arr, 'shape', None)}")
+    return arr
+
+
+def interface_mean(grid: SigmaGrid, x_full):
+    """Arithmetic-mean interface values Xhat_{k+1/2} = (X_k + X_{k+1}) / 2.
+
+    Returns the nlev-1 INTERIOR interfaces only (shape (nlev-1, ...)); the
+    boundary interfaces need no interpolated value because every transport
+    term multiplies them by the structurally zero boundary sigma_dot. The
+    1/2:1/2 weights are forced by the flux/advective compatibility identity
+    (design doc Section 7a, identity A) — they are exact for that identity
+    on ANY nonuniform grid, while as an interpolant the mean sits at
+    (sigma_k + sigma_{k+1})/2, which equals sigma_{k+1/2} only on uniform
+    grids (second-order otherwise).
+    """
+    X = _require_level_stack(grid, x_full, "x_full")
+    return 0.5 * (X[:-1] + X[1:])
+
+
+def vertical_advection(grid: SigmaGrid, sigma_dot, x_full):
+    """Centered advective transport (sigma_dot dX/dsigma)_k at full levels.
+
+        V_adv(X)_k = [ sigma_dot_{k+1/2} (X_{k+1} - X_k)
+                     + sigma_dot_{k-1/2} (X_k - X_{k-1}) ] / (2 Dsigma_k)
+
+    ``sigma_dot`` is interface-stacked (nlev+1, ...) as produced by
+    :func:`interface_sigma_dot`. The boundary rows are NEVER READ — the
+    k = 1 upper term and k = K lower term are structurally absent, so no
+    ghost levels exist and K = 1 returns exact zeros. Constant fields give
+    bitwise zero (identity C). Prognostic equations use ``-V_adv``.
+    """
+    X = _require_level_stack(grid, x_full, "x_full")
+    sd = _require_interface_stack(grid, sigma_dot, "sigma_dot")
+    K = grid.nlev
+    out = X * 0.0
+    for k in range(K):
+        acc = None
+        if k < K - 1:                      # interior interface below
+            acc = sd[k + 1] * (X[k + 1] - X[k])
+        if k > 0:                          # interior interface above
+            upper = sd[k] * (X[k] - X[k - 1])
+            acc = upper if acc is None else acc + upper
+        if acc is not None:
+            out[k] = acc / (2.0 * grid.thickness[k])
+    return out
+
+
+def vertical_flux_divergence(grid: SigmaGrid, sigma_dot, x_full):
+    """Flux-form transport (d(sigma_dot X)/dsigma)_k at full levels.
+
+        V_flux(X)_k = [ sigma_dot_{k+1/2} Xhat_{k+1/2}
+                      - sigma_dot_{k-1/2} Xhat_{k-1/2} ] / Dsigma_k
+
+    with the :func:`interface_mean` interface values. Boundary fluxes are
+    structurally absent (zero boundary sigma_dot is never read). Exact
+    properties (design doc Section 7a, tested): the thickness-weighted
+    column sum telescopes to zero (B); per level it equals V_adv plus
+    X_k times the layer mass convergence (A); a constant field reduces it
+    exactly to the discrete continuity equation (C).
+    """
+    X = _require_level_stack(grid, x_full, "x_full")
+    sd = _require_interface_stack(grid, sigma_dot, "sigma_dot")
+    K = grid.nlev
+    xhat = interface_mean(grid, X)         # interior interfaces, K-1 rows
+    out = X * 0.0
+    for k in range(K):
+        acc = None
+        if k < K - 1:
+            acc = sd[k + 1] * xhat[k]
+        if k > 0:
+            upper = sd[k] * xhat[k - 1]
+            acc = -upper if acc is None else acc - upper
+        if acc is not None:
+            out[k] = acc / grid.thickness[k]
+    return out
+
+
+def vertical_sbp(grid: SigmaGrid, g_full, x_full, y_full) -> dict:
+    """Both sides of the mass-weighted summation-by-parts identity (SBP).
+
+        <X, V_adv(Y)> + <Y, V_adv(X)>
+            = Sum_k Dsigma_k (X Y)_k (G_k + d ln p_s/dt)
+
+    with sigma_dot recomputed internally from ``g_full`` (the identity
+    holds only for the continuity-consistent sigma_dot of Section 6).
+    Returns ``lhs``, ``rhs``, and ``residual = lhs - rhs`` (round-off by
+    construction). The diagonal ``x_full is y_full`` is the kinetic-
+    energy / scalar-variance exchange relation. Any de-centering of the
+    advection weights or any inconsistent sigma_dot breaks this residual —
+    it is the guard on the operator pairing, exactly like the Section-7b
+    ``energy_exchange`` residual guards the alpha/beta pairing.
+    """
+    X = _require_level_stack(grid, x_full, "x_full")
+    Y = _require_level_stack(grid, y_full, "y_full")
+    sdot = interface_sigma_dot(grid, g_full)
+    adv_y = vertical_advection(grid, sdot, Y)
+    adv_x = vertical_advection(grid, sdot, X)
+    dlnps_dt = column_mass_tendency(grid, g_full)
+
+    lhs = grid.thickness[0] * (X[0] * adv_y[0] + Y[0] * adv_x[0])
+    rhs = grid.thickness[0] * (X[0] * Y[0]) * (g_full[0] + dlnps_dt)
+    for k in range(1, grid.nlev):
+        lhs = lhs + grid.thickness[k] * (X[k] * adv_y[k] + Y[k] * adv_x[k])
+        rhs = rhs + grid.thickness[k] * (X[k] * Y[k]) * (g_full[k]
+                                                         + dlnps_dt)
+    return {"lhs": lhs, "rhs": rhs, "residual": lhs - rhs}
+
+
+# ---------------------------------------------------------------------------
 # Simmons–Burridge energy-conversion term and exchange identity (Section 7b)
 # ---------------------------------------------------------------------------
 
