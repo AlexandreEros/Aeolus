@@ -101,8 +101,8 @@ def _extract_swe_scalar_fields(
             for i in range(times.size)]
     delta = [_synthesize(model, spectral_fields[1], i)
              for i in range(times.size)]
-    # phi is the perturbation relative to Phi0=gH; phi/g is the corresponding
-    # layer-thickness anomaly relative to H.
+    # phi is the thickness perturbation relative to Phi0=gH; phi/g is the
+    # corresponding layer-thickness anomaly relative to H.
     thickness = [_synthesize(model, spectral_fields[2], i) / model.gravity
                  for i in range(times.size)]
     return (
@@ -115,6 +115,38 @@ def _extract_swe_scalar_fields(
         _map_scalar_series(
             thickness, model,
             name="layer-thickness anomaly h' derived as Phi'/g", units="m",
+            times=times),
+    )
+
+
+def _extract_swe_topography_fields(
+        model, spectral_fields: tuple[SphericalHarmonicField, ...],
+        times: np.ndarray) -> tuple[ScalarGridField, ScalarGridField] | None:
+    """Free-surface anomaly and terrain elevation for a non-flat bottom.
+
+    Returns ``None`` for a flat bottom (the historical figures are rendered
+    unchanged). The free-surface anomaly is eta' = (phi + phi_s')/g in
+    metres (phi_s' the mean-removed surface geopotential); the terrain
+    panel is the band-limited surface elevation h_s in metres, constant in
+    time (replicated per frame so run-wide normalization is trivially
+    comparable across time).
+    """
+    if not getattr(model, "has_topography", False):
+        return None
+    phi_s_anom = _host(
+        model.sh.inv_transform(model.phi_s_anom_lm).real)
+    eta = [(_synthesize(model, spectral_fields[2], i) + phi_s_anom)
+           / model.gravity for i in range(times.size)]
+    elevation = _host(model.topography.elevation_on(model.sh))
+    terrain = [elevation for _ in range(times.size)]
+    return (
+        _map_scalar_series(
+            eta, model,
+            name="free-surface anomaly eta' = (Phi' + Phi_s')/g",
+            units="m", times=times),
+        _map_scalar_series(
+            terrain, model,
+            name="surface elevation h_s (band-limited)", units="m",
             times=times),
     )
 
@@ -162,28 +194,70 @@ _SWE_SPECTRAL_NORMALIZATION_GROUPS = (
     "swe-perturbation-geopotential",
 )
 
+#: Extra panels rendered only for a non-flat bottom. The free-surface
+#: anomaly is a signed dynamic field (symmetric run-wide normalization);
+#: the terrain panel is static shading in its own sequential colors so it
+#: can never be confused with — or recolor — the dynamic fields.
+_SWE_TOPO_TITLES = (
+    "Free-surface anomaly eta' = (Phi' + Phi_s')/g",
+    "Surface elevation h_s (band-limited, static)",
+)
+_SWE_TOPO_NORMALIZATION_GROUPS = (
+    "swe-free-surface-anomaly",
+    "swe-terrain-elevation",
+)
+
+
+def _topography_panels(topo_fields, *, row: int, time_index: int,
+                       title_suffix: str) -> list[PanelPlacement]:
+    eta_field, terrain_field = topo_fields
+    return [
+        PanelPlacement(ScalarMapSpec(
+            eta_field, _SWE_TOPO_TITLES[0] + title_suffix,
+            time_index=time_index,
+            normalization=NormalizationPolicy.symmetric(),
+            color_policy="signed",
+            normalization_group=_SWE_TOPO_NORMALIZATION_GROUPS[0]), row, 0),
+        PanelPlacement(ScalarMapSpec(
+            terrain_field, _SWE_TOPO_TITLES[1], time_index=time_index,
+            normalization=NormalizationPolicy.automatic(),
+            color_policy="viridis",
+            normalization_group=_SWE_TOPO_NORMALIZATION_GROUPS[1]), row, 1),
+    ]
+
 
 def _build_swe_scalar_figure(fields: tuple[ScalarGridField, ...], *,
                              time_index: int,
-                             title_suffix: str = "") -> FigureSpec:
-    panels = tuple(
+                             title_suffix: str = "",
+                             topo_fields=None) -> FigureSpec:
+    panels = [
         PanelPlacement(ScalarMapSpec(
             field, title + title_suffix, time_index=time_index,
             normalization=NormalizationPolicy.symmetric(),
             color_policy="signed", normalization_group=group), 0, column)
         for column, (field, title, group) in enumerate(zip(
             fields, _SWE_PHYSICAL_TITLES,
-            _SWE_PHYSICAL_NORMALIZATION_GROUPS)))
+            _SWE_PHYSICAL_NORMALIZATION_GROUPS))]
+    if topo_fields is None:
+        return FigureSpec(
+            panels=tuple(panels), rows=1, columns=3,
+            size_inches=(18.0, 6.0), dpi=200)
+    panels += _topography_panels(topo_fields, row=1, time_index=time_index,
+                                 title_suffix=title_suffix)
     return FigureSpec(
-        panels=panels, rows=1, columns=3,
-        size_inches=(18.0, 6.0), dpi=200)
+        panels=tuple(panels), rows=2, columns=3,
+        size_inches=(18.0, 12.0), dpi=200,
+        panel_groups=(
+            PanelGroupSpec("Prognostic state", 0, 0, column_span=3),
+            PanelGroupSpec("Topography & free surface", 1, 0,
+                           column_span=2)))
 
 
 def _build_swe_physical_figure(
         fields: tuple[ScalarGridField, ...], *, time_index: int,
         latitudes: np.ndarray, longitudes: np.ndarray,
         wind: tuple[np.ndarray, np.ndarray], radius: float,
-        title_suffix: str = "") -> FigureSpec:
+        title_suffix: str = "", topo_fields=None) -> FigureSpec:
     panels = [
         PanelPlacement(ScalarMapSpec(
             field, title + title_suffix, time_index=time_index,
@@ -196,13 +270,22 @@ def _build_swe_physical_figure(
         latitudes, longitudes, wind[0], wind[1], radius=radius,
         title="Velocity streamlines" + title_suffix,
         normalization_group="swe-speed"), 0, 3))
+    groups = [
+        PanelGroupSpec("Prognostic state", 0, 0, column_span=3),
+        PanelGroupSpec("Diagnostic fields", 0, 3, separator_before=True)]
+    rows = 1
+    size = (24.0, 6.0)
+    if topo_fields is not None:
+        panels += _topography_panels(
+            topo_fields, row=1, time_index=time_index,
+            title_suffix=title_suffix)
+        groups.append(PanelGroupSpec("Topography & free surface", 1, 0,
+                                     column_span=2))
+        rows = 2
+        size = (24.0, 12.0)
     return FigureSpec(
-        panels=tuple(panels), rows=1, columns=4,
-        size_inches=(24.0, 6.0), dpi=200,
-        panel_groups=(
-            PanelGroupSpec("Prognostic state", 0, 0, column_span=3),
-            PanelGroupSpec(
-                "Diagnostic fields", 0, 3, separator_before=True)))
+        panels=tuple(panels), rows=rows, columns=4,
+        size_inches=size, dpi=200, panel_groups=tuple(groups))
 
 
 def _build_swe_spectral_figure(
@@ -228,13 +311,16 @@ def _build_swe_physical_timeline(
         model, spectral_fields: tuple[SphericalHarmonicField, ...],
         times: np.ndarray, *, scenario: str) -> FigureTimeline:
     fields = _extract_swe_scalar_fields(model, spectral_fields, times)
+    topo_fields = _extract_swe_topography_fields(
+        model, spectral_fields, times)
     latitudes, longitudes, winds = _extract_swe_winds(
         model, spectral_fields)
     frames = tuple(
         FigureFrame(time_seconds, _build_swe_physical_figure(
             fields, time_index=index, latitudes=latitudes,
             longitudes=longitudes, wind=winds[index], radius=model.R,
-            title_suffix=f" @ t={time_seconds / 3600.0:.2f} h"))
+            title_suffix=f" @ t={time_seconds / 3600.0:.2f} h",
+            topo_fields=topo_fields))
         for index, time_seconds in enumerate(times))
     return FigureTimeline(frames, filename_prefix=scenario)
 
@@ -256,7 +342,13 @@ def build_swe_summary_spec(model, out_dir: pathlib.Path | str, *,
     spectral_fields, times = _load_swe_fields(out_dir)
     fields = _extract_swe_scalar_fields(model, spectral_fields, times)
     selected_fields = tuple(field.select_time(time_index) for field in fields)
-    return _build_swe_scalar_figure(selected_fields, time_index=0)
+    topo_fields = _extract_swe_topography_fields(
+        model, spectral_fields, times)
+    if topo_fields is not None:
+        topo_fields = tuple(
+            field.select_time(time_index) for field in topo_fields)
+    return _build_swe_scalar_figure(selected_fields, time_index=0,
+                                    topo_fields=topo_fields)
 
 
 def build_swe_snapshot_timeline(

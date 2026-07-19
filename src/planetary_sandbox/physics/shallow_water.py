@@ -1,23 +1,42 @@
 """Rotating shallow-water dynamical core on the sphere.
 
-Solves the flat-bottom, inviscid rotating shallow-water equations in
-vorticity-divergence (vector-invariant) form, with the prognostic variables
+Solves the inviscid rotating shallow-water equations (optionally over fixed
+bottom topography) in vorticity-divergence (vector-invariant) form, with the
+prognostic variables
 
-    zeta   relative vorticity          (s^-1)
-    delta  horizontal divergence       (s^-1)
-    phi    PERTURBATION geopotential   (m^2 s^-2)
+    zeta   relative vorticity                    (s^-1)
+    delta  horizontal divergence                 (s^-1)
+    phi    PERTURBATION thickness geopotential   (m^2 s^-2)
 
-where the total geopotential is ``Phi = Phi0 + phi`` with the constant
-resting geopotential ``Phi0 = g * H`` (g = gravity, H = mean fluid depth).
-The global mean of Phi lives entirely in Phi0: the perturbation monopole
-``phi_00`` is pinned to zero, exactly like the BVE pins circulation.
+where the layer-THICKNESS geopotential is ``Phi = g*h = Phi0 + phi`` with
+the constant mean-thickness geopotential ``Phi0 = g * H`` (g = gravity,
+H = global-mean fluid thickness). The global mean of Phi lives entirely in
+Phi0: the perturbation monopole ``phi_00`` is pinned to zero, exactly like
+the BVE pins circulation, so the global-mean thickness is exactly H at all
+times. Over a flat bottom the thickness geopotential and the free-surface
+geopotential coincide; with bottom topography they differ by the fixed
+surface geopotential ``phi_s = g * h_s`` (see ``physics/topography.py``):
+
+    free-surface geopotential = Phi0 + phi + phi_s
 
 Governing equations (Williamson et al. 1992; Hack & Jakob 1992), with
 ``eta = zeta + f``, ``f = 2*Omega*sin(lat)``, ``K = |u|^2 / 2``:
 
     d(zeta)/dt = -div(eta * u)
-    d(delta)/dt =  k . curl(eta * u) - laplacian(K + phi)
+    d(delta)/dt =  k . curl(eta * u) - laplacian(K + phi + phi_s)
     d(phi)/dt  = -Phi0 * delta - div(phi * u)
+
+Topography enters ONLY the divergence tendency: the pressure force is the
+gradient of the free-surface geopotential (curl-free, so the zeta equation
+is untouched), while continuity transports the fluid thickness (topography
+is not fluid mass). Because phi_s is fixed and band-limited at the model
+truncation, ``-laplacian(phi_s)`` is a precomputed constant spectral array:
+the flat-bottom code path is bit-for-bit unchanged, and the topographic
+term costs one device-array subtraction per tendency with no host-device
+traffic. The discrete lake-at-rest state (u = 0, phi = -phi_s', constant
+free surface) has exactly zero tendency because phi + phi_s is then purely
+l = 0, where the Laplacian eigenvalue is exactly zero and every tendency
+row is hard-zeroed.
 
 Velocity is reconstructed from the Helmholtz decomposition
 ``u = k x grad(psi) + grad(chi)`` with ``laplacian(psi) = zeta`` and
@@ -55,7 +74,12 @@ monopoles (circulation, integrated divergence, mean perturbation
 geopotential == layer mass anomaly) are conserved to round-off. The optional
 scale-selective ``nabla^4`` hyperdiffusion has eigenvalue
 ``-nu4 * (l(l+1)/a^2)^2``, which is exactly zero at l = 0, so it can never
-modify the conserved monopoles.
+modify the conserved monopoles. With non-flat topography the phi component
+of the hyperdiffusion damps the FREE-SURFACE anomaly ``phi + phi_s'``
+rather than the thickness perturbation alone (adding the fixed spectral
+term ``-nu4 * nabla^4 phi_s'``), so damping relaxes toward the resting
+(constant free-surface) state instead of eroding it; over a flat bottom
+the two definitions coincide bit-for-bit.
 """
 from __future__ import annotations
 
@@ -64,6 +88,7 @@ from dataclasses import dataclass
 
 import cupy as cp
 
+from planetary_sandbox.physics.topography import Topography
 from planetary_sandbox.planet import Planet
 
 #: Standard gravity used by the Williamson et al. (1992) test suite (m/s^2).
@@ -131,13 +156,24 @@ class ShallowWaterModel:
         Optional scale-selective ``-nu4 * nabla^4`` damping coefficient
         (m^4/s), >= 0, applied to all three prognostics. Its spectral
         eigenvalue is exactly zero at l = 0, so conserved monopoles are
-        untouched. Default 0 (the inviscid equations).
+        untouched. Default 0 (the inviscid equations). With non-flat
+        topography the phi component damps the free-surface anomaly
+        ``phi + phi_s'`` (module docstring), preserving the resting state.
+    topography : Topography, optional
+        Fixed bottom topography (``physics/topography.py``), band-limited
+        at the model truncation. ``None`` (default) and an explicitly flat
+        topography are bit-for-bit identical: the topographic term is only
+        ever formed when at least one elevation coefficient is nonzero.
+        The topography's spectral coefficients live on the GPU for the
+        model's lifetime; the per-step tendency adds one precomputed
+        device-array term and performs no host-device transfers.
     """
 
     def __init__(self, planet: Planet, *,
                  gravity: float = WILLIAMSON_GRAVITY,
                  mean_depth: float,
-                 hyperdiffusion_nu4: float = 0.0):
+                 hyperdiffusion_nu4: float = 0.0,
+                 topography: Topography | None = None):
         if not (math.isfinite(gravity) and gravity > 0):
             raise ValueError(f"gravity must be finite and > 0, got {gravity}")
         if not (math.isfinite(mean_depth) and mean_depth > 0):
@@ -185,6 +221,54 @@ class ShallowWaterModel:
         self._state_coslat = cp.maximum(cp.asarray(coslat, cp.float64), 1e-8)
 
         self._trunc_cut = (2 * self.l_max) // 3
+
+        # ------------------------------------------------------------------
+        # Fixed bottom topography (see module docstring). Everything the
+        # per-step tendency needs is precomputed here, once, on the device.
+        # ------------------------------------------------------------------
+        if topography is None:
+            topography = Topography.flat(self.l_max)
+        if topography.l_max != self.l_max:
+            raise ValueError(
+                f"topography truncation l_max={topography.l_max} does not "
+                f"match the model truncation l_max={self.l_max}")
+        self.topography = topography
+        self.has_topography = not topography.is_flat
+
+        n = self.l_max + 1
+        if self.has_topography:
+            # Surface geopotential phi_s = g*h_s and its mean-removed anomaly
+            # phi_s' (the resting state's thickness perturbation is -phi_s').
+            self.phi_s_lm = topography.surface_geopotential_lm(self.gravity)
+            self.phi_s_anom_lm = self.phi_s_lm.copy()
+            self.phi_s_anom_lm[0, 0] = 0.0
+            # Constant divergence-tendency contribution -laplacian(phi_s):
+            # exact diagonal spectral operation, formed once.
+            self._lap_phi_s = self.lap_eigs[:, None] * self.phi_s_lm
+            # Hyperdiffusion correction so the phi damping acts on the
+            # free-surface anomaly phi + phi_s' (zero when nu4 == 0).
+            self._nu4_lap2_phi_s = (
+                self.nu4 * (self.lap_eigs[:, None] ** 2) * self.phi_s_anom_lm
+                if self.nu4 > 0.0 else None)
+            # Surface elevation extrema (m) over every model sampling, for
+            # validation messages and run diagnostics.
+            samplings = [self.sh]
+            if self._ps.sh is not self.sh:
+                samplings.append(self._ps.sh)
+            lo, hi = math.inf, -math.inf
+            for sh in samplings:
+                elev = topography.elevation_on(sh)
+                lo = min(lo, float(elev.min()))
+                hi = max(hi, float(elev.max()))
+            self.surface_elevation_extrema = (lo, hi)
+            self._phi_s_state = self.sh.inv_transform(self.phi_s_lm).real
+        else:
+            self.phi_s_lm = cp.zeros((n, n), dtype=cp.complex128)
+            self.phi_s_anom_lm = cp.zeros((n, n), dtype=cp.complex128)
+            self._lap_phi_s = None
+            self._nu4_lap2_phi_s = None
+            self.surface_elevation_extrema = (0.0, 0.0)
+            self._phi_s_state = None
 
     # ------------------------------------------------------------------
     # Helmholtz decomposition / velocity reconstruction
@@ -239,6 +323,15 @@ class ShallowWaterModel:
         """Eastward/northward velocity (m/s) on the state sampling."""
         psi_lm, chi_lm = self.helmholtz(state)
         return self._wind_from(self.sh, self._state_coslat, psi_lm, chi_lm)
+
+    def surface_geopotential_on_state_grid(self) -> cp.ndarray | None:
+        """Fixed surface geopotential phi_s (m^2/s^2) on the state sampling.
+
+        Synthesized once at construction and cached on the device; ``None``
+        for a flat bottom (callers must not fabricate a zero field where the
+        flat code path deliberately performs no topographic arithmetic).
+        """
+        return self._phi_s_state
 
     # ------------------------------------------------------------------
     # Tendencies
@@ -301,12 +394,23 @@ class ShallowWaterModel:
 
         # Linear pressure/divergence terms are exact spectral operations.
         delta_dot = curl_c - self.lap_eigs[:, None] * (kinetic_c + phi_c)
+        if self._lap_phi_s is not None:
+            # Fixed bottom topography: the pressure force is the gradient of
+            # the FREE-SURFACE geopotential phi + phi_s, so the divergence
+            # tendency gains the constant exact term -laplacian(phi_s).
+            delta_dot = delta_dot - self._lap_phi_s
 
         out = cp.stack([zeta_dot, delta_dot, phi_dot])
 
         if self.nu4 > 0.0:
             # -nu4 * nabla^4: eigenvalue -nu4*(l(l+1)/R^2)^2, exactly 0 at l=0.
             out -= self.nu4 * (self.lap_eigs[None, :, None] ** 2) * coeffs
+            if self._nu4_lap2_phi_s is not None:
+                # Shift the phi damping target from the thickness
+                # perturbation to the free-surface anomaly phi + phi_s'
+                # (module docstring): constant extra term, preserves the
+                # lake-at-rest state under damping.
+                out[PHI] -= self._nu4_lap2_phi_s
 
         # Pin the l=0 rows: conserves circulation, integrated divergence, and
         # the perturbation-geopotential monopole (i.e. total mass) exactly.
@@ -324,6 +428,11 @@ class ShallowWaterModel:
     def total_geopotential_extrema(self, state: ShallowWaterState
                                    ) -> tuple[float, float]:
         """(min, max) of Phi0 + phi over EVERY sampling the model evaluates on.
+
+        ``Phi0 + phi`` is the layer-THICKNESS geopotential g*h (module
+        docstring), so this envelope is the actual-fluid-thickness bound
+        used by positivity validation and the gravity-wave CFL speed — with
+        or without bottom topography (which is not fluid).
 
         The tendencies form nonlinear products on the (finer) product grid,
         so positivity on the coarser state grid alone is not sufficient: a
@@ -415,8 +524,16 @@ class ShallowWaterModel:
 
         phi_total_min, _ = self.total_geopotential_extrema(state)
         if not (phi_total_min > 0.0):
+            terrain = ""
+            if self.has_topography:
+                _, elev_max = self.surface_elevation_extrema
+                terrain = (
+                    f" (bottom topography {self.topography.describe()}, max "
+                    f"surface elevation {elev_max:g} m vs mean fluid "
+                    f"thickness {self.mean_depth:g} m — the terrain may "
+                    "protrude through the fluid layer)")
             raise ShallowWaterStateError(
-                f"total geopotential is not strictly positive{where}: "
+                f"fluid thickness is not strictly positive{where}: "
                 f"min(Phi0 + phi) = {phi_total_min:g} m^2/s^2 over the "
                 f"state/product samplings (Phi0 = {self.phi0:g}); the fluid "
-                "depth has collapsed")
+                f"depth has collapsed{terrain}")
