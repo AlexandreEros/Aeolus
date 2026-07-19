@@ -427,6 +427,117 @@ class PrimitiveEquationsModel:
         return cp.exp(self.sh.inv_transform(state.ln_ps).real)
 
     # ------------------------------------------------------------------
+    # Tendency-path product-grid reconstruction (tendency milestone,
+    # Phase 1 — docs/PRIMITIVE_EQUATIONS_TENDENCY_HANDOFF.md)
+    # ------------------------------------------------------------------
+
+    def _tendency_product_fields(self, coeffs: cp.ndarray) -> dict:
+        """Every primitive-equation field on the backend PRODUCT sampling.
+
+        This is the tendency path's own reconstruction: nothing here reuses
+        the state-grid diagnostic fields (`continuity_diagnostics` etc.),
+        because the nonlinear tendency terms must be formed where they are
+        analyzed — on the backend product grid — exactly like the SWE. The
+        state-grid diagnostics and this path must agree in the band-limited
+        exact Gauss case (tested), but are deliberately separate samplings.
+
+        Takes the raw ``(3K+1, l_max+1, l_max+1)`` coefficient stack (the
+        RK4-stage object). Every quantity participating in the continuity
+        and Simmons–Burridge exchange identities is derived from the SAME
+        product-grid ``g_full`` and ``sigma_dot`` so the discrete identities
+        close on this sampling to round-off.
+
+        Returns a dict of product-sampling fields, level-stacked where
+        applicable (shape ``(nlev, n_product)`` / ``(nlev+1, ...)`` for
+        ``sigma_dot``):
+
+        ``u, v``                 per-level wind (m/s)
+        ``zeta, delta``          per-level relative vorticity / divergence
+        ``temperature``          per-level full temperature (K)
+        ``lnps``                 ln(p_s) grid field
+        ``lnps_lam, lnps_snt``   (1/R) d(lnps)/dlambda, (1/R) sin(theta)
+                                 d(lnps)/dtheta derivative fields
+        ``grad_lnps_u/v``        eastward/northward components of
+                                 grad(ln p_s) (1/m)
+        ``v_grad_lnps``          A_k = V_k . grad(ln p_s)
+        ``g_full``               G_k = delta_k + A_k
+        ``dlnps_dt``             -sum_k G_k Dsigma_k
+        ``sigma_dot``            continuity-consistent interface velocity
+        ``phi_full``             Simmons–Burridge geopotential from
+                                 product-grid T and Phi_s
+        ``phi_surface``          Phi_s on the product sampling
+        ``omega_over_p``         energy-conserving (omega/p)_k from the
+                                 same G and A
+        ``sigma_dot_dU/dV/dT``   centered vertical advection of u, v, T
+                                 against the same sigma_dot
+        ``coslat``               product-sampling cos(lat) (clamped)
+        """
+        K = self.nlev
+        zeta_c = coeffs[0:K]
+        delta_c = coeffs[K:2 * K]
+        temp_c = coeffs[2 * K:3 * K]
+        lnps_c = coeffs[3 * K]
+
+        ps = self._ps
+        sh_p = ps.sh
+        coslat = ps.coslat
+
+        lnps_lam, lnps_snt = self._deriv_fields(sh_p, lnps_c)
+        us, vs, zetas, deltas, temps, advs, gs = [], [], [], [], [], [], []
+        for k in range(K):
+            psi_lm = self._inv_laplacian(zeta_c[k])
+            chi_lm = self._inv_laplacian(delta_c[k])
+            u, v = self._wind_from(sh_p, coslat, psi_lm, chi_lm)
+            zeta_g = sh_p.inv_transform(zeta_c[k]).real
+            delta_g = sh_p.inv_transform(delta_c[k]).real
+            t_g = sh_p.inv_transform(temp_c[k]).real
+            adv = (u * lnps_lam - v * lnps_snt) / coslat
+            us.append(u)
+            vs.append(v)
+            zetas.append(zeta_g)
+            deltas.append(delta_g)
+            temps.append(t_g)
+            advs.append(adv)
+            gs.append(delta_g + adv)
+        u = cp.stack(us)
+        v = cp.stack(vs)
+        temperature = cp.stack(temps)
+        v_grad_lnps = cp.stack(advs)
+        g_full = cp.stack(gs)
+
+        dlnps_dt = column_mass_tendency(self.sigma, g_full)
+        sigma_dot = interface_sigma_dot(self.sigma, g_full)
+        phi_surface = sh_p.inv_transform(self.phi_surface_lm).real
+        phi_full, _ = hydrostatic_geopotential(
+            self.sigma, temperature, phi_surface, self.r_dry)
+        wp = omega_over_p(self.sigma, g_full, v_grad_lnps)
+
+        return {
+            "u": u,
+            "v": v,
+            "zeta": cp.stack(zetas),
+            "delta": cp.stack(deltas),
+            "temperature": temperature,
+            "lnps": sh_p.inv_transform(lnps_c).real,
+            "lnps_lam": lnps_lam,
+            "lnps_snt": lnps_snt,
+            "grad_lnps_u": lnps_lam / coslat,
+            "grad_lnps_v": -lnps_snt / coslat,
+            "v_grad_lnps": v_grad_lnps,
+            "g_full": g_full,
+            "dlnps_dt": dlnps_dt,
+            "sigma_dot": sigma_dot,
+            "phi_full": phi_full,
+            "phi_surface": phi_surface,
+            "omega_over_p": wp,
+            "sigma_dot_dU": vertical_advection(self.sigma, sigma_dot, u),
+            "sigma_dot_dV": vertical_advection(self.sigma, sigma_dot, v),
+            "sigma_dot_dT": vertical_advection(self.sigma, sigma_dot,
+                                               temperature),
+            "coslat": coslat,
+        }
+
+    # ------------------------------------------------------------------
     # Characteristic speed (design doc Section 10)
     # ------------------------------------------------------------------
 
