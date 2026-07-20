@@ -7,11 +7,15 @@ first shallow-water milestone (see run/swe/config.SWE_SCENARIOS).
 
 Topography-aware construction
 -----------------------------
-Every scenario specifies a velocity field and a FREE-SURFACE geopotential
-anomaly ``phi_fs'`` (both monopole-free); the prognostic thickness
-perturbation is then
+The ``rest``, ``gravity_wave``, and ``williamson2`` scenarios specify a
+velocity field and a FREE-SURFACE geopotential anomaly ``phi_fs'`` (both
+monopole-free); the prognostic thickness perturbation is then
 
     phi = phi_fs' - phi_s'
+
+The ``williamson5`` scenario is the deliberate, benchmark-defining
+exception: it prescribes the THICKNESS field directly and never
+compensates for terrain (see ``_williamson5``).
 
 where ``phi_s'`` is the mean-removed surface geopotential of the model's
 fixed bottom topography (exactly zero for a flat bottom, so every flat-
@@ -35,6 +39,7 @@ import cupy as cp
 
 from planetary_sandbox.physics.shallow_water import (ShallowWaterModel,
                                                      ShallowWaterState)
+from .config import W5_U0_MS
 
 
 def _rest(model: ShallowWaterModel) -> ShallowWaterState:
@@ -101,10 +106,50 @@ def _williamson2(model: ShallowWaterModel) -> ShallowWaterState:
     return state
 
 
+def _williamson5(model: ShallowWaterModel) -> ShallowWaterState:
+    """Williamson et al. (1992) case 5: zonal flow over an isolated mountain.
+
+    The wind/THICKNESS pair is the Williamson-2 shape with u0 = 20 m/s:
+
+        u = u0*cos(lat),  v = 0,
+        h = h0 - (C/g) sin^2(lat),   C = a*Omega*u0 + u0^2/2
+
+    built exactly in spectral space: zeta = (2*u0/a) sin(lat) is the pure
+    (1,0) mode, delta = 0, and the mean-zero THICKNESS perturbation is
+    phi = C*(1/3 - sin^2 lat), a pure (2,0) mode. The canonical mean depth
+    carried by the model is H = h0 - C/(3g) (resolved by the config layer).
+
+    THE DEFINING W5 CONVENTION — deliberately different from the
+    terrain-aware ``williamson2`` scenario above: the thickness field is
+    NOT compensated by the surface-geopotential anomaly (no
+    ``phi -= phi_s'`` term). The mountain contributes separately through
+    the fixed phi_s, so the initial FREE SURFACE ``Phi0 + phi + phi_s`` is
+    raised over the cone; that raised surface is exactly the canonical
+    topographic forcing of test case 5. The state is therefore identical
+    whether or not the model carries terrain (a tested invariant), and a
+    regression test fails if this construction is ever changed to
+    ``phi = phi_balanced - phi_s'``.
+    """
+    a = model.R
+    omega = model.Omega
+    u0 = W5_U0_MS
+    C = a * omega * u0 + 0.5 * u0 * u0
+
+    state = ShallowWaterState.zeros(model.l_max)
+    # zeta = (2*u0/a) sin(lat): pure (1,0); sin(lat) = sqrt(4*pi/3) Y_1^0.
+    state.coeffs[0, 1, 0] = (2.0 * u0 / a) * math.sqrt(4.0 * math.pi / 3.0)
+    # phi = C*(1/3 - sin^2 lat) = -(2C/3) P2: pure (2,0) with
+    # P2 = sqrt(4*pi/5) Y_2^0. NO terrain compensation (docstring).
+    state.coeffs[2, 2, 0] = -(4.0 * C / 3.0) * math.sqrt(math.pi / 5.0)
+    model.validate_state(state, context="williamson5 initial condition")
+    return state
+
+
 SWE_INITIAL_CONDITIONS = {
     "rest": _rest,
     "gravity_wave": _gravity_wave,
     "williamson2": _williamson2,
+    "williamson5": _williamson5,
 }
 
 

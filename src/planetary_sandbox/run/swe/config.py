@@ -62,7 +62,43 @@ SWE_SCENARIOS = {
     "williamson2": "Williamson et al. (1992) case 2: steady nonlinear "
                    "zonal geostrophic flow (over a mountain: a smooth "
                    "mountain-flow experiment, not steady).",
+    "williamson5": "Williamson et al. (1992) case 5: zonal flow (u0=20 m/s) "
+                   "impinging on the canonical isolated conical mountain "
+                   "(hs0=2000 m, R0=pi/9 at 30N,-90E). Resolves the "
+                   "canonical planet/fluid constants automatically; "
+                   "explicit overrides are honored but labeled "
+                   "noncanonical.",
 }
+
+# ---------------------------------------------------------------------------
+# Williamson et al. (1992) test case 5: canonical constants.
+#
+# This module stays import-light, so the cone geometry constants are
+# duplicated from physics/topography.py (kept in sync by a test). The
+# fluid/planet constants are the published case-5 values; the derived mean
+# depth H = h0 - C/(3g) uses exactly the same float expression as the
+# initial-condition builder, so config, hash, and model agree bitwise.
+# ---------------------------------------------------------------------------
+W5_GRAVITY = 9.80616                      # m/s^2
+W5_RADIUS_M = 6.37122e6                   # m (perfect sphere)
+W5_OMEGA = 7.292e-5                       # s^-1
+#: Day length whose 2*pi/(day_hours*3600) round-trips to exactly W5_OMEGA
+#: (verified float identity, pinned by tests).
+W5_DAY_HOURS = 2.0 * math.pi / W5_OMEGA / 3600.0
+W5_U0_MS = 20.0                           # m/s
+W5_H0_M = 5960.0                          # m (reference fluid thickness)
+W5_C = W5_RADIUS_M * W5_OMEGA * W5_U0_MS + 0.5 * W5_U0_MS * W5_U0_MS
+W5_MEAN_DEPTH_M = W5_H0_M - W5_C / (3.0 * W5_GRAVITY)
+W5_CONE_HEIGHT_M = 2000.0                 # m
+W5_CONE_RADIUS_RAD = math.pi / 9.0        # rad (coordinate-plane distance)
+W5_CONE_LAT_DEG = 30.0
+W5_CONE_LON_DEG = -90.0
+#: The benchmark-owned topography token recorded in W5 run identities.
+W5_TOPOGRAPHY = "williamson5_cone"
+#: Spectral representation policy for the cone (hashed): the analytic cone
+#: is analyzed once on the backend's state sampling and kept at the full
+#: model truncation (no extra cut); see Topography.williamson5_cone.
+W5_PROJECTION_POLICY = "state-grid-analysis-full-truncation"
 
 #: Available bottom-topography presets (must match
 #: physics/topography.TOPOGRAPHY_PRESETS; duplicated here because that
@@ -164,11 +200,23 @@ class SWERunConfig:
                 f"unknown swe scenario {self.scenario!r}; choose from "
                 f"{', '.join(sorted(SWE_SCENARIOS))}")
 
-        if self.topography not in SWE_TOPOGRAPHIES:
+        if self.topography == W5_TOPOGRAPHY:
+            # Benchmark-owned terrain: only the williamson5 scenario may
+            # carry the canonical cone (resolve() wires the pairing).
+            if self.scenario != "williamson5":
+                raise ValueError(
+                    f"topography {W5_TOPOGRAPHY!r} is benchmark-owned and "
+                    "requires scenario='williamson5'")
+        elif self.topography not in SWE_TOPOGRAPHIES:
             raise ValueError(
                 f"unknown topography {self.topography!r}; choose from "
                 f"{', '.join(sorted(SWE_TOPOGRAPHIES))}")
-        if self.topography == "flat":
+        if self.scenario == "williamson5" and self.topography != W5_TOPOGRAPHY:
+            raise ValueError(
+                "scenario 'williamson5' owns its terrain (the canonical "
+                f"cone {W5_TOPOGRAPHY!r}); SWERunConfig.resolve wires it "
+                "automatically")
+        if self.topography != "mountain":
             given = [name for name in _MOUNTAIN_PARAM_FIELDS
                      if getattr(self, name) is not None]
             if given:
@@ -269,6 +317,25 @@ class SWERunConfig:
         if settings["grid"] == "gauss-latlon":  # user-facing alias
             settings["grid"] = "latlon"
 
+        # Williamson 5 resolves the canonical benchmark values automatically
+        # (policy: canonical-by-default). Explicitly supplied physical
+        # values are honored — and the run is then labeled noncanonical in
+        # provenance (w5_canonical) — but the terrain is benchmark-owned:
+        # pairing williamson5 with any user topography is rejected loudly.
+        if settings["scenario"] == "williamson5":
+            conflicts = [name for name in ("topography",
+                                           *_MOUNTAIN_PARAM_FIELDS)
+                         if explicit.get(name) is not None]
+            if conflicts:
+                raise ValueError(
+                    "scenario 'williamson5' owns its terrain (the canonical "
+                    f"conical mountain); remove {conflicts}")
+            settings["topography"] = W5_TOPOGRAPHY
+            if "day_hours" not in explicit:
+                settings["day_hours"] = W5_DAY_HOURS
+            if "mean_depth_m" not in explicit:
+                settings["mean_depth_m"] = W5_MEAN_DEPTH_M
+
         # Resolve the mountain parameters: defaults apply only when the
         # mountain preset is selected; supplying them with a flat bottom is
         # an error (caught by __post_init__, with an early clear message
@@ -354,6 +421,20 @@ class SWERunConfig:
 
     # ------------------------------------------------------------------
 
+    def w5_canonical(self) -> bool:
+        """True iff this is the exact canonical Williamson-5 configuration.
+
+        Canonicality is about the PHYSICAL configuration (planet radius,
+        rotation, gravity, mean fluid depth — the cone and u0 are fixed
+        constants of the scenario); duration, resolution, backend, and
+        snapshot schedule are numerics recorded separately.
+        """
+        return (self.scenario == "williamson5"
+                and self.day_hours == W5_DAY_HOURS
+                and self.radius_earth_units == 1.0
+                and self.gravity == W5_GRAVITY
+                and self.mean_depth_m == W5_MEAN_DEPTH_M)
+
     def snapshot_times_seconds(self) -> list[float]:
         t_end = self.duration_days * SECONDS_PER_DAY
         if self.snapshot_mode == "count":
@@ -397,12 +478,24 @@ class SWERunConfig:
             "snapshot_times": self.snapshot_times_seconds(),
             "plots": list(self.plots),
         }
-        if self.topography != "flat":
+        if self.topography == "mountain":
             config["topography"] = self.topography
             config["mountain_height_m"] = self.mountain_height_m
             config["mountain_lat_deg"] = self.mountain_lat_deg
             config["mountain_lon_deg"] = self.mountain_lon_deg
             config["mountain_width_deg"] = self.mountain_width_deg
+        elif self.topography == W5_TOPOGRAPHY:
+            # Every W5-defining choice participates in the scientific
+            # identity: the cone definition, u0, the projection policy, and
+            # the canonical-versus-derived label.
+            config["topography"] = W5_TOPOGRAPHY
+            config["w5_u0_ms"] = W5_U0_MS
+            config["w5_cone_height_m"] = W5_CONE_HEIGHT_M
+            config["w5_cone_radius_rad"] = W5_CONE_RADIUS_RAD
+            config["w5_cone_lat_deg"] = W5_CONE_LAT_DEG
+            config["w5_cone_lon_deg"] = W5_CONE_LON_DEG
+            config["w5_projection"] = W5_PROJECTION_POLICY
+            config["w5_canonical"] = self.w5_canonical()
         return config
 
     def summary_lines(self) -> list[str]:
@@ -433,6 +526,10 @@ class SWERunConfig:
                     f"lat {self.mountain_lat_deg:g} deg, "
                     f"lon {self.mountain_lon_deg:g} deg, "
                     f"width {self.mountain_width_deg:g} deg)")
+        elif self.topography == W5_TOPOGRAPHY:
+            topo = (f"Williamson-5 cone (hs0={W5_CONE_HEIGHT_M:g} m, "
+                    f"R0=pi/9 at lat {W5_CONE_LAT_DEG:g} deg, "
+                    f"lon {W5_CONE_LON_DEG:g} deg)")
         else:
             topo = "flat"
         lines += [
@@ -449,4 +546,19 @@ class SWERunConfig:
             f"  plots               {', '.join(self.plots) if self.plots else 'none'}",
             f"  output base         {out}",
         ]
+        if self.scenario == "williamson5":
+            # Effective reference depth h0 = H + C/(3g) with C from the
+            # RESOLVED planet (radius scaling, rotation), so a derived run
+            # reports the configuration it actually integrates.
+            a = self.radius_earth_units * W5_RADIUS_M
+            omega = (0.0 if self.day_hours == math.inf
+                     else 2.0 * math.pi / (self.day_hours * 3600.0))
+            c = a * omega * W5_U0_MS + 0.5 * W5_U0_MS * W5_U0_MS
+            h0_eff = self.mean_depth_m + c / (3.0 * self.gravity)
+            tag = ("canonical" if self.w5_canonical()
+                   else "NONCANONICAL (W5-derived: physical constants "
+                        "overridden)")
+            lines.append(
+                f"  Williamson 5        {tag}; u0={W5_U0_MS:g} m/s, "
+                f"effective h0={h0_eff:g} m, a={a:g} m")
         return lines

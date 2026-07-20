@@ -34,6 +34,47 @@ _GENERATED_RESULT_DIRS: tuple[str, ...] = (
 
 _SNAPSHOT_FRAME_RE = re.compile(r".+_t\d{13}\.\d{9}s\.png\Z")
 
+def _w5_planet_params(cfg: "SWERunConfig"):
+    """Exact canonical-planet parameters for the Williamson-5 scenario.
+
+    The Williamson (1992) suite prescribes a PERFECT SPHERE of radius
+    a = 6.37122e6 m rotating at Omega = 7.292e-5 s^-1. The ordinary
+    ``from_earth_like`` path shrinks the dynamical radius ~0.06% through
+    the oblateness model and uses the 6.371e6 m Earth radius — silently
+    noncanonical for this benchmark. For williamson5,
+    ``radius_earth_units`` therefore scales the CANONICAL radius on an
+    ideal sphere, and the canonical ``day_hours`` (resolved by the config)
+    reproduces Omega = 7.292e-5 exactly (2*pi/(day_hours*3600) round-trips
+    bitwise; pinned by tests).
+    """
+    from planetary_sandbox.planet import PlanetaryParameters
+    from planetary_sandbox.run.swe.config import W5_RADIUS_M
+
+    return PlanetaryParameters.ideal_sphere(
+        radius_m=cfg.radius_earth_units * W5_RADIUS_M,
+        sidereal_day_s=cfg.day_hours * 3600.0)
+
+
+def _manifest_notes(cfg: "SWERunConfig", topography=None) -> dict:
+    """Solver notes, extended with the W5 benchmark record when relevant.
+
+    Before the model exists (lifecycle pre-write) the note carries the
+    configured identity; once the terrain is constructed the note also
+    records the MEASURED cone projection residual.
+    """
+    notes = dict(SWE_MANIFEST_NOTES)
+    if cfg.scenario == "williamson5":
+        tag = ("canonical constants" if cfg.w5_canonical()
+               else "NONCANONICAL (W5-derived: physical constants "
+                    "overridden)")
+        note = ("Williamson et al. (1992) test case 5: zonal flow (u0=20 "
+                f"m/s) over the isolated conical mountain; {tag}")
+        if topography is not None:
+            note += f"; terrain {topography.describe()}"
+        notes["benchmark"] = note
+    return notes
+
+
 #: Manifest notes describing the shallow-water solver.
 SWE_MANIFEST_NOTES = {
     "equations": "rotating shallow-water equations (vorticity-divergence "
@@ -101,10 +142,15 @@ def _execute_solver(cfg: "SWERunConfig", run_dir, run_config: dict) -> None:
     from planetary_sandbox.run.swe.runner import run_swe
 
     out_dir = run_dir.path
-    planet = Planet.generate(
-        params=PlanetaryParameters.from_earth_like(
+    if cfg.scenario == "williamson5":
+        # Benchmark planets are exact ideal spheres (see _w5_planet_params).
+        params = _w5_planet_params(cfg)
+    else:
+        params = PlanetaryParameters.from_earth_like(
             day_hours=cfg.day_hours,
-            radius_earth_units=cfg.radius_earth_units),
+            radius_earth_units=cfg.radius_earth_units)
+    planet = Planet.generate(
+        params=params,
         grid_resolution=cfg.resolution,
         l_max=cfg.lmax,
         product_quadrature="fine",
@@ -122,6 +168,8 @@ def _execute_solver(cfg: "SWERunConfig", run_dir, run_config: dict) -> None:
             lat_deg=cfg.mountain_lat_deg,
             lon_deg=cfg.mountain_lon_deg,
             width_deg=cfg.mountain_width_deg)
+    elif cfg.topography == "williamson5_cone":
+        topography = Topography.williamson5_cone(planet)
     else:
         topography = None
     model = ShallowWaterModel(planet, gravity=cfg.gravity,
@@ -130,11 +178,13 @@ def _execute_solver(cfg: "SWERunConfig", run_dir, run_config: dict) -> None:
     state0 = make_swe_ic(cfg.scenario, model)
 
     # Rewrite manifest now that we know the backend/product-sampling
-    # provenance. Status stays 'running' until the runner returns.
+    # provenance (and, for W5, the measured terrain projection). Status
+    # stays 'running' until the runner returns.
     write_run_manifest(out_dir, run_config,
                        run_id=run_dir.run_id, experiment=cfg.experiment,
                        numerics=planet.so.backend.describe("fine"),
-                       status=RUN_STATUS_RUNNING, notes=SWE_MANIFEST_NOTES)
+                       status=RUN_STATUS_RUNNING,
+                       notes=_manifest_notes(cfg, topography))
 
     run_swe(model=model,
             state0=state0,
@@ -156,4 +206,4 @@ def execute_run(cfg: "SWERunConfig") -> int:
             c, run_dir, run_config),
         clean_artifacts=lambda out_dir: _clean_overwrite_artifacts(out_dir),
         resolve_base_dir=lambda out: _resolve_writable_base_dir(out),
-        notes=SWE_MANIFEST_NOTES)
+        notes=_manifest_notes(cfg))

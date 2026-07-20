@@ -239,21 +239,96 @@ recomputed from every accepted state, exactly as for the BVE.
 
 ## Initial conditions
 
-Every scenario specifies a velocity field and a **free-surface**
-geopotential anomaly `φ_fs'`; the prognostic thickness perturbation is
-`φ = φ_fs' − φ_s'`. For a flat bottom (`φ_s' = 0`) this reproduces the
-historical states bit-for-bit; over terrain each scenario is well-defined
-relative to the lake-at-rest state.
+The `rest`, `gravity_wave`, and `williamson2` scenarios specify a velocity
+field and a **free-surface** geopotential anomaly `φ_fs'`; the prognostic
+thickness perturbation is `φ = φ_fs' − φ_s'`. For a flat bottom
+(`φ_s' = 0`) this reproduces the historical states bit-for-bit; over
+terrain each of these scenarios is well-defined relative to the
+lake-at-rest state. `williamson5` is the deliberate exception: it
+prescribes the **thickness** field directly and never compensates for
+terrain (see its section below).
 
 | Scenario | Description |
 |---|---|
 | `rest` | Zero velocity, constant free surface. Flat bottom: `ζ = δ = φ = 0`; over terrain: `φ = −φ_s'` (the exact lake-at-rest state). All tendencies are exactly zero either way. |
 | `gravity_wave` | Small-amplitude `Y₄²` **free-surface** perturbation at rest; on a non-rotating flat-bottom planet it oscillates at `ω² = Φ₀ l(l+1)/a²`. |
 | `williamson2` | Williamson et al. (1992) case 2 (α = 0) wind/free-surface pair: `u = u₀ cos φ_lat`, `u₀ = 2πa/(12 days)`, `φ_fs' = C(1/3 − sin²φ_lat)`, `C = aΩu₀ + u₀²/2`. Over a flat bottom: the exact steady solution for any positive mean depth (canonical `g·h₀ = 2.94×10⁴ m²/s²` ↔ mean depth `(2.94×10⁴ − C/3)/g`). Over a mountain: the same wind and free surface launched above the terrain — a smooth mountain-flow experiment (NOT steady, and NOT Williamson case 5, whose mountain is conical and whose `u₀` is 20 m/s). |
+| `williamson5` | Williamson et al. (1992) case 5: the W2-shaped wind/**thickness** pair with `u₀ = 20 m/s`, `h₀ = 5960 m` over the canonical conical mountain (`hs0 = 2000 m`, `R0 = π/9`, center 30 N / −90 E). Owns its terrain; canonical constants resolved automatically. See the dedicated section below. |
 
 All scenarios are built spectrally (no grid round trip), so they are exactly
 monopole-free and band-limited, and each validates its state before
 returning (protruding terrain fails here, before integration).
+
+## Williamson test case 5 (`--scenario williamson5`)
+
+First-class implementation of Williamson et al. (1992) case 5: zonal flow
+impinging on the canonical isolated **conical** mountain. The scenario owns
+its terrain (pairing it with `--topography` is rejected) and resolves the
+canonical constants automatically:
+
+| Quantity | Canonical value |
+|---|---|
+| radius `a` | `6.37122e6 m` (exact, perfect sphere — `PlanetaryParameters.ideal_sphere`) |
+| rotation `Omega` | `7.292e-5 s^-1` (exact; `day_hours = 2*pi/Omega/3600`) |
+| gravity `g` | `9.80616 m/s^2` |
+| wind `u0` | `20 m/s` |
+| reference depth `h0` | `5960 m` |
+| mean depth `H = h0 - C/(3g)` | `5637.3529003537915 m`, `C = a*Omega*u0 + u0^2/2` |
+| cone | `hs0 = 2000 m`, `R0 = pi/9`, center `(30N, -90E)` |
+
+The initial state is the W2-shaped pair with `u0 = 20`:
+`zeta = (2u0/a) sin(lat)` (pure `(1,0)`), `delta = 0`,
+`phi = C(1/3 - sin^2 lat)` (pure `(2,0)`), built exactly in spectral space.
+**Defining convention:** `phi` is the *thickness* perturbation and is NOT
+compensated by the terrain (`phi = phi_fs' - phi_s'` is the `williamson2`
+scenario's construction, not W5). The initial free surface
+`Phi0 + phi + phi_s` is therefore raised over the mountain — that raised
+surface is the canonical topographic forcing, and at `t = 0` the entire
+tendency is the exact spectral term `-laplacian(phi_s)` in the divergence
+equation (a tested invariant, with an `hs0 = 0` null experiment).
+
+The cone uses the published **coordinate-plane** angular distance
+`r = min(R0, sqrt(dlambda^2 + dlat^2))` with wrapped longitude — not
+great-circle distance, and not a Gaussian. It is not band-limited: the
+constructor (`Topography.williamson5_cone`) analyzes the analytic cone once
+on the backend's state sampling at the full truncation and **records** the
+measured projection residual, elevation extrema, and peak undershoot in its
+provenance instead of demanding smoothness. Measured residuals: GL 0.0895
+(`l_max=15`) → 0.0249 (`l_max=42`) → 0.0121 (`l_max=63`); geodesic
+res4/`l_max=21` 0.0643. A benchmark-specific gate (0.25) rejects only
+qualitatively degraded terrain (e.g. geodesic res3/`l_max=10` at 0.328);
+the Gaussian preset's 0.2 gate is untouched. Because each backend analyzes
+with its own quadrature, the stored cone coefficients are backend-dependent
+at the ~1e-2 relative level (measured at `l_max=21`) — characterized in the
+tests, not hidden.
+
+Explicit `--mean-depth`, `--gravity`, `--day-hours`, `--radius-earth-units`
+overrides are honored but the run is then labeled `NONCANONICAL
+(W5-derived)` in the summary, manifest note, and the hashed
+`w5_canonical` config key. Every W5-defining choice (cone geometry, `u0`,
+projection policy, canonicality) is emitted additively into the config
+dict and scientific hash; flat/Gaussian/W2 identities are unchanged.
+
+Canonical 15-day benchmark (Gauss–Legendre primary path, day-0/5/10/15
+snapshots):
+
+```powershell
+aeolus run swe --scenario williamson5 --backend gauss-latlon `
+               --nlat 64 --nlon 128 --l-max 42 --days 15 --n-snapshots 4
+```
+
+The run is inviscid (no hidden damping; the SWE CLI exposes no
+hyperdiffusion). Validation layers: exact spectral setup tests, projection
+characterization, short-run conservation envelopes (measured: 6 h GL
+`l_max=21` energy drift `+7.1e-6`, dt-independent ⇒ truncation-limited;
+geodesic 3 h `+2.5e-5`), and the 15-day acceptance evidence in
+`tests/test_williamson5.py` / the run capsule. Potential enstrophy
+`Z = ∫ (zeta+f)^2/(2h) dA` is available as
+`run.swe.diagnostics.potential_enstrophy` (the correct variable-thickness
+invariant; deliberately not a CSV column so historical CSVs stay
+byte-identical). No trusted machine-readable external reference field is
+bundled: setup exactness and self-convergence are validated, an external
+numerical error norm remains future work.
 
 ## Minimal CLI example
 
