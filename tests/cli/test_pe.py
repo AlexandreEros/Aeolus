@@ -69,6 +69,26 @@ def test_no_plots_disables_image_products(stub_pe_execute_run):
     assert cfg.plots == ()
 
 
+def test_topography_mountain_selection(stub_pe_execute_run):
+    cfg = _run(["run", "pe", "--scenario", "orographic_isothermal_rest",
+                "--topography", "mountain", "--mountain-height-m", "1000"],
+               stub_pe_execute_run)
+    assert cfg.scenario == "orographic_isothermal_rest"
+    assert cfg.topography == "mountain"
+    assert cfg.mountain_height_m == 1000.0
+    # Unspecified terrain parameters resolve to the SWE-mirrored defaults,
+    # including the elevation-to-geopotential gravity.
+    assert cfg.mountain_lat_deg == 30.0
+    assert cfg.gravity == 9.80616
+    assert cfg.to_run_config_dict()["topography"] == "mountain"
+
+
+def test_default_run_pe_has_no_topography_keys(stub_pe_execute_run):
+    cfg = _run(["run", "pe"], stub_pe_execute_run)
+    assert cfg.topography == "flat"
+    assert "topography" not in cfg.to_run_config_dict()
+
+
 def test_invalid_timestep_is_a_parser_error():
     with pytest.raises(SystemExit):
         main(["run", "pe", "--dt-seconds", "0"])

@@ -23,6 +23,20 @@ the locational/control keys (``out``, ``experiment``, ``overwrite``,
 ``plots``), so ``dt_seconds``, ``nlev``, ``sigma_interfaces``, ``r_dry``,
 ``cp_dry`` and the IC parameters are all part of a run's scientific identity.
 
+Topography config schema (additive)
+-----------------------------------
+Fixed surface topography reuses the SWE vocabulary verbatim (``topography``
+plus the four ``mountain_*`` parameters) and adds ``gravity``, the constant
+that converts the stored surface *elevation* (metres) into the surface
+*geopotential* Phi_s = g h_s (m^2/s^2) the PE core consumes — nothing else
+in the dry sigma core uses g, so it is a terrain parameter here.
+``to_run_config_dict()`` emits the topography keys ONLY when the resolved
+topography is not ``flat``: a flat run produces exactly the historical
+config dict — and thus exactly the historical scientific hash and run id —
+while any non-flat terrain (including its gravity) participates fully in
+the scientific identity. Old manifests without a ``topography`` key are
+unambiguously flat.
+
 Import-light on purpose (stdlib + numpy-only ``SigmaGrid``); parsing,
 ``--help``, ``list`` and validation never touch CuPy or matplotlib.
 """
@@ -35,8 +49,12 @@ from typing import Mapping, Optional, Sequence
 from planetary_sandbox.physics.sigma_coordinate import SigmaGrid
 from ..bve.config import (GRID_TYPES, MIN_NLAT, MIN_NLON,
                           scientific_config_subset)
-from ..engine import (SECONDS_PER_DAY, _require_finite_positive,
-                      count_snapshot_times, interval_snapshot_times)
+from ..engine import (SECONDS_PER_DAY, _require_finite_number,
+                      _require_finite_positive, count_snapshot_times,
+                      interval_snapshot_times)
+from ..swe.config import (DEFAULT_GRAVITY, DEFAULT_MOUNTAIN_HEIGHT_M,
+                          DEFAULT_MOUNTAIN_LAT_DEG, DEFAULT_MOUNTAIN_LON_DEG,
+                          DEFAULT_MOUNTAIN_WIDTH_DEG, MAX_MOUNTAIN_HEIGHT_M)
 
 #: Image products in deterministic execution order. ``summary`` needs at
 #: least one persisted state; ``diagnostics`` remains available for N=0 runs.
@@ -77,7 +95,32 @@ PE_SCENARIOS = {
                        "atmosphere (exercises the exact-rest property).",
     "thermal_wave": "Resting atmosphere with a small deterministic degree-2 "
                     "temperature perturbation (smooth finite response).",
+    "orographic_isothermal_rest": "Analytically balanced resting isothermal "
+                                  "atmosphere over the configured surface "
+                                  "topography: ln(p_s) = ln(p_ref) - "
+                                  "Phi_s/(R_d T0) (equilibrium benchmark).",
 }
+
+#: Available surface-topography presets for the PE solver. Same vocabulary
+#: and meaning as the shallow-water config (and physics/topography.
+#: TOPOGRAPHY_PRESETS): terrain is a fixed band-limited surface *elevation*
+#: h_s in metres; the PE model consumes the derived surface geopotential
+#: Phi_s = gravity * h_s (m^2/s^2), which enters the hydrostatic
+#: geopotential of every column. Flat means exactly zero Phi_s (the
+#: historical zero-topography model, bit-for-bit).
+PE_TOPOGRAPHIES = {
+    "flat": "Zero surface geopotential (canonical default; identical to "
+            "the historical zero-topography model).",
+    "mountain": "One smooth isolated Gaussian mountain, band-limited at "
+                "the model's dealiased product truncation (2*l_max/3).",
+}
+
+#: Terrain parameters resolved only when a non-flat topography is selected.
+#: ``gravity`` converts the (gravity-independent) elevation into the
+#: surface geopotential the PE core consumes; it is a terrain parameter
+#: here because nothing else in the sigma-coordinate dry core uses g.
+_TERRAIN_PARAM_FIELDS = ("mountain_height_m", "mountain_lat_deg",
+                         "mountain_lon_deg", "mountain_width_deg", "gravity")
 
 #: Presets that require a resolvable degree-2 harmonic.
 _SCENARIOS_NEEDING_L2 = ("thermal_wave",)
@@ -100,6 +143,12 @@ PE_BASE_DEFAULTS: dict = {
     "temperature": DEFAULT_TEMPERATURE,
     "surface_pressure": DEFAULT_SURFACE_PRESSURE,
     "thermal_amplitude": DEFAULT_THERMAL_AMPLITUDE,
+    "topography": "flat",
+    "mountain_height_m": None,
+    "mountain_lat_deg": None,
+    "mountain_lon_deg": None,
+    "mountain_width_deg": None,
+    "gravity": None,
     "out": "runs",
     "experiment": None,
     "overwrite": False,
@@ -127,6 +176,12 @@ class PERunConfig:
     temperature: float = DEFAULT_TEMPERATURE
     surface_pressure: float = DEFAULT_SURFACE_PRESSURE
     thermal_amplitude: float = DEFAULT_THERMAL_AMPLITUDE
+    topography: str = "flat"
+    mountain_height_m: Optional[float] = None
+    mountain_lat_deg: Optional[float] = None
+    mountain_lon_deg: Optional[float] = None
+    mountain_width_deg: Optional[float] = None
+    gravity: Optional[float] = None
     dt_snapshots: Optional[float] = None
     snapshot_mode: str = "count"
     n_snapshots: Optional[int] = DEFAULT_N_SNAPSHOTS
@@ -160,6 +215,8 @@ class PERunConfig:
             raise ValueError(
                 f"scenario {self.scenario!r} needs lmax >= 2 for its degree-2 "
                 f"perturbation, got {self.lmax}")
+
+        self._validate_topography()
 
         # Vertical grid: SigmaGrid validates interfaces (finite, strictly
         # increasing, exact 0/1 endpoints). A resolved interface list is the
@@ -209,6 +266,52 @@ class PERunConfig:
         if self.n_snapshots == 0 and any(
                 plot in _PE_PLOTS_REQUIRING_SNAPSHOTS for plot in self.plots):
             raise ValueError("PE summary visualization requires a stored state")
+
+    def _validate_topography(self) -> None:
+        """Mirror of the SWE topography validation (same names, same rules),
+        plus the PE-only ``gravity`` terrain parameter."""
+        if self.topography not in PE_TOPOGRAPHIES:
+            raise ValueError(
+                f"unknown topography {self.topography!r}; choose from "
+                f"{', '.join(sorted(PE_TOPOGRAPHIES))}")
+        if self.topography == "flat":
+            given = [name for name in _TERRAIN_PARAM_FIELDS
+                     if getattr(self, name) is not None]
+            if given:
+                raise ValueError(
+                    f"terrain parameter(s) {given} require "
+                    "topography='mountain' (the default topography is flat)")
+            return
+        # mountain: every terrain parameter must be resolved and valid
+        missing = [name for name in _TERRAIN_PARAM_FIELDS
+                   if getattr(self, name) is None]
+        if missing:
+            raise ValueError(
+                f"topography='mountain' requires resolved parameter(s) "
+                f"{missing} (PERunConfig.resolve applies the defaults)")
+        height = _require_finite_positive("mountain_height_m",
+                                          self.mountain_height_m)
+        if height > MAX_MOUNTAIN_HEIGHT_M:
+            raise ValueError(
+                f"mountain_height_m must be <= {MAX_MOUNTAIN_HEIGHT_M:g}, "
+                f"got {height}")
+        _require_finite_positive("mountain_width_deg",
+                                 self.mountain_width_deg)
+        if self.mountain_width_deg > 90.0:
+            raise ValueError(
+                f"mountain_width_deg must be <= 90, got "
+                f"{self.mountain_width_deg}")
+        lat = _require_finite_number("mountain_lat_deg",
+                                     self.mountain_lat_deg)
+        if not -90.0 <= lat <= 90.0:
+            raise ValueError(
+                f"mountain_lat_deg must be in [-90, 90], got {lat}")
+        lon = _require_finite_number("mountain_lon_deg",
+                                     self.mountain_lon_deg)
+        if not -360.0 <= lon <= 360.0:
+            raise ValueError(
+                f"mountain_lon_deg must be in [-360, 360], got {lon}")
+        _require_finite_positive("gravity", self.gravity)
 
     def _validate_snapshot_controls(self, t_end: float) -> None:
         if self.snapshot_mode == "interval":
@@ -264,6 +367,29 @@ class PERunConfig:
                          if k in PE_BASE_DEFAULTS})
         if settings["grid"] == "gauss-latlon":  # user-facing alias
             settings["grid"] = "latlon"
+
+        # Resolve the terrain parameters exactly like the SWE config:
+        # defaults apply only when the mountain preset is selected;
+        # supplying them with a flat surface is an error (caught by
+        # __post_init__, with an early clear message here for the CLI path).
+        if settings["topography"] == "mountain":
+            terrain_defaults = {
+                "mountain_height_m": DEFAULT_MOUNTAIN_HEIGHT_M,
+                "mountain_lat_deg": DEFAULT_MOUNTAIN_LAT_DEG,
+                "mountain_lon_deg": DEFAULT_MOUNTAIN_LON_DEG,
+                "mountain_width_deg": DEFAULT_MOUNTAIN_WIDTH_DEG,
+                "gravity": DEFAULT_GRAVITY,
+            }
+            for name, default in terrain_defaults.items():
+                if settings[name] is None:
+                    settings[name] = default
+        else:
+            given = [name for name in _TERRAIN_PARAM_FIELDS
+                     if settings[name] is not None]
+            if given:
+                raise ValueError(
+                    f"terrain parameter(s) {given} require "
+                    "--topography mountain")
 
         # Explicit sigma interfaces fix the level count; keep nlev consistent.
         if settings["sigma_interfaces"] is not None:
@@ -343,8 +469,16 @@ class PERunConfig:
         return scientific_config_subset(self.to_run_config_dict())
 
     def to_run_config_dict(self) -> dict:
-        """Config dict for make_run_id, config.json, and manifest.json."""
-        return {
+        """Config dict for make_run_id, config.json, and manifest.json.
+
+        The topography keys are ADDITIVE and emitted only for a non-flat
+        surface (same schema rule as the SWE config): a flat run's dict —
+        and therefore its scientific hash and run id — is exactly the
+        historical one, while every resolved terrain parameter (including
+        the elevation-to-geopotential ``gravity``) participates fully in
+        the scientific identity of every non-flat run.
+        """
+        config = {
             "solver": "pe",
             "lmax": self.lmax,
             "grid": self.grid,
@@ -375,6 +509,14 @@ class PERunConfig:
             "snapshot_times": self.snapshot_times_seconds(),
             "plots": list(self.plots),
         }
+        if self.topography != "flat":
+            config["topography"] = self.topography
+            config["mountain_height_m"] = self.mountain_height_m
+            config["mountain_lat_deg"] = self.mountain_lat_deg
+            config["mountain_lon_deg"] = self.mountain_lon_deg
+            config["mountain_width_deg"] = self.mountain_width_deg
+            config["gravity"] = self.gravity
+        return config
 
     def summary_lines(self) -> list[str]:
         """Concise resolved-configuration summary (no CUDA involved)."""
@@ -402,11 +544,20 @@ class PERunConfig:
         else:
             lines.append(f"  nlat x nlon         {self.nlat} x {self.nlon} "
                          "(Gauss-Legendre latitudes x uniform longitudes)")
+        if self.topography == "mountain":
+            topo = (f"mountain (h={self.mountain_height_m:g} m at "
+                    f"lat {self.mountain_lat_deg:g} deg, "
+                    f"lon {self.mountain_lon_deg:g} deg, "
+                    f"width {self.mountain_width_deg:g} deg; "
+                    f"Phi_s = g h_s with g = {self.gravity:g} m/s^2)")
+        else:
+            topo = "flat"
         lines += [
             f"  l_max               {self.lmax}",
             f"  sigma levels        {self.nlev} "
             f"(interfaces {', '.join(f'{s:g}' for s in interfaces)})",
             f"  scenario            {self.scenario}",
+            f"  topography          {topo}",
             f"  day length          {day}",
             f"  radius              {self.radius_earth_units:g} Earth radii",
             f"  R_d / c_p           {self.r_dry:g} / {self.cp_dry:g} J/kg/K",

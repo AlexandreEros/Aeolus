@@ -57,6 +57,18 @@ PE_MANIFEST_NOTES = {
     "diagnostics": "see run/pe/diagnostics.py module docstring; total_mass is "
                    "the integral of p_s dA (mass proxy), and no total-energy-"
                    "conservation claim is made",
+    "topography": "optional fixed surface topography: a surface elevation "
+                  "h_s (m) band-limited at the DEALIASED product-truncation "
+                  "cut floor(2*l_max/3) (physics/topography.py with l_cut; "
+                  "content above the cut cannot be balanced by the dealiased "
+                  "pressure-gradient pathway and is rejected), consumed as "
+                  "the surface geopotential Phi_s = gravity * h_s (m^2/s^2) "
+                  "that anchors the hydrostatic geopotential of every "
+                  "column; sigma remains p/p_s. Runs without a 'topography' "
+                  "key in run_config have exactly zero Phi_s. Terrain is "
+                  "reconstructed deterministically from the resolved "
+                  "run_config (which participates in the scientific hash); "
+                  "no terrain arrays are persisted",
 }
 
 
@@ -104,6 +116,7 @@ def _execute_solver(cfg: "PERunConfig", run_dir, run_config: dict) -> None:
     from planetary_sandbox.physics.primitive_equations import (
         PrimitiveEquationsModel)
     from planetary_sandbox.physics.sigma_coordinate import SigmaGrid
+    from planetary_sandbox.physics.topography import Topography
     from planetary_sandbox.run.bve.io import (RUN_STATUS_RUNNING,
                                               write_run_manifest)
     from planetary_sandbox.run.pe.initial_conditions import make_pe_ic
@@ -121,9 +134,32 @@ def _execute_solver(cfg: "PERunConfig", run_dir, run_config: dict) -> None:
         nlat=cfg.nlat,
         nlon=cfg.nlon,
     )
+    # Topography is scenario-independent fixed model data, reconstructed
+    # deterministically from the resolved configuration (which participates
+    # in the scientific hash) exactly like the SWE path; the PE model
+    # consumes the derived surface geopotential Phi_s = g * h_s. PE terrain
+    # is band-limited at the model's dealiased product-truncation cut
+    # (l_cut), the resolved band of the dealiased pressure-gradient
+    # pathway; the projection-residual gate validates the terrain actually
+    # used and fails loudly when the mountain is too narrow for the cut.
+    if cfg.topography == "mountain":
+        from planetary_sandbox.physics.primitive_equations import (
+            product_truncation_cut)
+        topography = Topography.mountain(
+            planet,
+            height_m=cfg.mountain_height_m,
+            lat_deg=cfg.mountain_lat_deg,
+            lon_deg=cfg.mountain_lon_deg,
+            width_deg=cfg.mountain_width_deg,
+            l_cut=product_truncation_cut(cfg.lmax))
+        surface_geopotential_lm = topography.surface_geopotential_lm(
+            cfg.gravity)
+    else:
+        surface_geopotential_lm = None
     sigma = SigmaGrid(cfg.sigma_interfaces_resolved())
-    model = PrimitiveEquationsModel(planet, sigma, r_dry=cfg.r_dry,
-                                    cp_dry=cfg.cp_dry)
+    model = PrimitiveEquationsModel(
+        planet, sigma, r_dry=cfg.r_dry, cp_dry=cfg.cp_dry,
+        surface_geopotential_lm=surface_geopotential_lm)
     state0 = make_pe_ic(cfg.scenario, model, temperature=cfg.temperature,
                         surface_pressure=cfg.surface_pressure,
                         thermal_amplitude=cfg.thermal_amplitude)

@@ -12,9 +12,12 @@ tendencies using the weak-form vector curl/divergence analysis (design
 doc Section 8a), and the public :meth:`PrimitiveEquationsModel.tendency`
 gated behind the Phase-6 verification battery (exact rest, BVE
 degeneracy, monopole/continuity invariants, RK4 stage-validated
-stability). Deliberately NOT here (still deferred): runner/CLI/config,
-semi-implicit terms, T_ref split, hyperdiffusion, forcing, topography
-experiments, long integrations.
+stability). Surface topography enters only as the fixed spectral
+``surface_geopotential_lm`` (band-limited at the dealiased product
+truncation — see :func:`product_truncation_cut` and the constructor);
+terrain construction/configuration lives with the runner. Deliberately
+NOT here (still deferred): runner/CLI/config, semi-implicit terms, T_ref
+split, hyperdiffusion, forcing, long integrations.
 
 Formulation summary (full derivation and sign conventions in the design
 doc): sigma = p/p_s vertical coordinate, Lorenz staggering, prognostic
@@ -53,6 +56,16 @@ KAPPA_DRY = R_DRY / CP_DRY
 GAMMA_DRY = CP_DRY / (CP_DRY - R_DRY)
 
 PROGNOSTICS = ("zeta", "delta", "temperature", "ln_ps")
+
+
+def product_truncation_cut(l_max: int) -> int:
+    """The 2/3-rule truncation degree for analyzed nonlinear products.
+
+    One definition shared by the model's per-product truncation and by the
+    topography coupling: surface geopotential supplied to the model must be
+    band-limited at this cut (see PrimitiveEquationsModel.__init__).
+    """
+    return (2 * int(l_max)) // 3
 
 
 class PrimitiveEquationsStateError(ValueError):
@@ -187,9 +200,17 @@ class PrimitiveEquationsModel:
         self.gamma = self.cp_dry / (self.cp_dry - self.r_dry)
         self.l_max = self.sh.l_max
 
-        # Surface geopotential: fixed spectral field, representable from
-        # day one (no topography yet -> zeros by default).
+        # Surface geopotential: fixed spectral field (zeros by default).
+        # A non-flat Phi_s must be band-limited at the dealiased product
+        # truncation (2*l_max/3): the full-T pressure-gradient force
+        # R_d T grad(ln p_s) reaches the tendency through the 2/3-truncated
+        # nonlinear pathway while -lap(Phi) is an exact diagonal spectral
+        # term, so any Phi_s content above the cut can never cancel and
+        # would act as a permanent spurious momentum forcing (measured:
+        # the uncancelled per-degree residual at rest equals |lap * Phi_s|
+        # exactly for every l above the cut). Reject loudly, not silently.
         n = self.l_max + 1
+        self._phi_cut = product_truncation_cut(self.l_max)
         if surface_geopotential_lm is None:
             self.phi_surface_lm = cp.zeros((n, n), dtype=cp.complex128)
         else:
@@ -201,6 +222,17 @@ class PrimitiveEquationsModel:
             if not bool(cp.isfinite(phi_s).all()):
                 raise ValueError(
                     "surface_geopotential_lm contains NaN/Inf")
+            cut = self._phi_cut
+            if bool(cp.any(phi_s[cut + 1:, :])) \
+                    or bool(cp.any(phi_s[:, cut + 1:])):
+                raise ValueError(
+                    "surface_geopotential_lm has spectral content above the "
+                    f"dealiased product truncation l = {cut} (2*l_max/3 for "
+                    f"l_max = {self.l_max}); such content cannot be balanced "
+                    "by the dealiased pressure-gradient pathway and would "
+                    "force the momentum equations permanently. Band-limit "
+                    "the terrain at the cut (Topography.mountain(..., "
+                    "l_cut=...)) or raise l_max.")
             self.phi_surface_lm = phi_s
 
         # Laplacian eigenvalues -l(l+1)/R^2 (l=0 exactly 0), as in BVE/SWE.
@@ -225,7 +257,7 @@ class PrimitiveEquationsModel:
 
         # 2/3-rule truncation cut for analyzed nonlinear products (the
         # SWE policy, applied once per combined quantity).
-        self._trunc_cut = (2 * self.l_max) // 3
+        self._trunc_cut = product_truncation_cut(self.l_max)
 
     # ------------------------------------------------------------------
     # Per-level horizontal helpers (SWE conventions, level-looped)

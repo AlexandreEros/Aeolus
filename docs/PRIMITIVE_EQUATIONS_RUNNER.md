@@ -13,20 +13,19 @@ climate model. The nonlinear tendency core it drives is documented in
 
 ## What this runner deliberately excludes
 
-No forcing (Held–Suarez, radiative), no moist physics, no topography
-experiments, no hyperdiffusion or filters, no semi-implicit stepping, no
-adaptive timestepping, no arbitrary-expression initial conditions, and no long
-climate integrations. There is **no CFL controller** and **no total-energy
+No forcing (Held–Suarez, radiative), no moist physics, no hyperdiffusion or
+filters, no semi-implicit stepping, no adaptive timestepping, no
+arbitrary-expression initial conditions, and no long climate integrations. There is **no CFL controller** and **no total-energy
 conservation claim**. The runner never adds damping, clips values, replaces
 NaNs, or forces positivity to make an unstable run appear to survive — an
 invalid state aborts the run loudly.
 
 ## Initial-condition presets
 
-Both presets are built spectrally on top of the model's exact-rest state, so
-vorticity and divergence are exactly zero, surface pressure is exactly uniform,
-and the fields are exactly band-limited (no grid round trip). The base state is
-set by `--temperature T` (K) and `--surface-pressure p_s` (Pa).
+All presets are built spectrally on top of the model's exact-rest state, so
+vorticity and divergence are exactly zero and the fields are exactly
+band-limited (no grid round trip). The base state is set by
+`--temperature T` (K) and `--surface-pressure p_s` (Pa).
 
 ### `isothermal_rest`
 
@@ -48,6 +47,88 @@ value; ~1 K keeps the perturbed temperature positive everywhere. Surface
 pressure stays uniform and the initial winds stay zero, so the state is
 deliberately *unbalanced* — it exists to show the model launches a smooth,
 finite response (a nonzero divergence field), not a balanced flow.
+
+### `orographic_isothermal_rest`
+
+An analytically balanced resting isothermal atmosphere over the configured
+surface topography — the first exact benchmark of the PE terrain coupling.
+With `T_k = T` at every level, `zeta = delta = 0`, and
+
+```
+ln(p_s) = ln(p_ref) - Phi_s / (R_d T)
+```
+
+(`p_ref` = `--surface-pressure`, the surface pressure where `Phi_s = 0`),
+the state is horizontally and hydrostatically balanced because
+`grad(Phi_s) + R_d T grad(ln p_s) = 0` pointwise. The relation is applied
+directly to the spectral coefficients of the **exact resolved `Phi_s` the
+model integrates with** (no grid round trip, no independent terrain
+reconstruction), so the pressure-gradient terms of the momentum tendency
+cancel analytically. Zero terrain reduces bitwise to `isothermal_rest`.
+
+The isothermal restriction belongs to this benchmark, not to the PE
+topography support: a resting atmosphere with one horizontally uniform
+non-isothermal `T(sigma)` profile over terrain is generally **not**
+balanced, because sigma surfaces cut across pressure surfaces wherever
+`p_s` varies. A future exact non-isothermal construction must define a
+pressure-coordinate reference profile `T_ref(p)`, hydrostatically derive
+`Phi_ref(p)`, solve `Phi_ref(p_s) = Phi_s` for the local surface pressure,
+and evaluate `T_k = T_ref(sigma_k p_s(lambda, phi))`.
+
+## Surface topography
+
+`--topography mountain` (with the same `--mountain-*` parameters as
+`aeolus run swe`) prescribes one band-limited Gaussian mountain; the flat
+default is exactly zero `Phi_s`, bit-for-bit the historical model.
+Terrain is fixed model data, independent of the chosen scenario: any PE
+scenario runs over it (`orographic_isothermal_rest` is merely the first
+analytically exact one). How it enters the dynamics:
+
+* the stored terrain is the surface **elevation** `h_s` (m), band-limited
+  spectral coefficients (`physics/topography.py`, shared with the SWE);
+* the PE core consumes the surface **geopotential**
+  `Phi_s = g h_s` (m²/s²), with `g` set by `--gravity` (default 9.80616;
+  a *terrain* parameter here — nothing else in the dry sigma core uses g);
+* `Phi_s` anchors the Simmons–Burridge hydrostatic recursion, so every
+  column's geopotential — and hence the pressure-gradient force — feels
+  the terrain. The vertical coordinate stays `sigma = p/p_s`; nothing is
+  re-gridded;
+* every resolved terrain parameter (including `gravity`) is part of the
+  persisted `run_config` and the scientific-config hash, so a terrain run
+  can never collide with a flat run. Flat runs emit exactly the
+  historical config schema (old run ids remain valid; manifests without a
+  `topography` key are unambiguously flat).
+
+**Dealiased terrain truncation.** PE terrain is band-limited at the
+model's product-truncation cut `l = floor(2 l_max / 3)`, not at `l_max`.
+The full-T pressure-gradient force `R_d T grad(ln p_s)` reaches the
+tendency through the dealiased (2/3-truncated) nonlinear pathway, while
+`-lap(Phi)` is an exact diagonal spectral term; terrain content above the
+cut therefore *cannot* be balanced and would act as a permanent spurious
+momentum forcing (measured: for full-`l_max` terrain the uncancelled
+per-degree residual at rest equals `|lap * Phi_s|` exactly for every `l`
+above the cut). The projection-residual gate validates the terrain
+actually used and fails loudly when a mountain is too narrow for the cut
+— at the default `l_max = 10` (cut 6) the default 20° mountain is
+rejected; widen it (≥ ~25°) or raise `--l-max`. The model itself rejects
+any supplied `Phi_s` with content above the cut. The SWE core has no such
+asymmetry (its `Phi_s` enters only spectrally) and keeps full-`l_max`
+terrain; this is a real, documented difference between the two solvers.
+
+**What the orographic-rest benchmark proves.** On the Gauss–Legendre
+lat-lon backend the balance closes to floating-point roundoff: the initial
+tendency is ~1e-15 relative to the pressure-gradient scale, and five real
+RK4 steps preserve the state to ~1e-21 in the momentum coefficients with
+exactly zero mass drift and bitwise-unchanged temperature. On the geodesic
+backend the residual is the backend's measured weak-form quadrature
+envelope (~2.6e-3 relative; within the documented
+`GEODESIC_WEAK_FORM_RTOL = 0.02`), which integrates over five steps into a
+~1e-2 m/s spurious divergent flow and ~1e-7-relative T / ln p_s responses
+— a property of the geodesic quadrature, not of the coupling. It is an
+**equilibrium test, not a climate simulation**: it proves the terrain
+plumbing, the hydrostatic anchoring, and the discrete pressure-gradient
+cancellation, and proves nothing about flows over terrain, stability of
+large-amplitude dynamics, or long integrations.
 
 ## Timestep policy
 
@@ -76,6 +157,12 @@ aeolus run pe --levels 12 --dt-seconds 200 --days 0.05 --n-snapshots 4
 
 # Explicit (non-uniform) sigma interfaces
 aeolus run pe --sigma-interfaces 0,0.25,0.6,1.0 --temperature 250
+
+# Balanced resting atmosphere over a Gaussian mountain (exact equilibrium
+# benchmark; needs l-max high enough for the mountain at the dealiased cut)
+aeolus run pe --backend gauss-latlon --nlat 32 --nlon 64 --l-max 15 `
+  --scenario orographic_isothermal_rest --topography mountain `
+  --mountain-height-m 1500 --mountain-width-deg 25
 ```
 
 `aeolus run pe --help` lists every option. The command prints the run
@@ -144,6 +231,12 @@ equilibrated climate.
   conservative fixed steps stays finite and valid at every RK4 stage and every
   accepted state, launches a nonzero divergence field, and keeps temperature
   and surface pressure positive. No damping is required.
+* **Orographic balance** — `orographic_isothermal_rest` over a band-limited
+  Gaussian mountain is preserved through real fixed RK4 steps to roundoff on
+  the Gauss–Legendre backend (exactly zero mass drift, bitwise-unchanged
+  temperature) and to the measured weak-form quadrature envelope on the
+  geodesic backend (see “Surface topography” above; measured values live in
+  `tests/test_pe_orographic_rest.py`).
 
 ## Limitations
 

@@ -419,6 +419,7 @@ examples:
   aeolus run pe --backend gauss-latlon --nlat 32 --nlon 64 --l-max 15
   aeolus run pe --levels 12 --dt-seconds 200 --days 0.05 --n-snapshots 4
   aeolus run pe --sigma-interfaces 0,0.25,0.6,1.0 --temperature 250
+  aeolus run pe --scenario orographic_isothermal_rest --topography mountain
 """
 
 
@@ -439,7 +440,7 @@ def _parse_sigma_interfaces(text: str) -> tuple[float, ...]:
 def add_pe_arguments(parser: argparse.ArgumentParser) -> None:
     """All `run pe` options. Every default is None (resolution applies them)."""
     from planetary_sandbox.run.pe.config import (  # import-light
-        PE_PLOT_TYPES, PE_SCENARIOS)
+        PE_PLOT_TYPES, PE_SCENARIOS, PE_TOPOGRAPHIES)
 
     parser.add_argument(
         "--backend", "--grid", dest="grid", choices=list(BACKEND_CHOICES),
@@ -499,6 +500,40 @@ def add_pe_arguments(parser: argparse.ArgumentParser) -> None:
         help="thermal_wave degree-2 perturbation amplitude in K [default: 1].")
 
     parser.add_argument(
+        "--topography", choices=sorted(PE_TOPOGRAPHIES), default=None,
+        help="Fixed surface topography [default: flat]. 'mountain' is one "
+             "smooth Gaussian mountain, band-limited at the model "
+             "truncation; the PE core consumes it as the surface "
+             "geopotential Phi_s = gravity * elevation, and its resolved "
+             "parameters participate in the scientific run identity.")
+    parser.add_argument(
+        "--mountain-height-m", dest="mountain_height_m", type=float,
+        metavar="METERS", default=None,
+        help="Mountain peak elevation in meters [default: 2000]. "
+             "Requires --topography mountain.")
+    parser.add_argument(
+        "--mountain-lat-deg", dest="mountain_lat_deg", type=float,
+        metavar="DEG", default=None,
+        help="Mountain center latitude in degrees [-90, 90] [default: 30]. "
+             "Requires --topography mountain.")
+    parser.add_argument(
+        "--mountain-lon-deg", dest="mountain_lon_deg", type=float,
+        metavar="DEG", default=None,
+        help="Mountain center longitude in degrees [default: 90]. "
+             "Requires --topography mountain.")
+    parser.add_argument(
+        "--mountain-width-deg", dest="mountain_width_deg", type=float,
+        metavar="DEG", default=None,
+        help="Mountain Gaussian e-folding half-width in degrees (0, 90] "
+             "[default: 20]. Requires --topography mountain.")
+    parser.add_argument(
+        "--gravity", type=float, default=None,
+        help="Surface gravity in m/s^2 used to convert the terrain "
+             "elevation into the surface geopotential Phi_s = g * h_s "
+             "[default: 9.80616]. Requires --topography mountain (the dry "
+             "sigma core uses g nowhere else).")
+
+    parser.add_argument(
         "--dt-seconds", dest="dt_seconds", type=float, metavar="SECONDS",
         default=None,
         help="FIXED integration timestep in seconds [default: 300]. This "
@@ -544,7 +579,9 @@ _PE_EXPLICIT_KEYS = (
     "lmax", "grid", "resolution", "nlat", "nlon", "day_hours",
     "radius_earth_units", "nlev", "sigma_interfaces", "r_dry", "cp_dry",
     "duration_days", "dt_seconds", "scenario", "temperature",
-    "surface_pressure", "thermal_amplitude", "n_snapshots", "dt_snapshots",
+    "surface_pressure", "thermal_amplitude", "topography",
+    "mountain_height_m", "mountain_lat_deg", "mountain_lon_deg",
+    "mountain_width_deg", "gravity", "n_snapshots", "dt_snapshots",
     "plots", "no_plots", "out", "experiment", "overwrite")
 
 
@@ -706,7 +743,7 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         show("grid", f"{grid} r{run_config.get('resolution')}")
     show("l_max", run_config.get("lmax"))
     show("scenario", run_config.get("scenario"))
-    if run_config.get("solver") == "swe":
+    if run_config.get("solver") in ("swe", "pe"):
         # Additive schema: manifests without a topography key are flat runs.
         if run_config.get("topography", "flat") == "mountain":
             show("topography",

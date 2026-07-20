@@ -258,7 +258,7 @@ def _backend_label(model) -> str:
 
 def _snapshot_header(fields: PESnapshotFields, *, scenario: str | None,
                      backend_label: str | None, run_id: str | None,
-                     l_max: int) -> str:
+                     l_max: int, terrain_note: str | None = None) -> str:
     levels = fields.levels
     identity = []
     if run_id:
@@ -274,13 +274,33 @@ def _snapshot_header(fields: PESnapshotFields, *, scenario: str | None,
     line3 = ("model full levels (dimensionless sigma = p/p_s): "
              f"upper sigma={levels.upper_sigma:.4f}, "
              f"lower sigma={levels.lower_sigma:.4f}")
-    return "\n".join((line1, line2, line3))
+    lines = [line1, line2, line3]
+    if terrain_note:
+        lines.append(terrain_note)
+    return "\n".join(lines)
+
+
+def _terrain_note(model) -> str | None:
+    """One header line of terrain context, or None for a flat surface.
+
+    Synthesized from the model's own resolved Phi_s so the note describes
+    exactly the terrain the dynamics used; flat runs produce byte-identical
+    headers to the pre-topography product.
+    """
+    import cupy as cp
+    if not bool(cp.any(model.phi_surface_lm)):
+        return None
+    phi = model.sh.inv_transform(model.phi_surface_lm).real
+    return (f"prescribed surface geopotential Phi_s in "
+            f"[{float(phi.min()):.4g}, {float(phi.max()):.4g}] m^2/s^2 "
+            "(balanced response visible in the surface-pressure anomaly)")
 
 
 def build_pe_snapshot_figure(model, fields: PESnapshotFields, *,
                              scenario: str | None = None,
                              backend_label: str | None = None,
                              run_id: str | None = None,
+                             terrain_note: str | None = None,
                              target_grid=None):
     """Describe one snapshot figure (upper/lower maps + surface pressure).
 
@@ -338,7 +358,7 @@ def build_pe_snapshot_figure(model, fields: PESnapshotFields, *,
 
     header = _snapshot_header(fields, scenario=scenario,
                               backend_label=backend_label, run_id=run_id,
-                              l_max=model.l_max)
+                              l_max=model.l_max, terrain_note=terrain_note)
     panels.append(PanelPlacement(
         TextPanelSpec(header, font_family="sans-serif", font_size=11.0),
         0, 0, column_span=4))
@@ -372,6 +392,7 @@ def build_pe_snapshot_timeline(model, out_dir: pathlib.Path | str, *,
     levels = select_snapshot_levels(model.sigma, upper_index=upper_index,
                                     lower_index=lower_index)
     backend_label = _backend_label(model)
+    terrain_note = _terrain_note(model)
     total = int(coeffs.shape[0])
 
     view_grid = None
@@ -382,7 +403,8 @@ def build_pe_snapshot_timeline(model, out_dir: pathlib.Path | str, *,
             time_seconds=float(times[index]), levels=levels)
         view_grid, spec = build_pe_snapshot_figure(
             model, fields, scenario=scenario, backend_label=backend_label,
-            run_id=run_id, target_grid=view_grid)
+            run_id=run_id, terrain_note=terrain_note,
+            target_grid=view_grid)
         frames.append(FigureFrame(float(times[index]), spec))
     return FigureTimeline(tuple(frames), filename_prefix=scenario or "pe")
 

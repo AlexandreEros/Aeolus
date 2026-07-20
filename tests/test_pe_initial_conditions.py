@@ -66,8 +66,12 @@ def _both(latlon_model, geodesic_model):
 # Registry / dispatch
 # ---------------------------------------------------------------------------
 
-def test_registry_has_exactly_the_two_presets():
-    assert set(PE_INITIAL_CONDITIONS) == {"isothermal_rest", "thermal_wave"}
+def test_registry_has_exactly_the_known_presets():
+    assert set(PE_INITIAL_CONDITIONS) == {
+        "isothermal_rest", "thermal_wave", "orographic_isothermal_rest"}
+    # And the import-light scenario catalog stays in sync with it.
+    from planetary_sandbox.run.pe.config import PE_SCENARIOS
+    assert set(PE_SCENARIOS) == set(PE_INITIAL_CONDITIONS)
 
 
 def test_unknown_preset_raises(latlon_model):

@@ -205,7 +205,8 @@ class Topography:
 
     @classmethod
     def mountain(cls, planet, *, height_m: float, lat_deg: float,
-                 lon_deg: float, width_deg: float) -> "Topography":
+                 lon_deg: float, width_deg: float,
+                 l_cut: int | None = None) -> "Topography":
         """One smooth isolated Gaussian mountain, projected to the truncation.
 
         ``h_s(x) = height_m * exp(-(d/sigma)^2)`` with ``d`` the great-circle
@@ -216,6 +217,19 @@ class Topography:
         exactly the model truncation and identical for every later
         synthesis. Construction fails if the projection residual exceeds
         :data:`MAX_PROJECTION_RESIDUAL` (terrain too narrow for l_max).
+
+        ``l_cut`` (optional) additionally zeroes every coefficient with
+        degree or order above ``l_cut`` BEFORE the residual gate, so the
+        gate validates the terrain actually used. The primitive-equation
+        core requires terrain band-limited at its dealiased product
+        truncation (2*l_max/3): its full-T pressure-gradient force reaches
+        the tendency through the dealiased nonlinear pathway while
+        -lap(Phi) is an exact diagonal spectral term, so terrain content
+        above that cut can never cancel and would act as a permanent
+        spurious momentum forcing (measured: the uncancelled per-degree
+        residual equals |lap * Phi_s| exactly for l > cut). The
+        shallow-water core has no such asymmetry and does not pass
+        ``l_cut``.
         """
         height = _require("mountain height_m", height_m, positive=True,
                           hi=MAX_MOUNTAIN_HEIGHT_M)
@@ -223,6 +237,9 @@ class Topography:
         lon0 = _require("mountain lon_deg", lon_deg, lo=-360.0, hi=360.0)
         width = _require("mountain width_deg", width_deg, positive=True,
                          hi=90.0)
+        if l_cut is not None and not 1 <= int(l_cut) <= planet.sh.l_max:
+            raise TopographyError(
+                f"l_cut must be in [1, l_max={planet.sh.l_max}], got {l_cut}")
 
         sh = planet.sh
         grid = planet.grid
@@ -244,6 +261,10 @@ class Topography:
         if not bool(cp.isfinite(coeffs).all()):
             raise TopographyError(
                 "mountain projection produced non-finite coefficients")
+        if l_cut is not None:
+            coeffs[int(l_cut) + 1:, :] = 0.0
+            coeffs[:, int(l_cut) + 1:] = 0.0
+        effective_l = sh.l_max if l_cut is None else int(l_cut)
 
         # Quantified band-limitedness: quadrature-weighted relative L2
         # residual between the analytic field and its truncated synthesis.
@@ -255,11 +276,17 @@ class Topography:
         if not (rel <= MAX_PROJECTION_RESIDUAL):
             raise TopographyError(
                 f"mountain (height {height:g} m, width {width:g} deg) is not "
-                f"representable at l_max={sh.l_max}: relative projection "
-                f"residual {rel:.3f} exceeds {MAX_PROJECTION_RESIDUAL}. "
+                f"representable at degree {effective_l}"
+                + (f" (the dealiased cut of l_max={sh.l_max})"
+                   if l_cut is not None else "")
+                + f": relative projection residual {rel:.3f} exceeds "
+                f"{MAX_PROJECTION_RESIDUAL}. "
                 "Widen the mountain or raise the spectral resolution.")
 
-        return cls(coeffs, preset="mountain", parameters={
+        parameters = {
             "height_m": height, "lat_deg": lat0, "lon_deg": lon0,
             "width_deg": width, "projection_residual": rel,
-        })
+        }
+        if l_cut is not None:
+            parameters["l_cut"] = int(l_cut)
+        return cls(coeffs, preset="mountain", parameters=parameters)
