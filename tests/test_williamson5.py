@@ -50,6 +50,7 @@ projection fails immediately.
 from __future__ import annotations
 
 import math
+import os
 
 import pytest
 
@@ -740,6 +741,65 @@ def test_potential_enstrophy_matches_analytic_rest_value():
                 / (3.0 * MEAN_DEPTH_CANON))
     assert potential_enstrophy(model, state) == pytest.approx(
         expected, rel=1e-12)
+
+
+# ===========================================================================
+# D. Fifteen-day canonical acceptance (env-gated: hours of GPU time)
+# ===========================================================================
+
+@requires_cuda
+@pytest.mark.skipif(not os.environ.get("AEOLUS_W5_ACCEPTANCE"),
+                    reason="15-day canonical W5 acceptance run (~3 h on the "
+                           "MX110); set AEOLUS_W5_ACCEPTANCE=1 to enable")
+def test_w5_fifteen_day_canonical_acceptance(tmp_path):
+    """The canonical benchmark through the real CLI, verified against the
+    measured 2026-07-20 acceptance envelopes (GL 64x128, l_max=42, RK4,
+    inviscid): 2407 steps, mass bit-identical, dE/E = -2.135e-6,
+    dZ/Z = +2.452e-5, day-15 h in [3759.6, 6196.0] m, max|u| 38.9 m/s.
+    Tolerances carry ~10x headroom. Reference capsule:
+    runs/w5-acceptance/20260720T050117Z_..._ac2c22de_c583365f."""
+    import csv
+    import numpy as np
+    import cupy as cp
+    from planetary_sandbox.cli.main import main
+    from planetary_sandbox.physics.shallow_water import (ShallowWaterModel,
+                                                         ShallowWaterState)
+    from planetary_sandbox.physics.topography import Topography
+    from planetary_sandbox.run.swe.diagnostics import potential_enstrophy
+
+    rc = main(["run", "swe", "--scenario", "williamson5",
+               "--backend", "gauss-latlon", "--nlat", "64", "--nlon", "128",
+               "--l-max", "42", "--days", "15", "--n-snapshots", "4",
+               "--no-plots", "--out", str(tmp_path / "runs")])
+    assert rc == 0
+    pointer = (tmp_path / "runs" / "latest_run.txt").read_text(
+        encoding="utf-8").strip()
+    run_dir = tmp_path / "runs" / pointer
+
+    times = np.load(run_dir / "swe_snapshot_times.npy")
+    assert times.tolist() == [0.0, 5.0 * 86400.0, 10.0 * 86400.0,
+                              15.0 * 86400.0]
+    coeffs = np.load(run_dir / "swe_coeffs.npy")
+
+    with open(run_dir / "diagnostics" / "timeseries.csv", newline="",
+              encoding="utf-8") as fh:
+        rows = list(csv.DictReader(fh))
+    assert len({r["total_mass"] for r in rows}) == 1     # bit-identical
+    e = [float(r["total_energy"]) for r in rows]
+    assert abs(e[-1] - e[0]) <= 2e-5 * abs(e[0])         # measured -2.1e-6
+    h_min = min(float(r["h_min_m"]) for r in rows)
+    assert h_min > 3000.0                                 # measured 3759.6
+    assert max(float(r["max_wind_ms"]) for r in rows) < 60.0
+
+    planet = _make_w5_planet(l_max=42, nlat=64, nlon=128)
+    model = ShallowWaterModel(planet, gravity=GRAVITY,
+                              mean_depth=MEAN_DEPTH_CANON,
+                              topography=Topography.williamson5_cone(planet))
+    z0 = potential_enstrophy(model, ShallowWaterState(cp.asarray(coeffs[0])))
+    z1 = potential_enstrophy(model, ShallowWaterState(cp.asarray(coeffs[-1])))
+    assert abs(z1 - z0) <= 2.5e-4 * abs(z0)              # measured +2.5e-5
+    model.validate_state(ShallowWaterState(cp.asarray(coeffs[-1])),
+                         context="day-15 acceptance state")
 
 
 @requires_cuda
