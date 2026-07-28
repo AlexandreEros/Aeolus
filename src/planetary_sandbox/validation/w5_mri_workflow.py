@@ -37,7 +37,7 @@ from .w5_mri import (
     atomic_write_json,
     atomic_write_text,
     canonical_signature,
-    construct_aeolus_heights,
+    construct_aeolus_vertical_fields,
     derive_day0_tolerances,
     determine_grid_permutation,
     evaluate_day0_contract,
@@ -53,7 +53,7 @@ from .w5_mri import (
 
 
 DEFAULT_REPOSITORY_URL = "https://github.com/AlexandreEros/Aeolus.git"
-WORKFLOW_SCHEMA_VERSION = "aeolus-w5-mri-validation-v1"
+WORKFLOW_SCHEMA_VERSION = "aeolus-w5-mri-validation-v2"
 REQUIRED_SNAPSHOT_SECONDS = np.asarray(
     [0.0, 5.0 * 86400.0, 10.0 * 86400.0, 15.0 * 86400.0],
     dtype=np.float64,
@@ -71,6 +71,8 @@ class WorkflowConfig:
     run_t42: bool = True
     run_t63: bool = True
     force_rerun: bool = False
+    reuse_t42_capsule: pathlib.Path | None = None
+    reuse_t63_capsule: pathlib.Path | None = None
 
 
 def _utc_now() -> str:
@@ -157,8 +159,9 @@ def _stage_signature_payload(
         spec: ArtifactSpec, package: FrozenReferencePackage,
         repository: Mapping[str, Any],
         tolerances: Mapping[str, Any],
+        reused_capsule: pathlib.Path | None = None,
         ) -> dict[str, Any]:
-    return {
+    payload = {
         "workflow_schema_version": WORKFLOW_SCHEMA_VERSION,
         "reference_hashes": dict(package.hashes),
         "reference_schema_version": package.manifest["schema_version"],
@@ -177,7 +180,7 @@ def _stage_signature_payload(
             "topography_projection":
                 "state-grid-analysis-full-truncation",
         },
-        "height_audit": AEOLUS_HEIGHT_AUDIT,
+        "vertical_field_audit": AEOLUS_HEIGHT_AUDIT,
         "day0_tolerances": tolerances,
         "workflow_firewall": {
             "reference_spectral_analysis": False,
@@ -186,6 +189,9 @@ def _stage_signature_payload(
             "interpolation_or_regridding": False,
         },
     }
+    if reused_capsule is not None:
+        payload["reused_capsule"] = _capsule_file_identity(reused_capsule)
+    return payload
 
 
 def _atomic_copy_verified(source: pathlib.Path, destination: pathlib.Path,
@@ -278,10 +284,44 @@ def _safe_capsule_from_pointer(base: pathlib.Path) -> pathlib.Path | None:
     return None
 
 
+def _capsule_file_identity(capsule: pathlib.Path) -> dict[str, Any]:
+    """Hash the immutable files that identify a persisted trajectory."""
+    capsule = pathlib.Path(capsule).resolve()
+    required = (
+        "manifest.json", "swe_snapshot_times.npy", "swe_coeffs.npy")
+    missing = [name for name in required if not (capsule / name).is_file()]
+    if missing:
+        raise RuntimeError(
+            f"reused capsule is missing required files {missing}: {capsule}")
+    return {
+        "source_path": str(capsule),
+        "trajectory_reused_without_integration": True,
+        "file_hashes": {
+            name: sha256_file(capsule / name) for name in required
+        },
+    }
+
+
 def _run_canonical_capsule(spec: ArtifactSpec, stage: pathlib.Path,
-                           *, resume: bool) -> pathlib.Path:
+                           *, resume: bool,
+                           reused_capsule: pathlib.Path | None = None
+                           ) -> pathlib.Path:
     """Run through the real CLI; resume a completed capsule when available."""
     from planetary_sandbox.cli.main import main
+
+    if reused_capsule is not None:
+        reused_capsule = pathlib.Path(reused_capsule).resolve()
+        _capsule_file_identity(reused_capsule)
+        completed = _completed_capsule(
+            reused_capsule, reused_capsule.parent)
+        if completed is None:
+            raise RuntimeError(
+                f"explicitly reused capsule is not completed: "
+                f"{reused_capsule}")
+        print(
+            f"Reusing external completed trajectory without integration: "
+            f"{completed}", flush=True)
+        return completed
 
     base = stage / "aeolus_capsule"
     base.mkdir(parents=True, exist_ok=True)
@@ -399,8 +439,8 @@ def _extract_native_fields(model, coefficients: np.ndarray,
         phi_s = cp.asnumpy(phi_s_device).reshape(
             spec.nlat, spec.nlon).astype(np.float64, copy=False)
 
-    height: list[np.ndarray] = []
-    thickness: list[np.ndarray] = []
+    layer_depth: list[np.ndarray] = []
+    free_surface_elevation: list[np.ndarray] = []
     u_values: list[np.ndarray] = []
     v_values: list[np.ndarray] = []
     for coefficient_block in coefficients:
@@ -408,17 +448,20 @@ def _extract_native_fields(model, coefficients: np.ndarray,
         phi = cp.asnumpy(
             model.sh.inv_transform(state.phi).real).reshape(
                 spec.nlat, spec.nlon)
-        heights = construct_aeolus_heights(
+        vertical_fields = construct_aeolus_vertical_fields(
             phi, base_geopotential=model.phi0,
             surface_geopotential=phi_s, gravity=model.gravity)
         u_device, v_device = model.wind_on_state_grid(state)
-        height.append(heights["free_surface_height_m"])
-        thickness.append(heights["fluid_layer_thickness_m"])
+        layer_depth.append(vertical_fields["layer_depth_m"])
+        free_surface_elevation.append(
+            vertical_fields["free_surface_elevation_m"])
         u_values.append(cp.asnumpy(u_device).reshape(spec.nlat, spec.nlon))
         v_values.append(cp.asnumpy(v_device).reshape(spec.nlat, spec.nlon))
     fields = {
-        "height": np.stack(height).astype(np.float64, copy=False),
-        "fluid_layer_thickness": np.stack(thickness).astype(
+        "layer_depth": np.stack(layer_depth).astype(
+            np.float64, copy=False),
+        "free_surface_elevation": np.stack(
+            free_surface_elevation).astype(
             np.float64, copy=False),
         "u": np.stack(u_values).astype(np.float64, copy=False),
         "v": np.stack(v_values).astype(np.float64, copy=False),
@@ -452,10 +495,14 @@ def _reference_convention_checks(
             return False
 
     return {
-        "reference_height_is_free_surface_metres": (
+        "reference_height_is_layer_depth_metres": (
             manifest.get("height_interpretation", {}).get("resolved_as")
-            == "free_surface_height"
-            and mapping.get("height", {}).get("units") == "m"),
+            == "layer_depth"
+            and mapping.get("height", {}).get("units") == "m"
+            and mapping.get("height", {}).get("physical_meaning")
+            == "layer_depth"
+            and mapping.get("height", {}).get("topography_is_separate")
+            is True),
         "u_is_eastward_m_s-1": (
             mapping.get("zonal_velocity", {}).get("positive_direction")
             == "eastward"
@@ -497,6 +544,107 @@ def _reference_convention_checks(
     }
 
 
+def _canonical_initial_coefficients(model) -> np.ndarray:
+    """Construct day zero through the canonical W5 initializer, without stepping."""
+    import cupy as cp
+    from planetary_sandbox.run.swe.initial_conditions import make_swe_ic
+
+    state = make_swe_ic("williamson5", model)
+    coefficients = cp.asnumpy(state.coeffs)[None, ...]
+    if coefficients.dtype != np.complex128 or not np.isfinite(
+            coefficients.real).all() or not np.isfinite(
+                coefficients.imag).all():
+        raise RuntimeError("canonical day-zero coefficients are invalid")
+    return coefficients
+
+
+def _evaluate_stage_day0(
+        *, spec: ArtifactSpec, package: FrozenReferencePackage, model,
+        coefficients: np.ndarray, tolerances: Mapping[str, Any],
+        phase: str,
+        ) -> tuple[dict[str, Any], dict[str, np.ndarray], GridPermutation]:
+    """Evaluate the corrected MRI layer-depth gate for one day-zero state."""
+    native_fields, native_lat, native_lon = _extract_native_fields(
+        model, coefficients, spec)
+    reference = package.artifacts[spec.filename].arrays
+    permutation = determine_grid_permutation(
+        native_lat, native_lon,
+        reference["latitude"], reference["longitude"],
+        native_field_shape=native_fields["layer_depth"].shape[-2:])
+    fields = _align_fields(native_fields, permutation)
+    day0 = evaluate_day0_contract(
+        layer_depth=fields["layer_depth"][0],
+        u=fields["u"][0],
+        v=fields["v"][0],
+        layer_depth_reference=reference["height"][0],
+        u_reference=reference["u"][0],
+        v_reference=reference["v"][0],
+        latitude_weights=reference["latitude_weights"],
+        longitude_spacing=2.0 * np.pi / spec.nlon,
+        tolerances=tolerances,
+        convention_checks=_reference_convention_checks(
+            package, model, permutation),
+    )
+    day0.update({
+        "phase": phase,
+        "reference_label":
+            f"MRI\u2192T{spec.truncation} projected layer depth",
+        "aeolus_layer_depth_formula":
+            AEOLUS_HEIGHT_AUDIT["layer_depth_formula"],
+        "optional_aeolus_free_surface_elevation_formula":
+            AEOLUS_HEIGHT_AUDIT["free_surface_elevation_formula"],
+        "mri_comparison_field": "layer_depth",
+        "units_and_components": {
+            "layer_depth": "metres; fluid-layer thickness",
+            "free_surface_elevation":
+                "metres; separate optional diagnostic only",
+            "bottom_topography":
+                "metres; separate fixed physical field",
+            "u": "m/s; eastward-positive",
+            "v": "m/s; northward-positive",
+            "wind_speed": "m/s; sqrt(u^2+v^2)",
+        },
+        "coordinate_permutation": permutation.to_manifest(),
+        "mountain_location": {
+            "latitude_rad": np.pi / 6.0,
+            "longitude_rad": 3.0 * np.pi / 2.0,
+        },
+    })
+    return day0, fields, permutation
+
+
+def _write_day0_failure(
+        *, stage: pathlib.Path, spec: ArtifactSpec, signature: str,
+        day0: Mapping[str, Any]) -> pathlib.Path:
+    """Persist a workflow lifecycle failure before any integration callback."""
+    return atomic_write_json(stage / "FAILED.json", {
+        "workflow_schema_version": WORKFLOW_SCHEMA_VERSION,
+        "status": "failed",
+        "failed_at_utc": _utc_now(),
+        "stage": spec.stage_name,
+        "stage_signature": signature,
+        "contract": "pre_integration_day_zero_layer_depth",
+        "integration_invoked": False,
+        "complete_sentinel_written": False,
+        "failed_checks": [
+            check for check in day0.get("checks", [])
+            if check.get("passed") is not True
+        ],
+    })
+
+
+def _advance_after_day0_gate(
+        *, day0: Mapping[str, Any], stage: pathlib.Path, spec: ArtifactSpec,
+        signature: str, integration_callback,
+        ):
+    """Invoke integration/reuse only after the persisted preflight gate passes."""
+    if day0.get("passed") is not True:
+        _write_day0_failure(
+            stage=stage, spec=spec, signature=signature, day0=day0)
+        require_day0_contract(day0)
+    return integration_callback()
+
+
 def _comparison_record(time_days: float, fields: Mapping[str, np.ndarray],
                        reference: Mapping[str, np.ndarray], index: int,
                        weights: np.ndarray, dlon: float) -> dict[str, Any]:
@@ -506,8 +654,8 @@ def _comparison_record(time_days: float, fields: Mapping[str, np.ndarray],
         "time_days": time_days,
         "comparison_role": role,
         "reference_label": None,  # filled with the truncation-specific label
-        "height": scalar_error_metrics(
-            fields["height"][index], reference["height"][index],
+        "layer_depth": scalar_error_metrics(
+            fields["layer_depth"][index], reference["height"][index],
             weights, dlon),
         "velocity": vector_error_metrics(
             fields["u"][index], fields["v"][index],
@@ -521,7 +669,7 @@ def _metric_value(metric: Mapping[str, Any]) -> float | None:
 
 
 def _flatten_comparison_record(record: Mapping[str, Any]) -> dict[str, Any]:
-    height = record["height"]
+    layer_depth = record["layer_depth"]
     velocity = record["velocity"]
     row: dict[str, Any] = {
         "time_days": record["time_days"],
@@ -529,14 +677,14 @@ def _flatten_comparison_record(record: Mapping[str, Any]) -> dict[str, Any]:
         "reference_label": record["reference_label"],
     }
     for norm in ("L1", "L2", "Linf"):
-        item = height["normalized"][norm]
-        row[f"height_{norm}"] = _metric_value(item)
-        row[f"height_{norm}_status"] = item["status"]
+        item = layer_depth["normalized"][norm]
+        row[f"layer_depth_{norm}"] = _metric_value(item)
+        row[f"layer_depth_{norm}_status"] = item["status"]
         item = velocity["normalized"][norm]
         row[f"velocity_vector_{norm}"] = _metric_value(item)
         row[f"velocity_vector_{norm}_status"] = item["status"]
     for prefix, values in (
-            ("height", height["absolute"]),
+            ("layer_depth", layer_depth["absolute"]),
             ("velocity_vector", velocity["absolute_vector"]),
             ("u_component", velocity["absolute_u_component"]),
             ("v_component", velocity["absolute_v_component"])):
@@ -714,33 +862,36 @@ def _render_comparison_maps(
     days = (0, 5, 10, 15)
     for index in indices:
         day = days[index]
-        ref_height = reference["height"][index]
-        aeolus_height = fields["height"][index]
-        height_error = aeolus_height - ref_height
+        reference_layer_depth = reference["height"][index]
+        aeolus_layer_depth = fields["layer_depth"][index]
+        layer_depth_error = aeolus_layer_depth - reference_layer_depth
         ref_speed = np.hypot(reference["u"][index], reference["v"][index])
         aeolus_speed = np.hypot(fields["u"][index], fields["v"][index])
         velocity_error = np.hypot(
             fields["u"][index] - reference["u"][index],
             fields["v"][index] - reference["v"][index])
 
-        height_limits = _finite_limits([ref_height, aeolus_height])
-        height_error_limits = _finite_limits([height_error], symmetric=True)
+        layer_depth_limits = _finite_limits(
+            [reference_layer_depth, aeolus_layer_depth])
+        layer_depth_error_limits = _finite_limits(
+            [layer_depth_error], symmetric=True)
         speed_limits = _finite_limits(
             [ref_speed, aeolus_speed], nonnegative=True)
         velocity_error_limits = _finite_limits(
             [velocity_error], nonnegative=True)
-        height_levels = np.linspace(*height_limits, 21)
-        height_error_levels = np.linspace(*height_error_limits, 21)
+        layer_depth_levels = np.linspace(*layer_depth_limits, 21)
+        layer_depth_error_levels = np.linspace(
+            *layer_depth_error_limits, 21)
         speed_levels = np.linspace(*speed_limits, 21)
         velocity_error_levels = np.linspace(*velocity_error_limits, 21)
         limits_manifest[f"day_{day}"] = {
-            "height_m": {
-                "limits": list(height_limits),
-                "levels": height_levels.tolist(),
+            "layer_depth_m": {
+                "limits": list(layer_depth_limits),
+                "levels": layer_depth_levels.tolist(),
             },
-            "signed_height_error_m": {
-                "limits": list(height_error_limits),
-                "levels": height_error_levels.tolist(),
+            "signed_layer_depth_error_m": {
+                "limits": list(layer_depth_error_limits),
+                "levels": layer_depth_error_levels.tolist(),
                 "zero_centered_symmetric": True,
             },
             "wind_speed_m_s-1": {
@@ -757,12 +908,12 @@ def _render_comparison_maps(
         }
 
         panels = (
-            (ref_height, f"{label} projected free-surface height",
-             "viridis", height_levels, "m"),
-            (aeolus_height, "Aeolus free-surface height",
-             "viridis", height_levels, "m"),
-            (height_error, "Aeolus \u2212 projected-reference height",
-             "RdBu_r", height_error_levels, "m"),
+            (reference_layer_depth, f"{label} projected layer depth",
+             "viridis", layer_depth_levels, "m"),
+            (aeolus_layer_depth, "Aeolus layer depth",
+             "viridis", layer_depth_levels, "m"),
+            (layer_depth_error, "Signed layer-depth error",
+             "RdBu_r", layer_depth_error_levels, "m"),
             (ref_speed, f"{label} projected wind speed",
              "magma", speed_levels, "m s$^{-1}$"),
             (aeolus_speed, "Aeolus wind speed",
@@ -812,7 +963,7 @@ def _render_error_timeseries(stage: pathlib.Path,
     fig, axes = plt.subplots(
         1, 2, figsize=(12, 4.5), constrained_layout=True)
     for prefix, label, linestyle in (
-            ("height", "free-surface height", "-"),
+            ("layer_depth", "layer depth", "-"),
             ("velocity_vector", "vector velocity", "--")):
         for norm in ("L1", "L2", "Linf"):
             values = [
@@ -829,7 +980,7 @@ def _render_error_timeseries(stage: pathlib.Path,
     axes[0].legend(fontsize=8)
 
     for key, label in (
-            ("height_weighted_rms_error", "height [m]"),
+            ("layer_depth_weighted_rms_error", "layer depth [m]"),
             ("velocity_vector_weighted_rms_error", "vector velocity [m/s]"),
             ("u_component_weighted_rms_error", "u component [m/s]"),
             ("v_component_weighted_rms_error", "v component [m/s]")):
@@ -847,13 +998,13 @@ def _render_error_timeseries(stage: pathlib.Path,
 
     forecast = [row for row in flat if row["time_days"] > 0.0]
     columns = [
-        "day", "height L2", "velocity L2", "height WRMS [m]",
+        "day", "layer-depth L2", "velocity L2", "layer-depth WRMS [m]",
         "velocity WRMS [m/s]"]
     cells = [[
         f"{row['time_days']:g}",
-        f"{row['height_L2']:.4e}",
+        f"{row['layer_depth_L2']:.4e}",
         f"{row['velocity_vector_L2']:.4e}",
-        f"{row['height_weighted_rms_error']:.4e}",
+        f"{row['layer_depth_weighted_rms_error']:.4e}",
         f"{row['velocity_vector_weighted_rms_error']:.4e}",
     ] for row in forecast]
     fig, axis = plt.subplots(figsize=(11, 2.2), constrained_layout=True)
@@ -941,10 +1092,11 @@ def execute_stage(
         *, spec: ArtifactSpec, package: FrozenReferencePackage,
         output_root: pathlib.Path, repository: Mapping[str, Any],
         tolerances: Mapping[str, Any], force_rerun: bool,
+        reused_capsule: pathlib.Path | None = None,
         ) -> dict[str, Any]:
     stage = output_root / spec.stage_name
     signature_payload = _stage_signature_payload(
-        spec, package, repository, tolerances)
+        spec, package, repository, tolerances, reused_capsule)
     signature = canonical_signature(signature_payload)
     if force_rerun and stage.exists():
         backup = _archive_existing_stage(stage)
@@ -961,79 +1113,60 @@ def execute_stage(
         "payload": signature_payload,
         "created_or_verified_at_utc": _utc_now(),
     })
-    capsule = _run_canonical_capsule(
-        spec, stage, resume=(state == "incomplete"))
-    capsule_manifest = _validate_capsule_manifest(capsule, spec)
-    times, coefficients = _load_capsule_state(capsule, spec)
-    _, model = _canonical_model(spec)
-    native_fields, native_lat, native_lon = _extract_native_fields(
-        model, coefficients, spec)
-    reference_artifact = package.artifacts[spec.filename]
-    reference = reference_artifact.arrays
-    permutation = determine_grid_permutation(
-        native_lat, native_lon,
-        reference["latitude"], reference["longitude"],
-        native_field_shape=native_fields["height"].shape[-2:])
-    fields = _align_fields(native_fields, permutation)
-    atomic_write_json(
-        stage / "coordinate_permutation.json", permutation.to_manifest())
 
-    dlon = 2.0 * np.pi / spec.nlon
-    convention_checks = _reference_convention_checks(
-        package, model, permutation)
-    day0 = evaluate_day0_contract(
-        height=fields["height"][0],
-        u=fields["u"][0],
-        v=fields["v"][0],
-        height_reference=reference["height"][0],
-        u_reference=reference["u"][0],
-        v_reference=reference["v"][0],
-        latitude_weights=reference["latitude_weights"],
-        longitude_spacing=dlon,
-        tolerances=tolerances,
-        convention_checks=convention_checks,
-    )
-    day0.update({
-        "reference_label": f"MRI\u2192T{spec.truncation} projection",
-        "aeolus_height_formula":
-            AEOLUS_HEIGHT_AUDIT["free_surface_height_formula"],
-        "aeolus_fluid_layer_thickness_formula":
-            AEOLUS_HEIGHT_AUDIT["fluid_layer_thickness_formula"],
-        "units_and_components": {
-            "height": "metres; absolute free-surface height",
-            "u": "m/s; eastward-positive",
-            "v": "m/s; northward-positive",
-            "wind_speed": "m/s; sqrt(u^2+v^2)",
-        },
-        "coordinate_permutation": permutation.to_manifest(),
-        "mountain_location": {
-            "latitude_rad": np.pi / 6.0,
-            "longitude_rad": 3.0 * np.pi / 2.0,
-        },
-    })
-    atomic_write_json(stage / "day0_contract_metrics.json", day0)
+    # Scientific convention validation is a precondition of integration.
+    # This constructs the canonical initial state but never advances it.
+    _, model = _canonical_model(spec)
+    initial_coefficients = _canonical_initial_coefficients(model)
+    preflight_day0, preflight_fields, preflight_permutation = (
+        _evaluate_stage_day0(
+            spec=spec, package=package, model=model,
+            coefficients=initial_coefficients, tolerances=tolerances,
+            phase="pre_integration"))
+    atomic_write_json(
+        stage / "coordinate_permutation.json",
+        preflight_permutation.to_manifest())
+    atomic_write_json(
+        stage / "day0_contract_metrics.json", preflight_day0)
+    reference = package.artifacts[spec.filename].arrays
     day0_plot_limits = _render_comparison_maps(
-        stage, spec, fields, reference,
+        stage, spec, preflight_fields, reference,
         reference["latitude"], reference["longitude"], indices=(0,))
     atomic_write_json(stage / "plot_limits.json", day0_plot_limits)
-    if not day0["passed"]:
-        print(json.dumps(
-            day0["likely_diagnostic_causes_if_failed"], indent=2), flush=True)
-    require_day0_contract(day0)
+
+    capsule = _advance_after_day0_gate(
+        day0=preflight_day0, stage=stage, spec=spec, signature=signature,
+        integration_callback=lambda: _run_canonical_capsule(
+            spec, stage, resume=(state == "incomplete"),
+            reused_capsule=reused_capsule))
+    capsule_manifest = _validate_capsule_manifest(capsule, spec)
+    times, coefficients = _load_capsule_state(capsule, spec)
+    postrun_day0, fields, permutation = _evaluate_stage_day0(
+        spec=spec, package=package, model=model, coefficients=coefficients,
+        tolerances=tolerances, phase="post_run_consistency")
+    postrun_day0["matches_preintegration_field_metrics"] = (
+        postrun_day0["field_metrics"]
+        == preflight_day0["field_metrics"])
+    atomic_write_json(
+        stage / "day0_postrun_consistency.json", postrun_day0)
+    require_day0_contract(postrun_day0)
+
+    reference_artifact = package.artifacts[spec.filename]
+    dlon = 2.0 * np.pi / spec.nlon
 
     # Forecast metrics are deliberately not evaluated until the day-zero
-    # contract above has passed and been persisted.
+    # pre-integration contract and post-run consistency check have passed.
     comparison_records = []
     for index, time_days in enumerate(reference["time_days"]):
         record = _comparison_record(
             float(time_days), fields, reference, index,
             reference["latitude_weights"], dlon)
         record["reference_label"] = (
-            f"MRI\u2192T{spec.truncation} projected reference")
+            f"MRI\u2192T{spec.truncation} projected layer depth")
         comparison_records.append(record)
     atomic_write_json(stage / "projected_reference_metrics.json", {
         "comparison": (
-            "MRI projected-reference agreement on the Aeolus native "
+            "MRI projected layer-depth agreement on the Aeolus native "
             "Gaussian grid"),
         "reference_is_untouched_n958": False,
         "records": comparison_records,
@@ -1058,7 +1191,20 @@ def execute_stage(
     _render_error_timeseries(stage, comparison_records)
     _render_conservation_timeseries(stage, conservation_rows)
 
-    capsule_relative = capsule.relative_to(stage).as_posix()
+    trajectory_reused = reused_capsule is not None
+    if trajectory_reused:
+        capsule_record = {
+            "storage": "external_reused",
+            **_capsule_file_identity(capsule),
+        }
+        capsule_relative = None
+    else:
+        capsule_relative = capsule.relative_to(stage).as_posix()
+        capsule_record = {
+            "storage": "stage_relative",
+            "relative_path": capsule_relative,
+            "trajectory_reused_without_integration": False,
+        }
     completion_without_hashes = {
         "workflow_schema_version": WORKFLOW_SCHEMA_VERSION,
         "completed_at_utc": _utc_now(),
@@ -1069,10 +1215,13 @@ def execute_stage(
         "reference_artifact": spec.filename,
         "reference_sha256": reference_artifact.sha256,
         "aeolus_capsule_relative_path": capsule_relative,
+        "aeolus_capsule": capsule_record,
         "aeolus_run_id": capsule_manifest.get("run_id"),
+        "trajectory_reused_without_integration": trajectory_reused,
         "exact_snapshot_times_s": times.tolist(),
         "coordinate_permutation": permutation.to_manifest(),
-        "day0_contract_passed": True,
+        "day0_contract_passed_before_integration": True,
+        "day0_postrun_consistency_passed": True,
         "conservation_summary": conservation_summary,
         "plot_limits_recorded": plot_limits,
     }
@@ -1097,7 +1246,15 @@ def _load_stage_comparison(stage: pathlib.Path) -> Mapping[str, Any]:
 def _load_completed_capsule(stage: pathlib.Path) -> pathlib.Path:
     complete = json.loads(
         (stage / "COMPLETE.json").read_text(encoding="utf-8"))
-    capsule = (stage / complete["aeolus_capsule_relative_path"]).resolve()
+    record = complete.get("aeolus_capsule", {})
+    if record.get("storage") == "external_reused":
+        capsule = pathlib.Path(record["source_path"]).resolve()
+        identity = _capsule_file_identity(capsule)
+        if identity["file_hashes"] != record.get("file_hashes"):
+            raise RuntimeError("reused external capsule identity changed")
+        return capsule
+    capsule = (stage / record.get(
+        "relative_path", complete["aeolus_capsule_relative_path"])).resolve()
     capsule.relative_to(stage.resolve())
     return capsule
 
@@ -1228,14 +1385,14 @@ def _summary_rows(output_root: pathlib.Path,
                 "truncation": f"T{spec.truncation}",
                 "grid": f"{spec.nlat}x{spec.nlon}",
                 "time_days": flat["time_days"],
-                "height_L1": flat["height_L1"],
-                "height_L2": flat["height_L2"],
-                "height_Linf": flat["height_Linf"],
+                "layer_depth_L1": flat["layer_depth_L1"],
+                "layer_depth_L2": flat["layer_depth_L2"],
+                "layer_depth_Linf": flat["layer_depth_Linf"],
                 "velocity_vector_L1": flat["velocity_vector_L1"],
                 "velocity_vector_L2": flat["velocity_vector_L2"],
                 "velocity_vector_Linf": flat["velocity_vector_Linf"],
-                "height_weighted_rms_error_m":
-                    flat["height_weighted_rms_error"],
+                "layer_depth_weighted_rms_error_m":
+                    flat["layer_depth_weighted_rms_error"],
                 "velocity_weighted_rms_error_m_s-1":
                     flat["velocity_vector_weighted_rms_error"],
             })
@@ -1244,19 +1401,20 @@ def _summary_rows(output_root: pathlib.Path,
 
 _README_FALLBACK = """# Williamson-5 MRI projected-reference validation
 
-Aeolus T42 and T63 solutions were compared on their native Gaussian grids
-with independently prepared T42 and T63 spectral projections of the MRI\u2013JMA
-N958 reference integration. Reference preparation used no Aeolus code, and
-the frozen projected fields were consumed by hash without further
-interpolation or spectral processing.
+Each completed Aeolus stage is compared on its native Gaussian grid with the
+corresponding independently prepared spectral projection of the MRI\u2013JMA N958
+reference integration. Reference preparation used no Aeolus code, and the
+frozen projected fields were consumed by hash without further interpolation
+or spectral processing.
 
 ## Four distinct validation views
 
 1. **Day-zero convention verification** checks initial conditions, units,
    velocity conventions, grid alignment, mountain location, and the audited
-   free-surface formula before forecast errors are evaluated.
-2. **MRI projected-reference agreement** reports resolved-scale scalar-height
-   and vector-velocity errors at days 5, 10, and 15.
+   layer-depth formula before forecast errors are evaluated.
+2. **MRI projected-reference agreement** reports resolved-scale layer-depth
+   and vector-velocity errors at days 5, 10, and 15. Bottom topography is a
+   separate physical field and is not added to the MRI comparison field.
 3. **Aeolus conservation and stability** reports intrinsic energy,
    potential-enstrophy, thickness, wind, finite-state, step, and timestep
    diagnostics separately from reference agreement.
@@ -1286,12 +1444,21 @@ def generate_summary(output_root: pathlib.Path,
     summary.mkdir(parents=True, exist_ok=True)
     rows = _summary_rows(output_root, specs)
     atomic_write_text(summary / "metrics_table.csv", _csv_text(rows))
+    completed_labels = ", ".join(
+        f"T{spec.truncation} ({spec.nlat}\u00d7{spec.nlon})" for spec in specs)
     readme = _readme_template(repository_root)
+    readme += (
+        "\n## Completed scope\n\n"
+        f"This validation root contains completed results for {completed_labels}. "
+        "Only stages explicitly present here are claimed as completed. "
+        "A T42\u2013T63 self-convergence result is produced only when both stage "
+        "sentinels are present.\n"
+    )
     readme += (
         "\n## Artifacts\n\n"
         "- `metrics_table.csv`: compact day-5/day-10/day-15 agreement table.\n"
         "- Per-stage directories: day-zero gate, projected-reference metrics, "
-        "conservation diagnostics, native-grid figures, and Aeolus capsule.\n"
+        "conservation diagnostics, native-grid figures, and capsule provenance.\n"
         "- `self_convergence/`: shared-triangle Aeolus-only comparison when "
         "both primary stages completed.\n"
         "- `validation_manifest.json`: strict-JSON provenance and hash index.\n"
@@ -1304,7 +1471,7 @@ DIAGNOSTIC_DEFINITIONS = {
     "relative_total_energy_drift": "(E(t)-E(0))/abs(E(0))",
     "relative_potential_enstrophy_drift": "(Z(t)-Z(0))/abs(Z(0))",
     "minimum_fluid_layer_thickness": (
-        "minimum of (Phi0+phi)/g over every model sampling, from canonical "
+        "minimum layer depth (Phi0+phi)/g over every model sampling, from canonical "
         "per-step Aeolus diagnostics"),
     "maximum_wind_speed": (
         "maximum sqrt(u^2+v^2) on the Aeolus state grid, per accepted step"),
@@ -1339,6 +1506,9 @@ def _build_validation_manifest(
             "aeolus_capsule_git": manifest.get("git"),
             "aeolus_capsule_numerics": manifest.get("numerics"),
             "aeolus_capsule_notes": manifest.get("notes"),
+            "trajectory_reused_without_integration":
+                complete.get("trajectory_reused_without_integration", False),
+            "aeolus_capsule": complete.get("aeolus_capsule"),
             "canonical_model_defaults": {
                 "horizontal_diffusion": "none",
                 "hyperdiffusion_nu4_m4_s-1": 0.0,
@@ -1373,7 +1543,7 @@ def _build_validation_manifest(
             "archived_relative_path": "reference/",
             "immutable_input": True,
         },
-        "aeolus_height_convention_audit": AEOLUS_HEIGHT_AUDIT,
+        "aeolus_vertical_field_convention_audit": AEOLUS_HEIGHT_AUDIT,
         "day0_gate_tolerances": tolerances,
         "norm_definitions": NORM_DEFINITIONS,
         "quadrature_convention": QUADRATURE_DEFINITION,
@@ -1381,7 +1551,8 @@ def _build_validation_manifest(
         "stages": stages,
         "self_convergence": self_convergence,
         "scientific_language": {
-            "reference_comparison": "MRI projected-reference agreement",
+            "reference_comparison":
+                "MRI projected layer-depth agreement",
             "intrinsic_diagnostics": "Aeolus conservation and stability",
             "cross_resolution": "T42\u2013T63 self-convergence",
             "initial_gate": "day-zero convention verification",
@@ -1420,6 +1591,12 @@ def run_validation_workflow(config: WorkflowConfig) -> dict[str, Any]:
         reference_dir=pathlib.Path(config.reference_dir),
         output_root=pathlib.Path(config.output_root),
         repository_root=pathlib.Path(config.repository_root),
+        reuse_t42_capsule=(
+            None if config.reuse_t42_capsule is None
+            else pathlib.Path(config.reuse_t42_capsule)),
+        reuse_t63_capsule=(
+            None if config.reuse_t63_capsule is None
+            else pathlib.Path(config.reuse_t63_capsule)),
     )
     repository = repository_identity(
         config.repository_root, configured_url=config.repository_url,
@@ -1447,10 +1624,14 @@ def run_validation_workflow(config: WorkflowConfig) -> dict[str, Any]:
 
     completions = {}
     for spec in requested_specs:
+        reused_capsule = (
+            config.reuse_t42_capsule if spec.truncation == 42
+            else config.reuse_t63_capsule)
         completions[spec.stage_name] = execute_stage(
             spec=spec, package=package, output_root=config.output_root,
             repository=repository, tolerances=tolerances,
-            force_rerun=config.force_rerun)
+            force_rerun=config.force_rerun,
+            reused_capsule=reused_capsule)
 
     convergence = None
     both = {

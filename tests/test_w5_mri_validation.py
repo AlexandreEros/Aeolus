@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import math
+import pathlib
 
 import numpy as np
 import pytest
@@ -14,7 +15,7 @@ from planetary_sandbox.validation.w5_mri import (
     ReferenceContractError,
     StageSignatureError,
     atomic_write_json,
-    construct_aeolus_heights,
+    construct_aeolus_vertical_fields,
     determine_grid_permutation,
     evaluate_day0_contract,
     require_day0_contract,
@@ -26,6 +27,10 @@ from planetary_sandbox.validation.w5_mri import (
     vector_error_metrics,
     verify_reference_package,
 )
+from planetary_sandbox.validation.w5_mri_workflow import (
+    _advance_after_day0_gate,
+    _run_canonical_capsule,
+)
 
 
 def _valid_manifest():
@@ -33,12 +38,15 @@ def _valid_manifest():
         name: f"hash-for-{name}" for name in (
             "manifest.json", "t42_64x128.npz", "t63_96x192.npz")}
     manifest = {
-        "schema_version": "mri-w5-reference-v1",
+        "schema_version": "mri-w5-reference-v2",
         "validation": {
             "all_reference_preparation_checks_passed": True,
         },
         "height_interpretation": {
-            "resolved_as": "free_surface_height",
+            "resolved_as": "layer_depth",
+            "meaning": (
+                "fluid-layer depth in metres; bottom topography is a "
+                "separate field"),
         },
         "final_artifacts": {},
         "targets": {},
@@ -104,15 +112,35 @@ def test_schema_rejection():
         validate_reference_manifest(manifest, expected_hashes=hashes)
 
 
+def test_v1_schema_is_rejected_by_corrected_notebook_b_contract():
+    manifest, hashes = _valid_manifest()
+    manifest["schema_version"] = "mri-w5-reference-v1"
+    manifest["height_interpretation"]["resolved_as"] = "free_surface_height"
+    with pytest.raises(ReferenceContractError, match="schema_version"):
+        validate_reference_manifest(manifest, expected_hashes=hashes)
+
+
 def test_manifest_rejects_failed_preparation_and_height_meaning():
     manifest, hashes = _valid_manifest()
     manifest["validation"]["all_reference_preparation_checks_passed"] = False
     with pytest.raises(ReferenceContractError, match="not explicitly"):
         validate_reference_manifest(manifest, expected_hashes=hashes)
     manifest, hashes = _valid_manifest()
-    manifest["height_interpretation"]["resolved_as"] = "layer_thickness"
-    with pytest.raises(ReferenceContractError, match="free_surface_height"):
+    manifest["height_interpretation"]["resolved_as"] = "free_surface_height"
+    with pytest.raises(ReferenceContractError, match="layer_depth"):
         validate_reference_manifest(manifest, expected_hashes=hashes)
+    manifest, hashes = _valid_manifest()
+    manifest["height_interpretation"]["meaning"] = "ambiguous height"
+    with pytest.raises(ReferenceContractError, match="separate topography"):
+        validate_reference_manifest(manifest, expected_hashes=hashes)
+
+
+def test_v2_package_preserves_v1_projected_array_hashes():
+    root = pathlib.Path(__file__).resolve().parents[1] / "mri-w5-reference-v2"
+    assert sha256_file(root / "t42_64x128.npz") == (
+        "fa320414507a7ed7f859c5061bd9782b07dda0b504ca5f68d57608360fb175d7")
+    assert sha256_file(root / "t63_96x192.npz") == (
+        "0072a566d0e8360277ef3da659dbffbc078d9fc3e6a7304c749d6d001f7a2dae")
 
 
 def test_artifact_key_and_shape_validation(tmp_path):
@@ -283,22 +311,35 @@ def test_undefined_normalizations_use_null_status_not_nonfinite():
     json.dumps({"scalar": scalar, "vector": vector}, allow_nan=False)
 
 
-def test_free_surface_height_uses_audited_aeolus_convention():
+def test_layer_depth_excludes_topography_and_optional_free_surface_includes_it():
     phi = np.asarray([[10.0, -10.0]])
     phi_s = np.asarray([[5.0, 20.0]])
-    result = construct_aeolus_heights(
+    result = construct_aeolus_vertical_fields(
         phi, base_geopotential=100.0,
         surface_geopotential=phi_s, gravity=10.0)
     assert np.array_equal(
-        result["fluid_layer_thickness_m"], np.asarray([[11.0, 9.0]]))
+        result["layer_depth_m"], np.asarray([[11.0, 9.0]]))
     assert np.array_equal(
-        result["free_surface_height_m"], np.asarray([[11.5, 11.0]]))
+        result["free_surface_elevation_m"], np.asarray([[11.5, 11.0]]))
+
+
+def test_synthetic_mountain_fingerprints_previous_comparison_error():
+    phi = np.zeros((2, 2))
+    mountain_geopotential = np.asarray([[0.0, 20.0], [40.0, 0.0]])
+    result = construct_aeolus_vertical_fields(
+        phi, base_geopotential=100.0,
+        surface_geopotential=mountain_geopotential, gravity=10.0)
+    mri_layer_depth = np.full((2, 2), 10.0)
+    assert np.array_equal(result["layer_depth_m"], mri_layer_depth)
+    assert np.array_equal(
+        result["free_surface_elevation_m"] - mri_layer_depth,
+        mountain_geopotential / 10.0)
 
 
 def test_day_zero_contract_failure_stops_forecast_metrics():
     zeros = np.zeros((2, 2))
     tolerances = {
-        "height_m": {
+        "layer_depth_m": {
             "maximum_absolute_error": 0.1,
             "weighted_mean_absolute_error": 0.1,
             "weighted_rms_error": 0.1,
@@ -315,8 +356,8 @@ def test_day_zero_contract_failure_stops_forecast_metrics():
         },
     }
     result = evaluate_day0_contract(
-        height=zeros + 1.0, u=zeros, v=zeros,
-        height_reference=zeros, u_reference=zeros, v_reference=zeros,
+        layer_depth=zeros + 1.0, u=zeros, v=zeros,
+        layer_depth_reference=zeros, u_reference=zeros, v_reference=zeros,
         latitude_weights=np.asarray([1.0, 1.0]),
         longitude_spacing=np.pi, tolerances=tolerances,
         convention_checks={"units_match": True})
@@ -324,6 +365,52 @@ def test_day_zero_contract_failure_stops_forecast_metrics():
     with pytest.raises(
             DayZeroContractError, match="no day 5/10/15 reference metrics"):
         require_day0_contract(result)
+
+
+def test_failed_preintegration_gate_never_invokes_integration(tmp_path):
+    spec = ARTIFACT_SPECS["t42_64x128.npz"]
+    calls = []
+    marker = tmp_path / "preserved_failure_artifact.txt"
+    marker.write_text("preserve me", encoding="utf-8")
+    with pytest.raises(DayZeroContractError):
+        _advance_after_day0_gate(
+            day0={
+                "passed": False,
+                "checks": [{
+                    "field": "layer_depth", "metric": "maximum_absolute_error",
+                    "value": 1.0, "tolerance": 0.1, "passed": False,
+                }],
+                "likely_diagnostic_causes_if_failed": ["synthetic mismatch"],
+            },
+            stage=tmp_path, spec=spec, signature="test-signature",
+            integration_callback=lambda: calls.append("integrated"))
+    assert calls == []
+    assert marker.read_text(encoding="utf-8") == "preserve me"
+    failure = json.loads((tmp_path / "FAILED.json").read_text(
+        encoding="utf-8"))
+    assert failure["integration_invoked"] is False
+    assert failure["complete_sentinel_written"] is False
+    assert not (tmp_path / "COMPLETE.json").exists()
+
+
+def test_explicit_completed_capsule_is_reused_without_runner(tmp_path):
+    capsule = tmp_path / "existing-capsule"
+    capsule.mkdir()
+    (capsule / "manifest.json").write_text(
+        json.dumps({"status": "completed"}), encoding="utf-8")
+    (capsule / "swe_snapshot_times.npy").write_bytes(b"times")
+    (capsule / "swe_coeffs.npy").write_bytes(b"coefficients")
+    result = _run_canonical_capsule(
+        ARTIFACT_SPECS["t42_64x128.npz"], tmp_path / "new-stage",
+        resume=False, reused_capsule=capsule)
+    assert result == capsule.resolve()
+    assert not (tmp_path / "new-stage" / "aeolus_capsule").exists()
+
+
+def test_atomic_json_rejects_nonfinite_values(tmp_path):
+    with pytest.raises(ValueError, match="NaN or infinity"):
+        atomic_write_json(tmp_path / "invalid.json", {"value": np.nan})
+    assert not (tmp_path / "invalid.json").exists()
 
 
 def test_stale_stage_signature_rejection(tmp_path):

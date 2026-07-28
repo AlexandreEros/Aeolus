@@ -20,7 +20,7 @@ from typing import Any
 import numpy as np
 
 
-REFERENCE_SCHEMA_VERSION = "mri-w5-reference-v1"
+REFERENCE_SCHEMA_VERSION = "mri-w5-reference-v2"
 REQUIRED_REFERENCE_KEYS = frozenset({
     "time_days",
     "height",
@@ -34,7 +34,7 @@ REQUIRED_TIMES_DAYS = np.asarray([0.0, 5.0, 10.0, 15.0],
                                  dtype=np.float64)
 REFERENCE_HASHES = {
     "manifest.json":
-        "e294512a13ce89173eae2cda629bdb3f6d9c3322f0ecfa9293c9951589669c3d",
+        "11eccde573101755fb162d2116f192255783d50c80bf3995a4a737ea021e57e6",
     "t42_64x128.npz":
         "fa320414507a7ed7f859c5061bd9782b07dda0b504ca5f68d57608360fb175d7",
     "t63_96x192.npz":
@@ -213,9 +213,14 @@ def validate_reference_manifest(
             "passed")
     height = manifest.get("height_interpretation")
     if not isinstance(height, Mapping) or (
-            height.get("resolved_as") != "free_surface_height"):
+            height.get("resolved_as") != "layer_depth"):
         raise ReferenceContractError(
-            "reference height must be resolved_as='free_surface_height'")
+            "reference height must be resolved_as='layer_depth'")
+    if height.get("meaning") != (
+            "fluid-layer depth in metres; bottom topography is a separate "
+            "field"):
+        raise ReferenceContractError(
+            "reference height meaning does not declare separate topography")
 
     final_artifacts = manifest.get("final_artifacts")
     targets = manifest.get("targets")
@@ -481,7 +486,7 @@ def determine_grid_permutation(
     return permutation
 
 
-def construct_aeolus_heights(
+def construct_aeolus_vertical_fields(
         perturbation_geopotential: np.ndarray,
         *, base_geopotential: float,
         surface_geopotential: np.ndarray | float,
@@ -492,8 +497,8 @@ def construct_aeolus_heights(
     ``phi`` is perturbation *fluid-layer* geopotential and ``Phi0`` is the
     base fluid-layer geopotential.  Fixed terrain ``phi_s`` is separate:
 
-    ``fluid thickness = (Phi0 + phi) / g``
-    ``free-surface height = (Phi0 + phi + phi_s) / g``
+    ``layer depth = (Phi0 + phi) / g``
+    ``free-surface elevation = (Phi0 + phi + phi_s) / g``
     """
     phi = np.asarray(perturbation_geopotential, dtype=np.float64)
     phi_s = np.asarray(surface_geopotential, dtype=np.float64)
@@ -503,11 +508,12 @@ def construct_aeolus_heights(
         raise ValueError("gravity must be finite and positive")
     if not np.isfinite(phi).all() or not np.isfinite(phi_s).all():
         raise ValueError("height-construction inputs must be finite")
-    thickness = (base_geopotential + phi) / gravity
-    free_surface = (base_geopotential + phi + phi_s) / gravity
+    layer_depth = (base_geopotential + phi) / gravity
+    free_surface_elevation = (
+        base_geopotential + phi + phi_s) / gravity
     return {
-        "fluid_layer_thickness_m": thickness,
-        "free_surface_height_m": free_surface,
+        "layer_depth_m": layer_depth,
+        "free_surface_elevation_m": free_surface_elevation,
     }
 
 
@@ -663,8 +669,8 @@ def derive_day0_tolerances(manifest: Mapping[str, Any]) -> dict[str, Any]:
         declared = manifest["validation"]["tolerances_declared_before_results"]
         analytic = declared["analytic_day0_max_abs"]
         scalar_roundtrip = declared["scalar_roundtrip_max_abs"]
-        height_floor = max(float(analytic["h_m"]),
-                           float(scalar_roundtrip["h"]))
+        layer_depth_floor = max(float(analytic["layer_depth_m"]),
+                                float(scalar_roundtrip["h"]))
         velocity_floor = max(
             float(analytic["u_m_s-1"]),
             float(analytic["v_m_s-1"]),
@@ -677,10 +683,10 @@ def derive_day0_tolerances(manifest: Mapping[str, Any]) -> dict[str, Any]:
     double_floor = 256.0 * np.finfo(np.float64).eps
     return {
         "declared_before_forecast_metrics": True,
-        "height_m": {
-            "maximum_absolute_error": 2.0 * height_floor,
-            "weighted_mean_absolute_error": height_floor,
-            "weighted_rms_error": height_floor,
+        "layer_depth_m": {
+            "maximum_absolute_error": 2.0 * layer_depth_floor,
+            "weighted_mean_absolute_error": layer_depth_floor,
+            "weighted_rms_error": layer_depth_floor,
         },
         "velocity_component_m_s-1": {
             "maximum_absolute_error": 2.5 * velocity_floor,
@@ -693,13 +699,13 @@ def derive_day0_tolerances(manifest: Mapping[str, Any]) -> dict[str, Any]:
             "weighted_rms_error": velocity_floor,
         },
         "derivation": {
-            "notebook_a_height_floor_m": height_floor,
+            "notebook_a_layer_depth_floor_m": layer_depth_floor,
             "notebook_a_velocity_floor_m_s-1": velocity_floor,
             "aeolus_precision": "float64 fields / complex128 coefficients",
             "float64_relative_roundoff_floor": double_floor,
             "policy": (
-                "height uses 2x Notebook A's maximum declared scalar floor "
-                "for max error and 1x for weighted errors; velocity uses "
+                "layer depth uses 2x Notebook A's maximum declared scalar "
+                "floor for max error and 1x for weighted errors; velocity uses "
                 "2.5x Notebook A's reconstruction floor for max error and "
                 "1x for weighted errors. These are convention gates, not "
                 "forecast-accuracy criteria, and are never auto-relaxed."
@@ -715,16 +721,17 @@ def _absolute_field_check(field: np.ndarray, reference: np.ndarray,
 
 
 def evaluate_day0_contract(
-        *, height: np.ndarray, u: np.ndarray, v: np.ndarray,
-        height_reference: np.ndarray, u_reference: np.ndarray,
+        *, layer_depth: np.ndarray, u: np.ndarray, v: np.ndarray,
+        layer_depth_reference: np.ndarray, u_reference: np.ndarray,
         v_reference: np.ndarray, latitude_weights: np.ndarray,
         longitude_spacing: float, tolerances: Mapping[str, Any],
         convention_checks: Mapping[str, bool] | None = None,
         ) -> dict[str, Any]:
     """Evaluate the initial-condition/convention gate without auto-relaxation."""
     fields = {
-        "free_surface_height": _absolute_field_check(
-            height, height_reference, latitude_weights, longitude_spacing),
+        "layer_depth": _absolute_field_check(
+            layer_depth, layer_depth_reference,
+            latitude_weights, longitude_spacing),
         "eastward_velocity_u": _absolute_field_check(
             u, u_reference, latitude_weights, longitude_spacing),
         "northward_velocity_v": _absolute_field_check(
@@ -734,7 +741,7 @@ def evaluate_day0_contract(
             latitude_weights, longitude_spacing),
     }
     tolerance_groups = {
-        "free_surface_height": tolerances["height_m"],
+        "layer_depth": tolerances["layer_depth_m"],
         "eastward_velocity_u": tolerances["velocity_component_m_s-1"],
         "northward_velocity_v": tolerances["velocity_component_m_s-1"],
         "wind_speed": tolerances["wind_speed_m_s-1"],
@@ -763,8 +770,8 @@ def evaluate_day0_contract(
     likely_causes: list[str] = []
     if not passed:
         likely_causes = [
-            "free-surface versus layer-thickness mismatch",
-            "missing or double-counted topography",
+            "layer-depth versus free-surface-elevation mismatch",
+            "bottom topography incorrectly added to the MRI comparison field",
             "missing base geopotential",
             "latitude reversal",
             "longitude roll",
@@ -853,10 +860,16 @@ def hash_file_inventory(root: os.PathLike[str] | str, *,
 
 
 NORM_DEFINITIONS = {
-    "scalar_height": {
-        "L1": "integral(abs(h-h_ref)) / integral(abs(h_ref))",
-        "L2": "sqrt(integral((h-h_ref)^2) / integral(h_ref^2))",
-        "Linf": "max(abs(h-h_ref)) / max(abs(h_ref))",
+    "scalar_layer_depth": {
+        "L1": (
+            "integral(abs(layer_depth-layer_depth_ref)) / "
+            "integral(abs(layer_depth_ref))"),
+        "L2": (
+            "sqrt(integral((layer_depth-layer_depth_ref)^2) / "
+            "integral(layer_depth_ref^2))"),
+        "Linf": (
+            "max(abs(layer_depth-layer_depth_ref)) / "
+            "max(abs(layer_depth_ref))"),
     },
     "vector_velocity": {
         "error_magnitude": "sqrt((u-u_ref)^2 + (v-v_ref)^2)",
@@ -889,9 +902,10 @@ AEOLUS_HEIGHT_AUDIT = {
     "topography_field": (
         "phi_s: fixed surface geopotential, stored separately from the "
         "prognostic state"),
-    "free_surface_height_formula": "(Phi0 + phi + phi_s) / gravity",
-    "fluid_layer_thickness_formula": "(Phi0 + phi) / gravity",
-    "positivity_diagnostic_field": "true fluid-layer thickness",
+    "free_surface_elevation_formula": "(Phi0 + phi + phi_s) / gravity",
+    "layer_depth_formula": "(Phi0 + phi) / gravity",
+    "mri_comparison_field": "layer_depth",
+    "positivity_diagnostic_field": "layer depth",
     "source_evidence": [
         "src/planetary_sandbox/physics/shallow_water.py module equations and "
         "ShallowWaterModel.characteristic_fields",

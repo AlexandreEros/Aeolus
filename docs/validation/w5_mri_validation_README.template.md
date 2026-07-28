@@ -1,21 +1,21 @@
 # Williamson-5 MRI projected-reference validation
 
-Aeolus T42 and T63 solutions were compared on their native Gaussian grids
-with independently prepared T42 and T63 spectral projections of the MRI–JMA
-N958 reference integration. Reference preparation used no Aeolus code, and
-the frozen projected fields were consumed by hash without further
-interpolation or spectral processing.
+Each completed Aeolus stage is compared on its native Gaussian grid with the
+corresponding independently prepared spectral projection of the MRI–JMA N958
+reference integration. Reference preparation used no Aeolus code, and the
+frozen projected fields were consumed by hash without further interpolation
+or spectral processing.
 
 ## Scientific scope
 
 This validation deliberately keeps four questions separate:
 
-1. **Day-zero convention verification** checks the initial free-surface
-   height, eastward and northward velocity components, wind speed, units,
+1. **Day-zero convention verification** checks the initial layer depth,
+   eastward and northward velocity components, wind speed, units,
    signs, Gaussian-grid orientation/alignment, and mountain location before
    any forecast-error metrics are computed.
 2. **MRI projected-reference agreement** reports resolved-scale
-   free-surface-height and vector-velocity errors against the independent
+   layer-depth and vector-velocity errors against the independent
    MRI→T42 and MRI→T63 projections at days 5, 10, and 15.
 3. **Aeolus conservation and stability** reports intrinsic total-energy and
    potential-enstrophy drift, true minimum fluid-layer thickness, maximum
@@ -25,18 +25,19 @@ This validation deliberately keeps four questions separate:
    truncation, native grid, resolved topography representation, and adaptive
    timestep history.
 
-The MRI `height` field is an absolute free-surface height in metres. Aeolus
-stores perturbation fluid-layer geopotential `phi` about `Phi0 = gH`, with
-fixed surface geopotential `phi_s` separate from the prognostic state.
-Therefore:
+The MRI `height` field is layer depth (fluid-layer thickness) in metres.
+Bottom topography is a separate physical field. Aeolus stores perturbation
+fluid-layer geopotential `phi` about `Phi0 = gH`, with fixed surface
+geopotential `phi_s` separate from the prognostic state. Therefore:
 
 ```text
-Aeolus free-surface height = (Phi0 + phi + phi_s) / gravity
-Aeolus fluid-layer thickness = (Phi0 + phi) / gravity
+Aeolus layer depth = (Phi0 + phi) / gravity
+Aeolus free-surface elevation = (Phi0 + phi + phi_s) / gravity
 ```
 
-The second expression—not free-surface height—is used for positivity and
-minimum-depth diagnostics.
+The first expression is the mandatory MRI comparison field and is also used
+for positivity and minimum-depth diagnostics. The second is a separate
+free-surface diagnostic and is not used for MRI `height` norms.
 
 ## Interpretation limits
 

@@ -43,6 +43,14 @@ def _parser() -> argparse.ArgumentParser:
         "--force-rerun", action="store_true",
         help="preserve the existing stage under a superseded name and run a "
              "fresh stage; never delete prior results")
+    parser.add_argument(
+        "--reuse-t42-capsule",
+        help="completed canonical T42 capsule to post-process without "
+             "reintegrating")
+    parser.add_argument(
+        "--reuse-t63-capsule",
+        help="completed canonical T63 capsule to post-process without "
+             "reintegrating")
     return parser
 
 
@@ -60,6 +68,12 @@ def main(argv=None) -> int:
         run_t42=not args.skip_t42,
         run_t63=not args.skip_t63,
         force_rerun=args.force_rerun,
+        reuse_t42_capsule=(
+            None if args.reuse_t42_capsule is None
+            else pathlib.Path(args.reuse_t42_capsule).expanduser()),
+        reuse_t63_capsule=(
+            None if args.reuse_t63_capsule is None
+            else pathlib.Path(args.reuse_t63_capsule).expanduser()),
     )
     run_validation_workflow(config)
     return 0
@@ -67,4 +81,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
