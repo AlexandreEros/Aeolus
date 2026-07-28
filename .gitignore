@@ -18,6 +18,7 @@ tests/.sh_cache/
 # Notebooks
 .ipynb_checkpoints/
 *.ipynb
+!/w5_mri_validation_colab.ipynb
 
 # Outputs/artifacts
 out/
