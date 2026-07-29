@@ -17,7 +17,6 @@ tests/.sh_cache/
 
 # Notebooks
 .ipynb_checkpoints/
-*.ipynb
 
 # Outputs/artifacts
 out/
