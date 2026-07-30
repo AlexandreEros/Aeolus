@@ -11,24 +11,30 @@ Canonical constants (all SI):
     Omega  = 7.292e-5  s^-1     rotation rate
     g      = 9.80616   m/s^2    gravity
     u0     = 20        m/s      zonal wind amplitude
-    h0     = 5960      m        reference FLUID-THICKNESS depth
+    h0     = 5960      m        reference FREE-SURFACE height
     hs0    = 2000      m        mountain peak height
     R0     = pi/9      rad      cone support radius (coordinate-plane)
     lat_c  = pi/6      rad      cone center latitude  (30 N)
     lon_c  = 3*pi/2    rad      cone center longitude (270 E == -90 E)
 
-The initial state is the Williamson-2-shaped wind/thickness pair with
-u0 = 20 m/s:
+The initial state is the Williamson-2-shaped wind/FREE-SURFACE pair with
+u0 = 20 m/s (Williamson et al. 1992: Sect. 2 defines h = h* + h_s with h
+the free surface and h* the depth; Sect. 3.5 takes "the wind and height
+field ... as in case 2, with alpha = 0"):
 
     u    = u0 cos(lat),  v = 0
-    h    = h0 - (C/g) sin^2(lat),      C = a*Omega*u0 + u0^2/2
+    eta  = h0 - (C/g) sin^2(lat),      C = a*Omega*u0 + u0^2/2
+    h*   = eta - h_s                   (cone-shaped depression in the layer)
 
-h is the FLUID THICKNESS (depth), NOT the free-surface height: the mountain
-raises the initial free surface  Phi0 + phi + phi_s  over the cone, which is
-exactly the canonical topographic forcing.  The terrain-compensating
-free-surface construction used by the `williamson2` scenario
-(phi = phi_fs' - phi_s') is explicitly NOT Williamson 5; a direct
-regression below fails if anyone ever "fixes" W5 to use it.
+In model variables: phi = C*(1/3 - sin^2 lat) - phi_s' (the same
+terrain-compensating construction as every other scenario) and
+H = h0 - C/(3g) - mean(h_s), so the free surface Phi0 + phi + phi_s
+reproduces eta exactly and the depth carries the canonical bite. A direct
+regression below fails if anyone ever reverts W5 to the pre-2026-07-29
+uncompensated-thickness convention (which raised the free surface over the
+cone — a physically different initial-value problem from the published
+test case and the MRI-JMA reference; see
+notebooks/W5_MRI_SEMANTIC_AUDIT.md).
 
 The cone uses COORDINATE-PLANE angular distance
 r = min(R0, sqrt(dlambda^2 + dlat^2)) — not great-circle distance — and is
@@ -78,8 +84,40 @@ R0 = math.pi / 9.0
 LATC = math.pi / 6.0
 LONC = 3.0 * math.pi / 2.0
 C_CANON = A_CANON * OMEGA_CANON * U0 + 0.5 * U0 * U0
-MEAN_DEPTH_CANON = H0 - C_CANON / (3.0 * GRAVITY)
 DAY_HOURS_CANON = 2.0 * math.pi / OMEGA_CANON / 3600.0
+
+
+def _cone_mean_height_local() -> float:
+    """Exact spherical mean of the analytic cone, restated locally.
+
+    hbar = (hs0 cos(lat_c)/2) * int_0^R0 (1 - r/R0) J0(r) r dr, the Bessel
+    integral summed as the alternating series
+    sum_k (-1)^k R0^(2k+2) / (4^k (k!)^2 (2k+2)(2k+3)). Deliberately the
+    same float expression as run/swe/config.py so the equality assertions
+    below are bitwise; an independent numerical-quadrature cross-check is
+    a separate test.
+    """
+    r0sq = R0 * R0
+    total = 0.0
+    k = 0
+    power = r0sq
+    factorial = 1.0
+    while True:
+        term = power / ((4.0 ** k) * factorial * factorial
+                        * (2 * k + 2) * (2 * k + 3))
+        new_total = total + (term if k % 2 == 0 else -term)
+        if new_total == total:
+            break
+        total = new_total
+        k += 1
+        power *= r0sq
+        factorial *= k
+    return 0.5 * HS0 * math.cos(math.radians(30.0)) * total
+
+
+CONE_MEAN_CANON = _cone_mean_height_local()
+#: Canonical mean depth H = mean(eta - h_s) = h0 - C/(3g) - mean(h_s).
+MEAN_DEPTH_CANON = H0 - C_CANON / (3.0 * GRAVITY) - CONE_MEAN_CANON
 
 
 def _make_w5_planet(grid_type="latlon", nlat=32, nlon=64, l_max=21,
@@ -286,7 +324,8 @@ def test_w5_config_resolves_canonical_values():
     assert cfg.gravity == GRAVITY
     assert cfg.day_hours == DAY_HOURS_CANON
     assert cfg.radius_earth_units == 1.0
-    # H = h0 - C/(3g), exactly (same float expression as the constants).
+    # H = h0 - C/(3g) - mean(h_s), exactly (same float expression as the
+    # local constants; the cone mean is the closed-form Bessel series).
     assert cfg.mean_depth_m == MEAN_DEPTH_CANON
     assert cfg.w5_canonical()
     assert cfg.mountain_height_m is None
@@ -396,8 +435,29 @@ def test_w5_config_constants_match_physics_cone():
     assert swe_config.W5_OMEGA == OMEGA_CANON
     assert swe_config.W5_GRAVITY == GRAVITY
     assert swe_config.W5_H0_M == H0
+    assert swe_config.W5_CONE_MEAN_HEIGHT_M == CONE_MEAN_CANON
     assert swe_config.W5_MEAN_DEPTH_M == MEAN_DEPTH_CANON
     assert swe_config.W5_DAY_HOURS == DAY_HOURS_CANON
+
+
+def test_w5_cone_mean_height_closed_form_matches_quadrature():
+    """The Bessel-series cone mean must agree with a brute-force spherical
+    quadrature of the analytic cone (independent derivation check), and
+    with the MRI-JMA reference model's logged initial global mean of mass
+    (5619.92593916377 m for depth = eta - h_s; STDOUT of
+    Williamson5/N959_1920x960/sh)."""
+    import numpy as np
+
+    lat = np.linspace(-0.5 * math.pi, 0.5 * math.pi, 8001)
+    lon = np.linspace(0.0, 2.0 * math.pi, 2000, endpoint=False)
+    lat2, lon2 = np.meshgrid(lat, lon, indexing="ij")
+    dlam = np.mod(lon2 - LONC + math.pi, 2.0 * math.pi) - math.pi
+    r = np.minimum(R0, np.hypot(dlam, lat2 - LATC))
+    hs = HS0 * (1.0 - r / R0)
+    w = np.cos(lat2)
+    numerical = float((hs * w).sum() / w.sum())
+    assert CONE_MEAN_CANON == pytest.approx(numerical, abs=5e-5)
+    assert MEAN_DEPTH_CANON == pytest.approx(5619.92593916377, abs=1e-4)
 
 
 # ===========================================================================
@@ -499,19 +559,25 @@ def test_w5_ic_spectral_construction_is_exact():
     z = zeta.copy()
     z[1, 0] = 0.0
     assert float(cp.abs(z).max()) == 0.0
-    # phi is the pure (2,0) mode: -(4*C/3)*sqrt(pi/5), C from the exact
-    # canonical constants (a and Omega are exact on the ideal sphere).
+    # phi = [case-2 free-surface (2,0) mode] - phi_s'. Adding phi_s' back
+    # must leave the pure (2,0) mode -(4*C/3)*sqrt(pi/5): every other
+    # entry cancels exactly (x + (-x) == 0 in IEEE), and the (2,0) entry
+    # matches to one rounding step of the compensation arithmetic.
     expect_phi = -(4.0 * C_CANON / 3.0) * math.sqrt(math.pi / 5.0)
-    assert complex(phi[2, 0]) == pytest.approx(expect_phi, rel=0, abs=0)
-    p = phi.copy()
-    p[2, 0] = 0.0
-    assert float(cp.abs(p).max()) == 0.0
-    # The phi monopole (mass anomaly) is exactly zero.
+    fs_anomaly = phi + model.phi_s_anom_lm
+    assert complex(fs_anomaly[2, 0]) == pytest.approx(expect_phi, rel=1e-12)
+    f = fs_anomaly.copy()
+    f[2, 0] = 0.0
+    assert float(cp.abs(f).max()) == 0.0
+    # The phi monopole (mass anomaly) is exactly zero: phi_s' is
+    # mean-removed, so the compensation never touches (0,0).
     assert complex(phi[0, 0]) == 0j
 
 
 @requires_cuda
-def test_w5_ic_reconstructs_canonical_wind_and_thickness():
+def test_w5_ic_reconstructs_canonical_wind_free_surface_and_depth():
+    """Direct canonical-field tests: winds, free-surface height, and layer
+    depth against the analytic Williamson case-5 prescriptions."""
     import cupy as cp
     from planetary_sandbox.run.swe.initial_conditions import make_swe_ic
 
@@ -524,31 +590,74 @@ def test_w5_ic_reconstructs_canonical_wind_and_thickness():
     # u = u0*cos(lat), v = 0, to Gauss-Legendre transform accuracy.
     assert float(cp.abs(u - U0 * cp.cos(lat)).max()) < 1e-9
     assert float(cp.abs(v).max()) < 1e-9
-    # Fluid thickness h = (Phi0 + phi)/g = h0 - (C/g) sin^2(lat).
-    h = (model.phi0 + planet.sh.inv_transform(state.coeffs[2]).real
-         ) / model.gravity
-    h_ref = H0 - (C_CANON / GRAVITY) * cp.sin(lat) ** 2
-    assert float(cp.abs(h - h_ref).max()) < 1e-9
+
+    phi_grid = planet.sh.inv_transform(state.coeffs[2]).real
+    phi_s_grid = model.surface_geopotential_on_state_grid()
+    depth = (model.phi0 + phi_grid) / model.gravity
+    surface = depth + phi_s_grid / model.gravity
+    eta_ref = H0 - (C_CANON / GRAVITY) * cp.sin(lat) ** 2
+
+    # Free surface == analytic eta up to the terrain-monopole quadrature
+    # residual (a CONSTANT offset: the discrete cone mean minus the exact
+    # Bessel-series mean; measured +0.0908 m on this 32x64/l21 grid,
+    # -0.0086 m at 64x128/l42, +0.0041 m at 96x192/l63). The spatially
+    # varying parts cancel spectrally, so the deviation must also be
+    # constant to transform accuracy.
+    dev = surface - eta_ref
+    assert float(cp.abs(dev).max()) < 0.15
+    assert float((dev - dev.mean()).max()) < 1e-9
+
+    # Layer depth == eta - h_s at the model's terrain representation
+    # (band-limited cone), same constant offset.
+    hs_band_limited = phi_s_grid / model.gravity
+    dev_depth = depth - (eta_ref - hs_band_limited)
+    assert float(cp.abs(dev_depth).max()) < 0.15
+
+    # Against the ANALYTIC cone the depth differs additionally by the
+    # band-limiting of the terrain itself (Gibbs ringing near the cusp;
+    # projection residual 0.0706 at this truncation) — bounded, documented.
+    lon = cp.asarray(planet.grid.point_longitudes, dtype=cp.float64)
+    from planetary_sandbox.physics.topography import williamson5_cone_elevation
+    hs_analytic = williamson5_cone_elevation(lat, lon)
+    band_limit_err = float(cp.abs(depth - (eta_ref - hs_analytic)).max())
+    assert band_limit_err < 500.0          # peak undershoot ~246 m at l21
+    # The canonical cone-shaped BITE is present in the layer:
+    # depth is ~hs0 shallower at the mountain than the zonal profile.
+    bite = eta_ref - depth
+    assert float(bite.max()) > 1500.0
+    assert float(bite.max()) < HS0 * 1.05  # allow small Gibbs overshoot
 
 
 @requires_cuda
-def test_w5_ic_thickness_is_terrain_independent():
-    """The SAME thickness/wind pair must come out whether or not the cone
-    is present: W5 raises the free surface over the mountain rather than
-    carving the mountain out of the fluid."""
+def test_w5_ic_is_terrain_aware():
+    """With the cone, phi differs from the flat construction by exactly
+    -phi_s' (winds identical): the depth carries the mountain bite. The
+    terrain-less model (defensive path) degenerates to the flat case-2
+    pair."""
     import cupy as cp
     from planetary_sandbox.run.swe.initial_conditions import make_swe_ic
 
     planet = _make_w5_planet()
-    with_cone = make_swe_ic("williamson5", _make_w5_model(planet))
+    model = _make_w5_model(planet)
+    with_cone = make_swe_ic("williamson5", model)
     without = make_swe_ic("williamson5", _make_w5_model(planet, cone=False))
-    assert bool(cp.all(with_cone.coeffs == without.coeffs))
+    assert bool(cp.all(with_cone.coeffs[0] == without.coeffs[0]))
+    assert bool(cp.all(with_cone.coeffs[1] == without.coeffs[1]))
+    diff = with_cone.coeffs[2] - without.coeffs[2]
+    # Off-(2,0) entries cancel exactly; the (2,0) entry carries one
+    # rounding step of the compensation arithmetic (measured 5.1e-13
+    # against coefficients of order 1e4).
+    assert float(cp.abs(diff + model.phi_s_anom_lm).max()) < 1e-8
 
 
 @requires_cuda
-def test_w5_regression_never_free_surface_compensated():
-    """MUST FAIL if W5 is ever changed to the williamson2-style
-    terrain-compensating construction phi = phi_balanced - phi_s'."""
+def test_w5_regression_ic_is_free_surface_compensated():
+    """MUST FAIL if W5 is ever reverted to the pre-2026-07-29 convention
+    that prescribed the case-2 field as the THICKNESS (no -phi_s' term),
+    i.e. a free surface raised over the mountain. That construction is a
+    physically different initial-value problem from Williamson (1992)
+    Sect. 2 + 3.5 and from the MRI-JMA reference trajectories (semantic
+    audit: notebooks/W5_MRI_SEMANTIC_AUDIT.md)."""
     import cupy as cp
     from planetary_sandbox.run.swe.initial_conditions import make_swe_ic
 
@@ -557,26 +666,30 @@ def test_w5_regression_never_free_surface_compensated():
     state = make_swe_ic("williamson5", model)
     phi = state.coeffs[2]
 
-    # The compensated variant would inject the cone's rich spectrum into
-    # phi. Locate the cone's largest off-(2,0) coefficient and demand the
-    # state carries EXACTLY zero there...
+    # The cone's largest off-(2,0) coefficient must appear in phi with the
+    # OPPOSITE sign (phi = case-2 mode - phi_s'): the uncompensated
+    # convention carried exactly zero there.
     phi_s = model.phi_s_anom_lm.copy()
     phi_s[2, 0] = 0.0
     idx = int(cp.abs(phi_s).argmax())
     l_big, m_big = divmod(idx, phi_s.shape[1])
     assert float(cp.abs(phi_s[l_big, m_big])) > 0.0   # cone truly present
-    assert complex(phi[l_big, m_big]) == 0j
-    # ...and that phi differs from the compensated construction by exactly
-    # the cone's surface-geopotential anomaly.
-    compensated = phi - model.phi_s_anom_lm
-    diff = float(cp.linalg.norm(phi - compensated))
-    assert diff == pytest.approx(
-        float(cp.linalg.norm(model.phi_s_anom_lm)), rel=1e-12)
-    assert diff > 0.0
+    assert complex(phi[l_big, m_big]) == complex(-phi_s[l_big, m_big])
+    # Globally: phi + phi_s' is the pure case-2 (2,0) mode, nothing else.
+    fs_anomaly = phi + model.phi_s_anom_lm
+    f = fs_anomaly.copy()
+    f[2, 0] = 0.0
+    assert float(cp.abs(f).max()) == 0.0
+    assert float(cp.abs(fs_anomaly[2, 0])) > 0.0
 
 
 @requires_cuda
-def test_w5_initial_free_surface_is_raised_over_the_mountain():
+def test_w5_initial_free_surface_is_zonal_not_raised():
+    """The canonical initial free surface shows NO mountain signature: the
+    mountain lives entirely in the layer depth. (The pre-correction
+    convention raised the surface ~1754 m over the cone at this
+    truncation; a reader seeing a bump here is looking at the reverted,
+    noncanonical construction.)"""
     import cupy as cp
     from planetary_sandbox.run.swe.initial_conditions import make_swe_ic
 
@@ -587,11 +700,15 @@ def test_w5_initial_free_surface_is_raised_over_the_mountain():
     phi_grid = planet.sh.inv_transform(state.coeffs[2]).real
     surface = (model.phi0 + phi_grid
                + model.surface_geopotential_on_state_grid()) / model.gravity
-    zonal_only = (model.phi0 + phi_grid) / model.gravity
-    bump = surface - zonal_only
-    # The free-surface bump IS the (band-limited) cone, peak ~1754 m here.
-    assert float(bump.max()) > 1500.0
-    assert float(bump.max()) < HS0
+    # Zonally symmetric: max longitude spread at fixed latitude ~ 0.
+    nlat, nlon = 32, 64
+    surf2d = surface.reshape(nlat, nlon)
+    zonal_spread = float((surf2d.max(axis=1) - surf2d.min(axis=1)).max())
+    assert zonal_spread < 1e-9
+    # And the depth — not the surface — carries the ~2000 m structure.
+    depth2d = ((model.phi0 + phi_grid) / model.gravity).reshape(nlat, nlon)
+    depth_spread = float((depth2d.max(axis=1) - depth2d.min(axis=1)).max())
+    assert depth_spread > 1500.0
 
 
 # ===========================================================================
@@ -615,12 +732,22 @@ def _integrate_fixed_cfl(planet, model, state, days):
 
 
 @requires_cuda
-def test_w5_initial_forcing_originates_from_phi_s():
-    """The initial tendency must be exactly the mountain term: the balanced
-    wind/thickness pair alone is steady, so dot(delta) = -lap(phi_s) to
-    cancellation accuracy and dot(zeta), dot(phi) remain ~0. With the cone
-    removed (hs0 = 0), every tendency vanishes — the topographic response
-    is entirely phi_s-driven, not an unbalanced construction."""
+def test_w5_initial_forcing_is_depth_advection_over_the_cone():
+    """Canonical case 5 at t = 0: the wind/free-surface pair is the
+    balanced case-2 state, so the momentum side is quiescent —
+    dot(zeta) ~ 0 and dot(delta) ~ 0 (the -lap(phi_s) mountain term is
+    cancelled by the compensated phi: phi + phi_s is zonal). The entire
+    initial response is zonal ADVECTION of the cone-shaped depth anomaly:
+
+        dot(phi) = -div(phi u) = -(u0/a) d(phi)/dlambda
+                 = -(u0/a) * (i m) * phi_lm
+
+    spectrally exact up to the model's per-product 2/3 dealiasing rule
+    (nonlinear products are truncated at l <= 2*l_max//3, so the terrain
+    modes above the cut do not advect at t = 0).
+
+    With the cone absent (flat model, flat-built state) every tendency
+    vanishes: the response is entirely terrain-driven."""
     import cupy as cp
     from planetary_sandbox.run.swe.initial_conditions import make_swe_ic
 
@@ -629,21 +756,30 @@ def test_w5_initial_forcing_originates_from_phi_s():
     state = make_swe_ic("williamson5", model)
     dot = model.tendency(state.coeffs)
 
-    lap_phi_s = model.lap_eigs[:, None] * model.phi_s_lm
-    forcing = float(cp.abs(lap_phi_s).max())
+    m_index = cp.arange(state.coeffs.shape[-1])[None, :]
+    expected_phi_dot = -(U0 / A_CANON) * (1j * m_index) * state.coeffs[2]
+    cut = (2 * 21) // 3          # the model's 2/3 product-truncation rule
+    expected_phi_dot[cut + 1:, :] = 0.0
+    expected_phi_dot[:, cut + 1:] = 0.0
+    forcing = float(cp.abs(expected_phi_dot).max())
     assert forcing > 0.0
-    # dot(delta) == -lap(phi_s) up to the balanced-pair cancellation floor
-    # (measured ~1e-12 relative on Gauss-Legendre).
-    residual = float(cp.abs(dot[1] + lap_phi_s).max()) / forcing
+    # dot(phi) matches the analytic advection spectrum to product-grid
+    # analysis accuracy.
+    residual = float(cp.abs(dot[2] - expected_phi_dot).max()) / forcing
     assert residual < 1e-9
-    # zeta/phi tendencies stay at the balanced floor: the mountain enters
-    # ONLY the divergence equation at t=0 (measured ~1e-16 relative).
-    assert float(cp.abs(dot[0]).max()) < 1e-9 * forcing
-    assert float(cp.abs(dot[2]).max()) < 1e-9 * forcing
+    # The momentum side stays at the balanced-cancellation floor, measured
+    # against the mountain term -lap(phi_s) that the compensated phi must
+    # cancel out of the divergence tendency (per-equation scale).
+    cancel_scale = float(cp.abs(model.lap_eigs[:, None]
+                                * model.phi_s_lm).max())
+    assert cancel_scale > 0.0
+    assert float(cp.abs(dot[0]).max()) < 1e-9 * cancel_scale
+    assert float(cp.abs(dot[1]).max()) < 1e-9 * cancel_scale
 
-    # Null experiment: no cone -> no response (the state is steady).
+    # Null experiment: no cone -> no response (flat case-2 is steady).
     flat_model = _make_w5_model(planet, cone=False)
-    dot_flat = flat_model.tendency(state.coeffs)
+    flat_state = make_swe_ic("williamson5", flat_model)
+    dot_flat = flat_model.tendency(flat_state.coeffs)
     assert float(cp.abs(dot_flat).max()) < 1e-9 * forcing
 
 
@@ -671,10 +807,11 @@ def test_w5_short_run_latlon_valid_and_conserving():
     # The mountain immediately produces nonzero divergence.
     assert float(cp.linalg.norm(y[1])) > 0.0
     # Energy and potential-enstrophy drift within the measured envelope.
-    # Measured at 6 h, GL l_max=21: dE/E = +7.10e-6 (dt-INdependent:
-    # +7.63e-6 at dt/2, i.e. truncation of the nonsmooth terrain
-    # interaction, not time integration; falls to -5.2e-7 at l_max=31) and
-    # dZ/Z = +3.86e-6. Tolerances carry ~7x/13x headroom.
+    # Measured at 6 h, GL l_max=21, canonical (2026-07-29) IC:
+    # dE/E = -4.59e-9 and dZ/Z = -1.03e-6 — far below the pre-correction
+    # IC's +7.1e-6/+3.9e-6 (the canonical state starts as balanced
+    # advection, not a 2 km raised-surface gravity-wave burst). Tolerances
+    # kept at the historical envelope (now >48x headroom).
     E1 = _total_energy(planet, model, y)
     Z1 = potential_enstrophy(model, final)
     assert abs(E1 - E0) <= 5e-5 * abs(E0)
@@ -700,9 +837,10 @@ def test_w5_short_run_geodesic_valid_and_conserving():
     final = ShallowWaterState(y)
     model.validate_state(final, context="after 3 hours of W5 (geodesic)")
     assert complex(y[2, 0, 0]) == 0j
-    # Measured at 3 h, geodesic res4/l_max=21: dE/E = +2.46e-5,
-    # dZ/Z = -5.52e-6 (the geodesic transform's inexact quadrature
-    # dominates; ~3.5x the GL drift rate). Tolerances have ~8x/18x headroom.
+    # Measured at 3 h, geodesic res4/l_max=21, canonical (2026-07-29) IC:
+    # dE/E = +1.07e-7, dZ/Z = -8.16e-8 — far below the pre-correction
+    # IC's +2.5e-5/-5.5e-6. Tolerances kept at the historical envelope
+    # (now >1000x headroom).
     E1 = _total_energy(planet, model, y)
     Z1 = potential_enstrophy(model, final)
     assert abs(E1 - E0) <= 2e-4 * abs(E0)
@@ -752,12 +890,21 @@ def test_potential_enstrophy_matches_analytic_rest_value():
                     reason="15-day canonical W5 acceptance run (~3 h on the "
                            "MX110); set AEOLUS_W5_ACCEPTANCE=1 to enable")
 def test_w5_fifteen_day_canonical_acceptance(tmp_path):
-    """The canonical benchmark through the real CLI, verified against the
-    measured 2026-07-20 acceptance envelopes (GL 64x128, l_max=42, RK4,
-    inviscid): 2407 steps, mass bit-identical, dE/E = -2.135e-6,
-    dZ/Z = +2.452e-5, day-15 h in [3759.6, 6196.0] m, max|u| 38.9 m/s.
-    Tolerances carry ~10x headroom. Reference capsule:
-    runs/w5-acceptance/20260720T050117Z_..._ac2c22de_c583365f."""
+    """The canonical benchmark through the real CLI (GL 64x128, l_max=42,
+    RK4, inviscid), gated by loose structural envelopes only.
+
+    STALE-ENVELOPE WARNING (2026-07-29): the initial condition was
+    corrected to the canonical Williamson free-surface prescription (see
+    the module docstring). The 2026-07-20 measured acceptance values —
+    2407 steps, dE/E = -2.135e-6, dZ/Z = +2.452e-5, day-15 h in
+    [3759.6, 6196.0] m, max|u| 38.9 m/s — and the capsules in
+    runs/w5-acceptance/*_c583365f were produced with the SUPERSEDED
+    uncompensated-thickness IC and are NOT valid references for the
+    corrected benchmark. The loose gates below (mass bit-identity,
+    |dE/E| <= 2e-5, h_min > 3000 m, max wind < 60 m/s, |dZ/Z| <= 2.5e-4)
+    are expected to hold for the canonical IC as well, but a fresh 15-day
+    measurement pass must replace this docstring's envelope numbers and
+    the acceptance capsules before the gates are tightened again."""
     import csv
     import numpy as np
     import cupy as cp

@@ -178,7 +178,15 @@ differ by `h_s`, means differ by 17.4 m). Day-zero comparison in Notebook B
 fails the physical contract, and the 15-day scientific comparison is
 refused, as required.
 
-### Required future correction (separate branch — NOT done in this task)
+### Required future correction
+
+> **Status (2026-07-29): IMPLEMENTED** on `fix/williamson5-initial-condition`
+> (uncommitted at audit-update time): `_williamson5` now subtracts `phi_s'`,
+> `W5_MEAN_DEPTH_M` absorbs the cone's exact closed-form spherical mean
+> (17.42696 m, giving H = 5619.92594 m), the pinning regression test was
+> replaced by its inverse, and the day-zero contract passes on both grids
+> (free-surface max |Δ| = 0.011 m T42 / 0.0065 m T63). The items below are
+> retained as the original specification.
 
 To make `williamson5` integrate the canonical IVP:
 

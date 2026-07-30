@@ -7,15 +7,11 @@ first shallow-water milestone (see run/swe/config.SWE_SCENARIOS).
 
 Topography-aware construction
 -----------------------------
-The ``rest``, ``gravity_wave``, and ``williamson2`` scenarios specify a
-velocity field and a FREE-SURFACE geopotential anomaly ``phi_fs'`` (both
-monopole-free); the prognostic thickness perturbation is then
+Every scenario — including ``williamson5`` — specifies a velocity field
+and a FREE-SURFACE geopotential anomaly ``phi_fs'`` (both monopole-free);
+the prognostic thickness perturbation is then
 
     phi = phi_fs' - phi_s'
-
-The ``williamson5`` scenario is the deliberate, benchmark-defining
-exception: it prescribes the THICKNESS field directly and never
-compensates for terrain (see ``_williamson5``).
 
 where ``phi_s'`` is the mean-removed surface geopotential of the model's
 fixed bottom topography (exactly zero for a flat bottom, so every flat-
@@ -109,26 +105,46 @@ def _williamson2(model: ShallowWaterModel) -> ShallowWaterState:
 def _williamson5(model: ShallowWaterModel) -> ShallowWaterState:
     """Williamson et al. (1992) case 5: zonal flow over an isolated mountain.
 
-    The wind/THICKNESS pair is the Williamson-2 shape with u0 = 20 m/s:
+    Canonical prescription (Williamson et al. 1992, Sect. 2 defines
+    ``h = h* + h_s`` with ``h`` the FREE SURFACE and ``h*`` the depth;
+    Sect. 3.5 takes "the wind and height field ... as in case 2, with
+    alpha = 0"; full derivation with MRI-JMA cross-checks in
+    notebooks/W5_MRI_SEMANTIC_AUDIT.md):
 
-        u = u0*cos(lat),  v = 0,
-        h = h0 - (C/g) sin^2(lat),   C = a*Omega*u0 + u0^2/2
+        u   = u0*cos(lat),  v = 0,             u0 = 20 m/s
+        eta = h0 - (C/g) sin^2(lat),           C = a*Omega*u0 + u0^2/2
+        h*  = eta - h_s                        (cone-shaped depression)
 
-    built exactly in spectral space: zeta = (2*u0/a) sin(lat) is the pure
-    (1,0) mode, delta = 0, and the mean-zero THICKNESS perturbation is
-    phi = C*(1/3 - sin^2 lat), a pure (2,0) mode. The canonical mean depth
-    carried by the model is H = h0 - C/(3g) (resolved by the config layer).
+    where ``eta`` is the free-surface height and ``h*`` the fluid-layer
+    depth. Translated to the model's variables (``g h* = Phi0 + phi`` with
+    the phi monopole pinned to zero, ``phi_s = g h_s``):
 
-    THE DEFINING W5 CONVENTION — deliberately different from the
-    terrain-aware ``williamson2`` scenario above: the thickness field is
-    NOT compensated by the surface-geopotential anomaly (no
-    ``phi -= phi_s'`` term). The mountain contributes separately through
-    the fixed phi_s, so the initial FREE SURFACE ``Phi0 + phi + phi_s`` is
-    raised over the cone; that raised surface is exactly the canonical
-    topographic forcing of test case 5. The state is therefore identical
-    whether or not the model carries terrain (a tested invariant), and a
-    regression test fails if this construction is ever changed to
-    ``phi = phi_balanced - phi_s'``.
+        g h* = g*h0 - C sin^2(lat) - phi_s
+             = [g*h0 - C/3 - g*mean(h_s)]                (mean -> Phi0)
+               + [C*(1/3 - sin^2 lat) - phi_s']          (anomaly -> phi)
+
+    so phi = C*(1/3 - sin^2 lat) - phi_s' — exactly the terrain-aware
+    free-surface construction shared by every other scenario — and the
+    mean depth resolved by the config layer is
+    H = h0 - C/(3g) - mean(h_s) (``W5_MEAN_DEPTH_M``, with the cone mean
+    in closed form). The initial free surface Phi0 + phi + phi_s then
+    reproduces eta exactly (phi_s' and the terrain monopole cancel), and
+    the layer depth carries the canonical cone-shaped bite, band-limited
+    at the model truncation like the terrain itself.
+
+    Built exactly in spectral space: zeta = (2*u0/a) sin(lat) is the pure
+    (1,0) mode, delta = 0, phi is the (2,0) case-2 mode minus phi_s'. A
+    terrain-less model (defensive/testing path only — the config layer
+    always pairs williamson5 with its cone) degenerates to the flat
+    case-2 pair.
+
+    HISTORY: before 2026-07-29 this scenario prescribed the case-2 field
+    as the THICKNESS (no phi_s' compensation), i.e. a free surface RAISED
+    over the cone — a physically different initial-value problem from the
+    published test case and from the MRI-JMA reference trajectories. The
+    semantic audit (notebooks/W5_MRI_SEMANTIC_AUDIT.md) established the
+    canonical reading from Williamson (1992) Sect. 2 + 3.5 and the MRI
+    archive; regression tests now pin THIS construction.
     """
     a = model.R
     omega = model.Omega
@@ -138,9 +154,12 @@ def _williamson5(model: ShallowWaterModel) -> ShallowWaterState:
     state = ShallowWaterState.zeros(model.l_max)
     # zeta = (2*u0/a) sin(lat): pure (1,0); sin(lat) = sqrt(4*pi/3) Y_1^0.
     state.coeffs[0, 1, 0] = (2.0 * u0 / a) * math.sqrt(4.0 * math.pi / 3.0)
-    # phi = C*(1/3 - sin^2 lat) = -(2C/3) P2: pure (2,0) with
-    # P2 = sqrt(4*pi/5) Y_2^0. NO terrain compensation (docstring).
-    state.coeffs[2, 2, 0] = -(4.0 * C / 3.0) * math.sqrt(math.pi / 5.0)
+    # Free-surface anomaly minus terrain anomaly (docstring derivation).
+    if model.has_topography:
+        state.coeffs[2] = -model.phi_s_anom_lm
+    # phi_fs' = C*(1/3 - sin^2 lat) = -(2C/3) P2: pure (2,0) with
+    # P2 = sqrt(4*pi/5) Y_2^0.
+    state.coeffs[2, 2, 0] += -(4.0 * C / 3.0) * math.sqrt(math.pi / 5.0)
     model.validate_state(state, context="williamson5 initial condition")
     return state
 

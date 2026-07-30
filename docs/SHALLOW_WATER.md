@@ -239,21 +239,18 @@ recomputed from every accepted state, exactly as for the BVE.
 
 ## Initial conditions
 
-The `rest`, `gravity_wave`, and `williamson2` scenarios specify a velocity
-field and a **free-surface** geopotential anomaly `φ_fs'`; the prognostic
-thickness perturbation is `φ = φ_fs' − φ_s'`. For a flat bottom
-(`φ_s' = 0`) this reproduces the historical states bit-for-bit; over
-terrain each of these scenarios is well-defined relative to the
-lake-at-rest state. `williamson5` is the deliberate exception: it
-prescribes the **thickness** field directly and never compensates for
-terrain (see its section below).
+Every scenario — including `williamson5` — specifies a velocity field and
+a **free-surface** geopotential anomaly `φ_fs'`; the prognostic thickness
+perturbation is `φ = φ_fs' − φ_s'`. For a flat bottom (`φ_s' = 0`) this
+reproduces the historical states bit-for-bit; over terrain each scenario
+is well-defined relative to the lake-at-rest state.
 
 | Scenario | Description |
 |---|---|
 | `rest` | Zero velocity, constant free surface. Flat bottom: `ζ = δ = φ = 0`; over terrain: `φ = −φ_s'` (the exact lake-at-rest state). All tendencies are exactly zero either way. |
 | `gravity_wave` | Small-amplitude `Y₄²` **free-surface** perturbation at rest; on a non-rotating flat-bottom planet it oscillates at `ω² = Φ₀ l(l+1)/a²`. |
 | `williamson2` | Williamson et al. (1992) case 2 (α = 0) wind/free-surface pair: `u = u₀ cos φ_lat`, `u₀ = 2πa/(12 days)`, `φ_fs' = C(1/3 − sin²φ_lat)`, `C = aΩu₀ + u₀²/2`. Over a flat bottom: the exact steady solution for any positive mean depth (canonical `g·h₀ = 2.94×10⁴ m²/s²` ↔ mean depth `(2.94×10⁴ − C/3)/g`). Over a mountain: the same wind and free surface launched above the terrain — a smooth mountain-flow experiment (NOT steady, and NOT Williamson case 5, whose mountain is conical and whose `u₀` is 20 m/s). |
-| `williamson5` | Williamson et al. (1992) case 5: the W2-shaped wind/**thickness** pair with `u₀ = 20 m/s`, `h₀ = 5960 m` over the canonical conical mountain (`hs0 = 2000 m`, `R0 = π/9`, center 30 N / −90 E). Owns its terrain; canonical constants resolved automatically. See the dedicated section below. |
+| `williamson5` | Williamson et al. (1992) case 5: the W2-shaped wind/**free-surface** pair with `u₀ = 20 m/s`, `h₀ = 5960 m` over the canonical conical mountain (`hs0 = 2000 m`, `R0 = π/9`, center 30 N / −90 E); the fluid-layer depth carries a cone-shaped depression, `h* = η − h_s`. Owns its terrain; canonical constants resolved automatically. See the dedicated section below. |
 
 All scenarios are built spectrally (no grid round trip), so they are exactly
 monopole-free and band-limited, and each validates its state before
@@ -272,20 +269,39 @@ canonical constants automatically:
 | rotation `Omega` | `7.292e-5 s^-1` (exact; `day_hours = 2*pi/Omega/3600`) |
 | gravity `g` | `9.80616 m/s^2` |
 | wind `u0` | `20 m/s` |
-| reference depth `h0` | `5960 m` |
-| mean depth `H = h0 - C/(3g)` | `5637.3529003537915 m`, `C = a*Omega*u0 + u0^2/2` |
+| free-surface reference `h0` | `5960 m` |
+| mean depth `H = h0 - C/(3g) - mean(h_s)` | `5619.92594380121 m`, `C = a*Omega*u0 + u0^2/2`; `mean(h_s) = 17.4270 m` is the cone's exact spherical mean (closed-form Bessel series in `run/swe/config.py`), matching the MRI-JMA reference model's logged initial mean mass `5619.9259 m` |
 | cone | `hs0 = 2000 m`, `R0 = pi/9`, center `(30N, -90E)` |
 
-The initial state is the W2-shaped pair with `u0 = 20`:
-`zeta = (2u0/a) sin(lat)` (pure `(1,0)`), `delta = 0`,
-`phi = C(1/3 - sin^2 lat)` (pure `(2,0)`), built exactly in spectral space.
-**Defining convention:** `phi` is the *thickness* perturbation and is NOT
-compensated by the terrain (`phi = phi_fs' - phi_s'` is the `williamson2`
-scenario's construction, not W5). The initial free surface
-`Phi0 + phi + phi_s` is therefore raised over the mountain — that raised
-surface is the canonical topographic forcing, and at `t = 0` the entire
-tendency is the exact spectral term `-laplacian(phi_s)` in the divergence
-equation (a tested invariant, with an `hs0 = 0` null experiment).
+Canonical prescription (Williamson et al. 1992: Sect. 2 defines
+`h = h* + h_s` with `h` the **free surface** and `h*` the depth; Sect. 3.5
+takes "the wind and height field ... as in case 2, with alpha = 0"):
+
+    u   = u0 cos(lat),  v = 0
+    eta = h0 - (C/g) sin^2(lat)        (free-surface height)
+    h*  = eta - h_s                    (cone-shaped depression in the layer)
+
+Built exactly in spectral space: `zeta = (2u0/a) sin(lat)` (pure `(1,0)`),
+`delta = 0`, and `phi = C(1/3 - sin^2 lat) - phi_s'` — the same
+terrain-compensating construction as every other scenario — with the cone's
+spherical mean absorbed into `Phi0` (table above). The initial free surface
+`Phi0 + phi + phi_s` reproduces `eta` exactly (the terrain anomaly and
+monopole cancel; residual is only the terrain-monopole quadrature error,
+measured `+0.091 m` at `l_max=21`, `-0.0086 m` at `l_max=42`, `+0.0041 m`
+at `l_max=63`), and the layer depth carries the canonical bite at the
+model's band-limited terrain representation. At `t = 0` the momentum side
+is quiescent (the `-laplacian(phi_s)` mountain term cancels against the
+compensated `phi`); the entire initial response is zonal advection of the
+depth anomaly, `dot(phi) = -(u0/a) d(phi)/dlambda` (a tested invariant,
+with an `hs0 = 0` null experiment).
+
+> **History (2026-07-29):** before this date the scenario prescribed the
+> case-2 field as the *thickness* (free surface raised over the cone, mean
+> depth `5637.35 m`) — a physically different initial-value problem from
+> the published test case and the MRI-JMA reference trajectories. The
+> semantic audit (`notebooks/W5_MRI_SEMANTIC_AUDIT.md`) established the
+> canonical reading; every pre-correction W5 trajectory, measured
+> envelope, and acceptance capsule is superseded.
 
 The cone uses the published **coordinate-plane** angular distance
 `r = min(R0, sqrt(dlambda^2 + dlat^2))` with wrapped longitude — not
@@ -319,10 +335,12 @@ aeolus run swe --scenario williamson5 --backend gauss-latlon `
 
 The run is inviscid (no hidden damping; the SWE CLI exposes no
 hyperdiffusion). Validation layers: exact spectral setup tests, projection
-characterization, short-run conservation envelopes (measured: 6 h GL
-`l_max=21` energy drift `+7.1e-6`, dt-independent ⇒ truncation-limited;
-geodesic 3 h `+2.5e-5`), and the 15-day acceptance evidence in
-`tests/test_williamson5.py` / the run capsule. Potential enstrophy
+characterization, short-run conservation envelopes (measured for the
+canonical 2026-07-29 IC: 6 h GL `l_max=21` energy drift `-4.6e-9`,
+potential enstrophy `-1.0e-6`; geodesic 3 h `+1.1e-7` / `-8.2e-8`), and
+the env-gated 15-day acceptance test in `tests/test_williamson5.py`
+(whose quoted envelope numbers and `runs/w5-acceptance` capsules predate
+the IC correction and await a fresh measurement pass). Potential enstrophy
 `Z = ∫ (zeta+f)^2/(2h) dA` is available as
 `run.swe.diagnostics.potential_enstrophy` (the correct variable-thickness
 invariant; deliberately not a CSV column so historical CSVs stay
