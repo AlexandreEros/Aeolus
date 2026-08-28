@@ -26,8 +26,10 @@ and the full 40-character configuration is in the tracked
 - An inviscid **rotating shallow-water solver** with optional fixed analytic
   bottom topography, prognostic in vorticity, divergence, and perturbation
   thickness geopotential, verified against the linear gravity-wave dispersion
-  relation, Williamson test case 2, and exact lake-at-rest balance over terrain
-  (see [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md)).
+  relation, Williamson test case 2, exact lake-at-rest balance over terrain
+  (see [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md)), and **Williamson test
+  case 5** against an external high-resolution reference model
+  ([report](docs/validation/williamson5_mri_2026-07-30.md)).
 - GPU spherical-harmonic analysis/synthesis in `float64`/`complex128` using
   CuPy, custom CUDA basis kernels, and dense GPU matrix products.
 - **Two interchangeable grid backends** — icosahedral geodesic and
@@ -212,17 +214,45 @@ discussion and provenance are in [docs/VALIDATION.md](docs/VALIDATION.md).*
 | RH4 geodesic, 5 days (res-4 state, res-5 fine product grid) | relative energy drift **−4.4555×10⁻⁴** |
 | RH4 Gauss lat–lon, matched timestep (`32 × 64`) | energy drift **−1.34×10⁻¹⁰** |
 | Transform round trip, `L=21` (geodesic vs Gauss) | relative L2 residual **1.04×10⁻²** vs **6.84×10⁻¹⁵** |
-| Test suite (Python 3.12.12, CuPy 13.4.0, MX110; GPU-guarded tests skipped without CUDA) | **625 passed** (+1 env-gated 15-day W5 acceptance run) |
+| **Williamson 5 vs MRI-JMA**, day-zero physical contract (T42 and T63) | **passed** — free surface `1.4×10⁻⁶` / `8.4×10⁻⁷` rel L2, winds `≈2.6×10⁻⁵ m/s` |
+| **Williamson 5**, 15-day inviscid runs (T42 `64 × 128`, T63 `96 × 192`) | both **completed**; mass drift **0.0** (bit-identical), energy drift **+3.4×10⁻⁷** / **−7.9×10⁻⁷** |
+| **Williamson 5**, day-15 free-surface difference vs MRI-JMA | wRMS **5.6 m** (T42) / **4.7 m** (T63) on a `~5620 m` layer |
+| Test suite (Python 3.12.12, CuPy 13.4.0, MX110; GPU-guarded tests skipped without CUDA) | **626 passed, 1 skipped** in 318 s (the skip is the env-gated 15-day W5 acceptance run) |
 
 The five-day geodesic energy number is locked by
 `test_prediction_p1_5day_energy_drift`. Full tables, conservation diagnostics,
 and orientation/rotation-equivalence tests are in
 [docs/VALIDATION.md](docs/VALIDATION.md).
 
+### Williamson test case 5
+
+Aeolus integrates the corrected canonical Williamson-5 initial-value problem
+(the case-2 height field prescribed as the **free surface**, over the canonical
+conical mountain), passed the day-zero physical contract at both T42 and T63,
+completed 15-day runs at both resolutions with excellent mass and energy
+conservation, and was compared against the high-resolution MRI-JMA/Yoshimura
+reference solution. All runs are at commit `668e6c9a` with a clean worktree, on
+the Gauss lat–lon backend, inviscid and with no hyperdiffusion.
+
+This is a **numerical-model intercomparison**, not a comparison against an
+analytic truth solution — Williamson 5 has none. Aeolus is not claimed to match
+truth, to reproduce MRI identically, or to demonstrate a formal convergence
+order (two truncations cannot measure one). The large raw `layer_depth`
+difference is dominated by Aeolus's band-limited cone versus the reference's
+analytic cone, not by dynamics.
+
+Full report, figures, provenance, and checksums:
+[**docs/validation/williamson5_mri_2026-07-30.md**](docs/validation/williamson5_mri_2026-07-30.md).
+
 ## Documentation
 
-- [docs/VALIDATION.md](docs/VALIDATION.md) — RH4 backend comparison,
-  conservation diagnostics, geodesic-vs-Gauss discussion, rotation tests.
+- [docs/VALIDATION.md](docs/VALIDATION.md) — RH4 backend comparison, the
+  Williamson-5 intercomparison summary, conservation diagnostics,
+  geodesic-vs-Gauss discussion, rotation tests.
+- [docs/validation/williamson5_mri_2026-07-30.md](docs/validation/williamson5_mri_2026-07-30.md)
+  — the accepted Williamson test case 5 result against the MRI-JMA reference:
+  day-zero contract, 15-day T42/T63 conservation, comparison tables, figures,
+  and full provenance.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — package layout, backends,
   spectral transform flow, output capsules/provenance, adding a backend.
 - [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) — BVE-only status,

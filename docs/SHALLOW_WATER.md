@@ -344,9 +344,17 @@ the IC correction and await a fresh measurement pass). Potential enstrophy
 `Z = ∫ (zeta+f)^2/(2h) dA` is available as
 `run.swe.diagnostics.potential_enstrophy` (the correct variable-thickness
 invariant; deliberately not a CSV column so historical CSVs stay
-byte-identical). No trusted machine-readable external reference field is
-bundled: setup exactness and self-convergence are validated, an external
-numerical error norm remains future work.
+byte-identical).
+
+An **external** comparison now exists on top of those layers: 15-day T42 and
+T63 runs at commit `668e6c9a` were compared against the high-resolution
+MRI-JMA/Yoshimura reference solution after a pre-declared day-zero physical
+contract, which passed at both resolutions. See
+[docs/validation/williamson5_mri_2026-07-30.md](validation/williamson5_mri_2026-07-30.md).
+The reference is another discrete model, not an analytic solution, so it bounds
+a model-to-model difference rather than an error against truth; no
+machine-readable reference field is bundled in the repository (checksums and an
+external mirror are given in the report).
 
 ## Minimal CLI example
 

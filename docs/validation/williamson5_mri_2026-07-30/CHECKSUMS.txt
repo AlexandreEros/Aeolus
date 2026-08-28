@@ -1,0 +1,29 @@
+Williamson test case 5 - MRI-JMA intercomparison, 2026-07-30
+SHA-256 checksums of the external evidence referenced by
+docs/validation/williamson5_mri_2026-07-30.md
+
+These files are NOT tracked in Git. They live in the Drive mirror
+(see the report for the folder URL). Verify with, e.g.:
+
+    python -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" <file>
+
+--- upstream MRI-JMA source (Williamson5/N959_1920x960/sh) ----------------
+cb925d764cc9869a7aeea989975fc1b06966c73344e138a31331b43e6e2a70eb  README.txt
+385fc3eaa95cedd13b6b2b472a0086915c421dfc780362576c1a5bfe9c4691fb  STDOUT
+09470d41e0f4df04a9577b127f76081cd5bd9244f0cf6192aa76280c379cf4c8  data.nc
+
+--- reference package built by Notebook A (mri-w5-reference/) -------------
+a78382636428fe286ea057eaeeafbe587f4ee778a33adcfe5451369ad658f81b  mri_w5_reference_t42_64x128.npz
+63e63bc6577d4e6e46479a76733edf26b690c363926b59830e143317cd956268  mri_w5_reference_t63_96x192.npz
+
+--- Aeolus 15-day output packages written by Notebook B -------------------
+bcb1af164ec739d097a898318ccd6c2be9a4c48659cfe385cf146007d28677aa  aeolus_w5_t42.npz
+bc6786f13bed5d21b83fc31bf62e57b149583f19c453c3466aef72b67d370711  aeolus_w5_t63.npz
+
+--- transport archives (byte-identical to the directories they contain) ---
+7fa8829143a42a89b0a3f9cdf8c583c27154a4975d639f0ecfdb62f2ba9d6b25  mri-w5-reference.zip
+a041f2dc99072dca5a76ece42c8a357dc236b84717db19d550356ec8f0b140f4  w5-mri-canonical-validation.zip
+
+The two npz hashes above are the ones independently recorded, at write time,
+in mri_reference_manifest.json ("packages") and in
+aeolus_t{42,63}_COMPLETE.json ("npz_sha256") in this directory.

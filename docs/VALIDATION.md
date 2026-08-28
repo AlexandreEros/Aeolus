@@ -1,9 +1,10 @@
 # Validation
 
 This document collects Aeolus's current validation evidence: the Rossby–Haurwitz
-backend comparison, conservation diagnostics, the geodesic-vs-Gauss quadrature
-discussion, orientation/rotation-equivalence tests, and the known numerical
-risks that remain open.
+backend comparison, the Williamson-5 shallow-water intercomparison against an
+external reference model, conservation diagnostics, the geodesic-vs-Gauss
+quadrature discussion, orientation/rotation-equivalence tests, and the known
+numerical risks that remain open.
 
 > **Reading guide.** The **Gauss latitude–longitude backend is the stronger
 > quadrature reference**: tensor-product Gauss–Legendre × periodic longitude
@@ -58,6 +59,48 @@ grid, backend-native 32-step sequence. Both use `L=21`, 24 h rotation,
 `ν=0`, one day, 6 h snapshots. These are not the matched-timestep five-day
 numbers in the table; full manifests are preserved in
 [figure provenance](assets/provenance.json).*
+
+## Williamson test case 5 — MRI-JMA intercomparison
+
+The strongest **shallow-water** evidence is an external intercomparison:
+Williamson et al. (1992) test case 5 (zonal flow over the canonical conical
+mountain) run against the high-resolution MRI-JMA reference solution archived
+with Yoshimura (2022). Full report, provenance, figures, and machine-readable
+receipts:
+[**Williamson 5 vs MRI-JMA, 2026-07-30**](validation/williamson5_mri_2026-07-30.md).
+
+Accepted result, at commit `668e6c9a` with a clean worktree, on the Gauss
+lat–lon backend, inviscid and with no hyperdiffusion:
+
+| Evidence | T42 (`64 × 128`, `l_max=42`) | T63 (`96 × 192`, `l_max=63`) |
+|---|---|---|
+| Day-zero physical contract (declared in advance) | **passed** | **passed** |
+| Day-0 free-surface difference, `max abs` / rel L2 | `0.011 m` / `1.44×10⁻⁶` | `0.0065 m` / `8.37×10⁻⁷` |
+| Day-0 wind difference, `max abs` | `2.60×10⁻⁵ m/s` | `2.72×10⁻⁵ m/s` |
+| 15-day integration | completed, 2363 steps | completed, 3535 steps |
+| Relative mass drift over 15 days | `0.0` (bit-identical) | `0.0` (bit-identical) |
+| Relative energy drift over 15 days | `+3.36×10⁻⁷` | `−7.92×10⁻⁷` |
+| Day-15 free-surface difference, wRMS / rel L2 | `5.57 m` / `9.87×10⁻⁴` | `4.67 m` / `8.28×10⁻⁴` |
+| Day-15 zonal-wind difference, wRMS | `0.44 m/s` | `0.21 m/s` |
+
+Reading these numbers correctly matters:
+
+- The reference is **another discrete model**, not an analytic solution. These
+  are model-to-model differences, not Aeolus's error.
+- The raw `layer_depth` difference is much larger (`87 m` / `36 m` peak) and is
+  **dominated by terrain representation** — Aeolus carries a band-limited cone,
+  the reference an analytic one. Removing that static term returns the
+  free-surface difference *identically* (verified to `9×10⁻¹³ m`), so the
+  free-surface rows above are the dynamical comparison.
+- **No convergence order is claimed**: two truncations cannot measure a rate.
+  Wind agreement improves with resolution (factor ≈2 in wRMS from T42 to T63)
+  more strongly than height agreement (factor ≈1.2); the report explains why
+  and treats it as an observation, not a defect.
+
+The full generated evidence — run capsules, per-step diagnostics, field
+packages, and all eight comparison figures — is mirrored externally rather than
+committed; checksums are tracked in
+[`validation/williamson5_mri_2026-07-30/CHECKSUMS.txt`](validation/williamson5_mri_2026-07-30/CHECKSUMS.txt).
 
 ## Conservation diagnostics and analytic guarantees
 

@@ -1,0 +1,103 @@
+{
+  "schema_version": "mri-w5-reference/1",
+  "created_utc": "2026-07-30T00:29:20.021122+00:00",
+  "source": {
+    "dataset": "Williamson5/N959_1920x960/sh",
+    "base_url": "https://climate.mri-jma.go.jp/pub/archives/Yoshimura_DFS_SW_Testcase",
+    "files_sha256": {
+      "README.txt": "cb925d764cc9869a7aeea989975fc1b06966c73344e138a31331b43e6e2a70eb",
+      "STDOUT": "385fc3eaa95cedd13b6b2b472a0086915c421dfc780362576c1a5bfe9c4691fb",
+      "data.nc": "09470d41e0f4df04a9577b127f76081cd5bd9244f0cf6192aa76280c379cf4c8"
+    },
+    "publication": [
+      "Yoshimura, H. (2022): Improved double Fourier series on a sphere and its application to a semi-implicit semi-Lagrangian shallow water model. Geosci. Model Dev. 15, 2561-2597, doi:10.5194/gmd-15-2561-2022",
+      "Williamson, Drake, Hack, Jakob, Swarztrauber (1992): A standard test set for numerical approximations to the shallow water equations in spherical geometry. J. Comput. Phys. 102, 211-224"
+    ],
+    "archived_variable_meanings": {
+      "h": "free-surface height [m] (verified: Yoshimura 2022 Eqs. 96-97; day-0 field equals the case-2 balanced surface to 2.4e-4 m; STDOUT global mean of mass equals mean(h - cone) to 4e-4 m)",
+      "u": "zonal wind [m/s]",
+      "v": "meridional wind [m/s]"
+    }
+  },
+  "constants": {
+    "a_m": 6371220.0,
+    "omega_s-1": 7.292e-05,
+    "gravity_m_s-2": 9.80616,
+    "u0_m_s-1": 20.0,
+    "h0_m": 5960.0,
+    "hs0_m": 2000.0,
+    "cone_radius_rad": 0.3490658503988659,
+    "cone_center_lon_rad": 4.71238898038469,
+    "cone_center_lat_rad": 0.5235987755982988
+  },
+  "equations": [
+    "free_surface_height(t,lat,lon) = archived MRI h",
+    "topography_height(lat,lon) = hs0*(1 - min(r,R)/R), r = sqrt(wrap(lon - 3*pi/2)^2 + (lat - pi/6)^2), R = pi/9 (coordinate-plane distance, analytic, time-independent)",
+    "layer_depth = free_surface_height - topography_height",
+    "C = a*Omega*u0 + u0^2/2 (day-0 verification: free_surface_height = h0 - (C/g)*sin(lat)^2)"
+  ],
+  "fields": {
+    "free_surface_height": {
+      "units": "m"
+    },
+    "layer_depth": {
+      "units": "m"
+    },
+    "topography_height": {
+      "units": "m"
+    },
+    "u": {
+      "units": "m/s"
+    },
+    "v": {
+      "units": "m/s"
+    },
+    "latitude": {
+      "units": "degrees_north (ordered north -> south)"
+    },
+    "longitude": {
+      "units": "degrees_east (uniform, 0 <= lon < 360)"
+    },
+    "gl_weights": {
+      "units": "Gauss-Legendre quadrature weights (sum = 2)"
+    },
+    "time": {
+      "units": "days since initialization"
+    }
+  },
+  "times_days": [
+    0,
+    5,
+    10,
+    15
+  ],
+  "target_grids": {
+    "t42": {
+      "nlat": 64,
+      "nlon": 128,
+      "latitude_convention": "Gauss-Legendre (leggauss) nodes ordered north -> south (Aeolus numerics/latlon_grid.py:59-67)",
+      "longitude_convention": "uniform, starts at 0, no endpoint"
+    },
+    "t63": {
+      "nlat": 96,
+      "nlon": 192,
+      "latitude_convention": "Gauss-Legendre (leggauss) nodes ordered north -> south (Aeolus numerics/latlon_grid.py:59-67)",
+      "longitude_convention": "uniform, starts at 0, no endpoint"
+    }
+  },
+  "interpolation": "bilinear from the 960x1920 source Gaussian grid with a periodic longitude pad (h, u, v); topography evaluated analytically at the target nodes; layer_depth defined by the identity",
+  "packages": {
+    "t42": {
+      "file": "mri_w5_reference_t42_64x128.npz",
+      "sha256": "a78382636428fe286ea057eaeeafbe587f4ee778a33adcfe5451369ad658f81b",
+      "nlat": 64,
+      "nlon": 128
+    },
+    "t63": {
+      "file": "mri_w5_reference_t63_96x192.npz",
+      "sha256": "63e63bc6577d4e6e46479a76733edf26b690c363926b59830e143317cd956268",
+      "nlat": 96,
+      "nlon": 192
+    }
+  }
+}

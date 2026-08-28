@@ -1,0 +1,8 @@
+{
+  "aeolus_commit": "668e6c9a5735b2d7200dcc121eb0f7c40450ae08",
+  "run_dir": "/content/w5-validation/runs/t63/w5-mri/20260730T011700Z_williamson5_rot23p93h_r4_l63_dt120h_45406d82_668e6c9a",
+  "npz_sha256": "bc6786f13bed5d21b83fc31bf62e57b149583f19c453c3466aef72b67d370711",
+  "contract_passed_at_launch": true,
+  "explicit_override_used": false,
+  "created_utc": "2026-07-30T01:21:44.560772+00:00"
+}
