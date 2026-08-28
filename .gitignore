@@ -17,7 +17,6 @@ tests/.sh_cache/
 
 # Notebooks
 .ipynb_checkpoints/
-*.ipynb
 
 # Outputs/artifacts
 out/
@@ -29,3 +28,16 @@ tests/*.png
 *.egg-info/
 
 *.bak
+
+# W5 / MRI validation: locally generated or downloaded evidence.
+# The canonical archive is mirrored externally; only the report, compact
+# receipts, principal figures, and notebooks are tracked (see
+# docs/validation/williamson5_mri_2026-07-30.md).
+w5-mri-canonical-validation/
+w5-mri-canonical-validation.zip
+mri-w5-reference/
+mri-w5-reference.zip
+mri-w5-reference-preparation-v1-fixed-run/
+artifacts/
+notebooks/*_browser_handoff.ipynb
+.pytest-tmp/

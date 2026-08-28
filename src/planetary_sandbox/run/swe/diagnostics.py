@@ -78,6 +78,41 @@ def _l2_norm(coeffs: cp.ndarray, radius: float) -> float:
     return float(cp.sqrt(radius**2 * _mode_power(coeffs).sum()))
 
 
+def potential_enstrophy(model: ShallowWaterModel,
+                        state: ShallowWaterState) -> float:
+    """Potential enstrophy  Z = integral (zeta + f)^2 / (2 h) dA.
+
+    This is the correct shallow-water invariant for VARIABLE fluid
+    thickness and bottom topography: the potential vorticity
+    q = (zeta + f)/h is materially conserved, and its mass-weighted square
+    integral  Z = integral h q^2/2 dA = integral (zeta+f)^2/(2h) dA  is
+    conserved by the continuous equations. It is NOT the plain integral of
+    zeta^2 (which is not an invariant of the SWE). Topography never enters
+    directly: h = (Phi0 + phi)/gravity is the FLUID thickness, and the
+    terrain influences Z only through the dynamics.
+
+    Evaluated with the state-grid quadrature (exact on the Gauss-Legendre
+    backend for band-limited integrands up to quadrature order; approximate
+    on the geodesic backend, whose measured drift envelope is therefore
+    looser). Deliberately a standalone helper, not a CSV column: the
+    per-step diagnostics schema is frozen for historical byte-compatibility.
+
+    Units: s^-2 m^2 / m * m^2 -> the (rho, g)-free convention matching the
+    other diagnostics (an overall constant does not affect drift ratios).
+    """
+    zeta_g = model.sh.inv_transform(state.coeffs[0]).real
+    f_g = 2.0 * model.Omega * cp.sin(
+        cp.asarray(model.grid.point_latitudes, dtype=cp.float64))
+    h_g = (model.phi0 + model.sh.inv_transform(state.coeffs[2]).real
+           ) / model.gravity
+    if not bool(cp.all(h_g > 0.0)):
+        raise ValueError(
+            "potential enstrophy is undefined for non-positive fluid "
+            "thickness (state-grid min h = %g m)" % float(h_g.min()))
+    w = cp.asarray(model.sh.weights, dtype=cp.float64) * model.R**2
+    return float(cp.sum(w * (zeta_g + f_g) ** 2 / (2.0 * h_g)))
+
+
 class SWEDiagnosticsRecorder:
     """Append-only diagnostics writer, called after every accepted step.
 

@@ -1,0 +1,121 @@
+{
+  "aeolus_commit": "668e6c9a5735b2d7200dcc121eb0f7c40450ae08",
+  "tolerances": {
+    "wind_max_abs_ms": 0.05,
+    "height_max_abs_m": 5.0,
+    "height_rel_l2": 0.0005
+  },
+  "report": {
+    "t42": {
+      "metrics": {
+        "free_surface_height": {
+          "weighted_mae": 0.008048219384122542,
+          "weighted_rms": 0.008130178099777712,
+          "rel_l2": 1.4403120057014754e-06,
+          "max_abs": 0.010994652747285727,
+          "signed_min": -0.010994652747285727,
+          "signed_max": -0.0061952181667948025
+        },
+        "u": {
+          "weighted_mae": 1.4029641878414804e-05,
+          "weighted_rms": 1.5925898714488002e-05,
+          "rel_l2": 9.75259010693153e-07,
+          "max_abs": 2.604069947409471e-05,
+          "signed_min": 3.7061758462186845e-07,
+          "signed_max": 2.604069947409471e-05
+        },
+        "v": {
+          "weighted_mae": 2.364297680828292e-19,
+          "weighted_rms": 5.104249218359974e-19,
+          "rel_l2": NaN,
+          "max_abs": 2.012213007856627e-17,
+          "signed_min": -2.012213007856627e-17,
+          "signed_max": 2.0122130078563104e-17
+        },
+        "layer_depth": {
+          "weighted_mae": 1.0444572871982871,
+          "weighted_rms": 3.2933207875346673,
+          "rel_l2": 0.0005851031579014271,
+          "max_abs": 87.3687410496459,
+          "signed_min": -42.0579890468689,
+          "signed_max": 87.3687410496459
+        },
+        "layer_depth_minus_terrain_repr": {
+          "weighted_mae": 0.008048219384123577,
+          "weighted_rms": 0.00813017809977807,
+          "rel_l2": 1.4444365390965113e-06,
+          "max_abs": 0.010994652747172762,
+          "signed_min": -0.010994652747172762,
+          "signed_max": -0.00619521816691547
+        },
+        "fs_diff_minus_topography": {
+          "weighted_mae": 17.426379685774428,
+          "weighted_rms": 132.2440201482763,
+          "rel_l2": 0.02342785699946695,
+          "max_abs": 1930.1438599091973,
+          "signed_min": -1930.1438599091973,
+          "signed_max": -0.0061952181667948025
+        }
+      },
+      "winds_ok": true,
+      "heights_ok": true,
+      "contract_passed": true
+    },
+    "t63": {
+      "metrics": {
+        "free_surface_height": {
+          "weighted_mae": 0.004585345456241786,
+          "weighted_rms": 0.004726515899769871,
+          "rel_l2": 8.373319073198913e-07,
+          "max_abs": 0.0065195383576792665,
+          "signed_min": 0.001613362863281509,
+          "signed_max": 0.0065195383576792665
+        },
+        "u": {
+          "weighted_mae": 1.3999636089656288e-05,
+          "weighted_rms": 1.5999862575718843e-05,
+          "rel_l2": 9.797883570584196e-07,
+          "max_abs": 2.7240139779394212e-05,
+          "signed_min": 2.9447881633171136e-07,
+          "signed_max": 2.7240139779394212e-05
+        },
+        "v": {
+          "weighted_mae": 2.311845708746499e-19,
+          "weighted_rms": 6.254643295005632e-19,
+          "rel_l2": NaN,
+          "max_abs": 4.462315120676733e-17,
+          "signed_min": -4.462315120676733e-17,
+          "signed_max": 4.4623151206763234e-17
+        },
+        "layer_depth": {
+          "weighted_mae": 0.5260984625612547,
+          "weighted_rms": 1.606214687005536,
+          "rel_l2": 0.0002853665407089944,
+          "max_abs": 36.48756247067513,
+          "signed_min": -28.670802825556166,
+          "signed_max": 36.48756247067513
+        },
+        "layer_depth_minus_terrain_repr": {
+          "weighted_mae": 0.0045853454562399965,
+          "weighted_rms": 0.004726515899768168,
+          "rel_l2": 8.397317636519987e-07,
+          "max_abs": 0.006519538358114779,
+          "signed_min": 0.0016133628629750874,
+          "signed_max": 0.006519538358114779
+        },
+        "fs_diff_minus_topography": {
+          "weighted_mae": 17.435356395043925,
+          "weighted_rms": 132.208524109732,
+          "rel_l2": 0.023421568445827018,
+          "max_abs": 1922.320740656682,
+          "signed_min": -1922.320740656682,
+          "signed_max": 0.0065195383576792665
+        }
+      },
+      "winds_ok": true,
+      "heights_ok": true,
+      "contract_passed": true
+    }
+  },
+  "contract_passed": true
+}

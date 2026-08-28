@@ -281,6 +281,8 @@ examples:
   aeolus run swe --scenario gravity_wave --day-hours inf --mean-depth 1000
   aeolus run swe --days 5 --n-snapshots 11 --no-plots
   aeolus run swe --topography mountain --mountain-height-m 2000 --days 2
+  aeolus run swe --scenario williamson5 --backend gauss-latlon --nlat 64 \
+                 --nlon 128 --l-max 42 --days 15 --n-snapshots 4
 """
 
 
@@ -745,12 +747,23 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     show("scenario", run_config.get("scenario"))
     if run_config.get("solver") in ("swe", "pe"):
         # Additive schema: manifests without a topography key are flat runs.
-        if run_config.get("topography", "flat") == "mountain":
+        topo_kind = run_config.get("topography", "flat")
+        if topo_kind == "mountain":
             show("topography",
                  f"mountain (h={run_config.get('mountain_height_m')} m at "
                  f"lat {run_config.get('mountain_lat_deg')} deg, "
                  f"lon {run_config.get('mountain_lon_deg')} deg, "
                  f"width {run_config.get('mountain_width_deg')} deg)")
+        elif topo_kind == "williamson5_cone":
+            canonical = run_config.get("w5_canonical")
+            tag = ("canonical" if canonical
+                   else "NONCANONICAL (W5-derived)" if canonical is False
+                   else "")
+            show("topography",
+                 f"Williamson-5 cone (hs0={run_config.get('w5_cone_height_m')}"
+                 f" m, R0=pi/9 at lat {run_config.get('w5_cone_lat_deg')} deg,"
+                 f" lon {run_config.get('w5_cone_lon_deg')} deg)")
+            show("Williamson 5", tag)
         else:
             show("topography", "flat")
     day_hours = run_config.get("day_hours")

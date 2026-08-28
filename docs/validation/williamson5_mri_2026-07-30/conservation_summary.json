@@ -1,0 +1,54 @@
+{
+  "description": "Conservation diagnostics derived from the per-accepted-step diagnostics/timeseries.csv of each canonical 15-day run capsule. Drift is (final-initial)/initial; span is (max-min)/initial over all accepted steps. The full CSVs live in the external archive.",
+  "aeolus_commit": "668e6c9a5735b2d7200dcc121eb0f7c40450ae08",
+  "runs": {
+    "t42": {
+      "accepted_steps": 2363,
+      "final_time_s": 1296000.0,
+      "total_mass": {
+        "initial": 2.8111539831584674e+19,
+        "final": 2.8111539831584674e+19,
+        "relative_drift": 0.0,
+        "relative_span": 0.0
+      },
+      "total_energy": {
+        "initial": 7.848677769736843e+23,
+        "final": 7.848680406845786e+23,
+        "relative_drift": 3.3599403874206435e-07,
+        "relative_span": 4.559822714848961e-07
+      },
+      "timestep_s": {
+        "min": 109.77752308431081,
+        "max": 587.5944068971837,
+        "mean": 548.455353364367
+      },
+      "max_wind_ms_over_run": 42.65685468360793,
+      "min_layer_depth_m_over_run": 3825.1554475085463,
+      "terrain_max_m": 1842.759323393704
+    },
+    "t63": {
+      "accepted_steps": 3535,
+      "final_time_s": 1296000.0,
+      "total_mass": {
+        "initial": 2.8111539831584674e+19,
+        "final": 2.8111539831584674e+19,
+        "relative_drift": 0.0,
+        "relative_span": 0.0
+      },
+      "total_energy": {
+        "initial": 7.84871299819585e+23,
+        "final": 7.848706781536184e+23,
+        "relative_drift": -7.920610253851736e-07,
+        "relative_span": 7.940155415842145e-07
+      },
+      "timestep_s": {
+        "min": 134.47850433411077,
+        "max": 392.8124696661392,
+        "mean": 366.6195190947675
+      },
+      "max_wind_ms_over_run": 42.759277575052174,
+      "min_layer_depth_m_over_run": 3761.469013741004,
+      "terrain_max_m": 1885.842884527992
+    }
+  }
+}
