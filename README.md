@@ -1,14 +1,39 @@
 # Aeolus
 
-**A GPU-resident spectral laboratory for two-dimensional flow on a sphere.**
+**A GPU-resident spectral laboratory for circulation on a rotating sphere.**
 
-Aeolus advances the non-divergent barotropic vorticity equation (BVE) and
-the rotating shallow-water equations with spherical harmonics, and can run
-the same models and operators on either an icosahedral geodesic point set or
-a Gauss–Legendre latitude–longitude grid. It
-is research software for people interested in spherical spectral methods,
-backend parity, conservation diagnostics, and reproducible numerical
-experiments — **not** a general circulation model.
+A thin layer of fluid on a spinning sphere does not stay smooth. Rotation,
+curvature, and the poleward variation of the Coriolis parameter organize it:
+energy collects at preferred scales, flow gathers into jets and long-lived
+vortices, and disturbances travel as planetary-scale waves. Aeolus is a
+numerical laboratory for watching that organization arise from the equations
+themselves — from a discretized dynamical core and its spectral transforms,
+not from structure imposed on the output.
+
+That makes two kinds of question askable. **What patterns emerge** — which
+dominant scales, which harmonic structure, which coherent structures a given
+rotation rate, radius, and mean layer depth select. And **how organized flow is
+redistributed across scales**: a conservative run can begin in essentially one
+low-order mode and, through mode coupling alone, spread its energy over a broad
+harmonic spectrum, raising the mean wavenumber and the effective number of
+occupied modes, while mass, energy, and potential enstrophy stay controlled to
+one part in 10⁵ or better. No explicit dissipation is applied; what broadens dramatically is the coarse-grained spectral description of the flow, while the principal invariants remain nearly unchanged. The figure below measuresexactly that. Aeolus is early, though: varying planetary parameters to see whenthe **spectral character** of a circulation changes — and eventually lettingsuch differences act on the transport of heat, mass, and momentum — needs
+models it does not have yet. What exists today is the spectral machinery, the
+conservation diagnostics, and the run provenance that would make those
+comparisons worth believing.
+
+![Aeolus Williamson Test Case 5 T63 shallow-water validation](docs/validation/williamson_5/overview.png)
+
+*Aeolus solving Williamson Test Case 5 at T63 (96×192 Gauss–Legendre grid, ℓ ≤ 63): an initially axisymmetric zonal flow over an isolated conical mountain sheds a global, mountain-forced wave train over 15 simulated days, while layer mass stays bit-identical to day 0 and total energy and potential enstrophy drift by less than one part in 10⁵. The right-hand column tracks that reorganization spectrally, in the rotational/divergent modes the solver already carries: the flow starts as essentially one low-order mode (mean degree ⟨ℓ⟩ = 1, mean zonal wavenumber ⟨|m|⟩ = 0) and spreads to ⟨ℓ⟩ ≈ 2.7 and about 4.4 effective occupied modes by day 15 — the visual complexity is real dynamics, not a loss of the conserved quantities. [See the Williamson-5 validation evidence and reference comparison →](docs/validation/williamson5_mri_2026-07-30.md)*
+
+Aeolus advances the non-divergent barotropic vorticity equation (BVE) and the
+rotating shallow-water equations with spherical harmonics — with an early dry
+hydrostatic primitive-equation core beginning to add vertical structure — and
+can run the same models and operators on either an icosahedral geodesic point
+set or a Gauss–Legendre latitude–longitude grid. It is research software for
+people interested in spherical spectral methods, backend parity, conservation
+diagnostics, and reproducible numerical experiments — **not** a general
+circulation model.
 
 ![Two vortices evolving over ten days](docs/assets/two_vortices_evolution.png)
 
@@ -30,6 +55,12 @@ and the full 40-character configuration is in the tracked
   (see [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md)), and **Williamson test
   case 5** against an external high-resolution reference model
   ([report](docs/validation/williamson5_mri_2026-07-30.md)).
+- An early **dry hydrostatic primitive-equation core** in sigma coordinates
+  with a first runnable fixed-step experiment (`aeolus run pe`): exact rest,
+  smooth evolution, and analytic orographic balance over fixed band-limited
+  terrain are verified, but there is no forcing, moisture, hyperdiffusion,
+  adaptive stepping, or energy-conservation claim
+  ([docs/PRIMITIVE_EQUATIONS_RUNNER.md](docs/PRIMITIVE_EQUATIONS_RUNNER.md)).
 - GPU spherical-harmonic analysis/synthesis in `float64`/`complex128` using
   CuPy, custom CUDA basis kernels, and dense GPU matrix products.
 - **Two interchangeable grid backends** — icosahedral geodesic and
@@ -41,12 +72,15 @@ and the full 40-character configuration is in the tracked
 
 ## What Aeolus is not
 
-Aeolus does **not** solve the primitive equations or any GCM / weather
-model. It has no vertical structure, forcing, moisture, or thermodynamics.
-The shallow-water core is inviscid and supports only fixed analytic bottom
-topography (`flat` or one Gaussian mountain); the separate terrain generated
-by `Planet.generate` remains decorative, and no topography is coupled to the
-primitive-equation foundation. See
+Aeolus is **not** a GCM or weather model. The primitive-equation core is an
+ignition path, not a climate model: no forcing, moisture, hyperdiffusion,
+semi-implicit or adaptive stepping, no CFL controller, no total-energy
+conservation diagnostic, and nothing longer than short fixed-step
+demonstrations. The BVE and shallow-water cores have no vertical structure at
+all, and the shallow-water core is inviscid. Every solver takes only fixed
+analytic bottom topography — `flat` or one Gaussian mountain, plus the
+benchmark-owned cone that the `williamson5` scenario supplies — and the
+separate terrain generated by `Planet.generate` remains decorative. See
 [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
 ## Quick start
@@ -255,8 +289,8 @@ Full report, figures, provenance, and checksums:
   and full provenance.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — package layout, backends,
   spectral transform flow, output capsules/provenance, adding a backend.
-- [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) — BVE-only status,
-  CUDA/CuPy assumptions, quadrature limits, path to shallow water.
+- [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) — current solver
+  scope, CUDA/CuPy assumptions, quadrature limits.
 - [docs/MATHEMATICAL_MODEL.md](docs/MATHEMATICAL_MODEL.md) — equations and conventions.
 - [docs/SHALLOW_WATER.md](docs/SHALLOW_WATER.md) — the rotating shallow-water
   core: prognostics, discretization, CFL, scenarios, verification status.
@@ -271,9 +305,10 @@ Full report, figures, provenance, and checksums:
 
 ## Current limitations
 
-- Single-layer dynamics only (BVE and shallow water with fixed analytic
-  topography): no time-dependent or data-driven terrain, forcing, or
-  primitive-equation topography coupling.
+- Fixed analytic topography only, in every solver: no time-dependent or
+  data-driven terrain, and no forcing anywhere. The BVE and shallow-water
+  cores are single-layer; the dry primitive-equation core has vertical
+  structure but no moisture and no validated long integrations.
 - GPU/CuPy only: no production CPU fallback or CPU CI path.
 - The advective CFL ceiling is recomputed from every accepted state (genuine
   state-adaptive advective stepping), but explicit-viscosity (`ν∇²`) stability

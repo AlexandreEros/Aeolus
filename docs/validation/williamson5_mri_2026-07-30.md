@@ -155,6 +155,80 @@ Total mass is conserved to the last bit of the `float64` accumulator over
 thousands of steps, and total energy drifts by under one part in `10^6` on an
 **inviscid** run with no hyperdiffusion and no numerical damping of any kind.
 
+### 4.1 Spectral complexity of the T63 snapshots
+
+The conservation figures above say the run holds its invariants; they say
+nothing about how much *structure* the flow has acquired. The holistic T63
+figure
+([williamson_5/overview.png](williamson_5/overview.png), produced by
+[williamson_5/plot_swe_holistic.py](williamson_5/plot_swe_holistic.py))
+therefore carries a small per-snapshot spectral block alongside the drifts.
+Everything in it comes from artifacts already saved by the canonical T63 run —
+`swe_coeffs.npy`, `swe_snapshot_times.npy` and `diagnostics/timeseries.csv` in
+the capsule, plus the day-0/5/10/15 `npz` field package. Nothing is re-run and
+nothing is approximated.
+
+**Definition.** The velocity is decomposed the way the solver already carries
+it — rotational (streamfunction `psi`) plus divergent (velocity potential
+`chi`), i.e. the vector-spherical-harmonic split — never by treating the raw
+lat-lon `u` and `v` as two independent scalar fields. With
+`psi_lm = -R^2 zeta_lm/(l(l+1))`, `chi_lm = -R^2 delta_lm/(l(l+1))`, and the
+two parts orthogonal in the energy integral over a closed surface, the modal
+kinetic energy and its normalized distribution are
+
+```
+E(l,m) = (R^4/2) * [P_zeta(l,m) + P_delta(l,m)] / (l(l+1)),  l >= 1
+E(0,m) = 0                                  (the l=0 mode carries no velocity)
+p(l,m) = E(l,m) / sum E(l,m)                (nonnegative, sums to 1)
+```
+
+`P` is the repository's own `_mode_power` convention for the `m >= 0` storage
+layout (`|c|^2` for `m = 0`, `2|c|^2` for `m > 0`), so each stored mode already
+carries the power of its full `+/-m` conjugate pair and the sum runs over
+`0 <= m <= l`. The three reported measures are
+
+```
+<l>   = sum l * p(l,m)          power-weighted mean degree
+<|m|> = sum |m| * p(l,m)        power-weighted mean zonal wavenumber
+S     = -sum p ln p             Shannon entropy of p; zero-power modes are
+                                excluded, contributing exactly 0
+N_eff = exp(S)                  effective number of occupied modes
+```
+
+`S` is the Shannon entropy **of a modal energy distribution**. It is not a
+thermodynamic entropy and is not a measure of "information content". The figure
+reports the more legible `N_eff`; `S` is printed to stdout by the script. `R`
+cancels in `p`, so all three measures are independent of the planetary radius.
+
+**Verification.** The script asserts `sum E(l,m)` against the Gauss-Legendre
+grid quadrature of `0.5 * integral |u|^2 dA` taken from the saved `u`/`v`
+fields, to `1e-11` relative (measured agreement is `~2e-15`). That single check
+pins the normalization, the `m`-doubling, the rotational/divergent split, and
+the fact that the coefficient file and the field package describe the same run.
+
+| Day | mass drift | energy drift | pot. enstrophy drift | `<l>` | `<\|m\|>` | `S` | `N_eff` |
+|---|---|---|---|---|---|---|---|
+| 0 | reference | reference | reference | 1.000 | 0.000 | 0.0000 | 1.000 |
+| 5 | `0.00e+00` | `-4.85e-09` | `+4.91e-08` | 1.563 | 0.467 | 0.6348 | 1.887 |
+| 10 | `0.00e+00` | `-1.81e-07` | `-1.46e-06` | 2.149 | 0.884 | 1.1124 | 3.042 |
+| 15 | `0.00e+00` | `-7.92e-07` | `-8.52e-06` | 2.663 | 1.208 | 1.4857 | 4.418 |
+
+Day 0 is **exactly** one mode: `p(1,0) = 1.0` bit-for-bit and the divergence
+coefficients are identically zero, which is the correct spectral signature of
+the `u = u0 cos(lat)` solid-body initial state, and gives `S = 0`, `N_eff = 1`.
+Fifteen days of flow over the mountain spread that energy to `<l> = 2.66` and
+about 4.4 effective modes while mass stays bit-identical, energy holds to
+`8e-07` and potential enstrophy to `9e-06`. The redistribution the maps show
+is therefore real dynamics, not a loss of the invariants.
+
+Two smaller corrections in the same pass: the figure's mean speed is now
+area-weighted with the Gauss latitude weights rather than a plain grid average
+(the plain mean under-weights the tropics where the jet is fastest — 12.80 m/s
+against the correct 15.71 m/s at day 0, which reproduces the analytic
+`u0*pi/4 = 15.708` for the solid-body state), and potential enstrophy is
+reported as drift from day 0 rather than as a bare absolute value that is
+constant to four decimal places.
+
 ## 5. Comparison against the reference
 
 All values from
