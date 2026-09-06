@@ -17,8 +17,10 @@ redistributed across scales**: a conservative run can begin in essentially one
 low-order mode and, through mode coupling alone, spread its energy over a broad
 harmonic spectrum, raising the mean wavenumber and the effective number of
 occupied modes, while mass, energy, and potential enstrophy stay controlled to
-one part in 10⁵ or better. No explicit dissipation is applied; what broadens dramatically is the coarse-grained spectral description of the flow, while the principal invariants remain nearly unchanged. The figure below measuresexactly that. Aeolus is early, though: varying planetary parameters to see whenthe **spectral character** of a circulation changes — and eventually lettingsuch differences act on the transport of heat, mass, and momentum — needs
-models it does not have yet. What exists today is the spectral machinery, the
+one part in 10⁵ or better. No explicit dissipation is applied; what broadens dramatically is the coarse-grained spectral description of the flow, while the principal invariants remain nearly unchanged. The figure below measures exactly that. Aeolus is early, though: varying
+planetary parameters to see when the **spectral character** of a circulation
+changes — and eventually letting such differences act on the transport of
+heat, mass, and momentum — needs models it does not have yet. What exists today is the spectral machinery, the
 conservation diagnostics, and the run provenance that would make those
 comparisons worth believing.
 
